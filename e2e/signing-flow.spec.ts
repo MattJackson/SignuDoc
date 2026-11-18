@@ -963,7 +963,10 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
     await page
       .getByLabel("How did you check who this is?")
       .fill("Badge checked in person");
-    await page.getByRole("button", { exact: true, name: "Save" }).click();
+    await page
+      .getByRole("list", { name: "People" })
+      .getByRole("button", { exact: true, name: "Save" })
+      .click();
     await expect(
       page.getByRole("button", {
         name: `Take back ${signerName}'s identity confirmation`,
