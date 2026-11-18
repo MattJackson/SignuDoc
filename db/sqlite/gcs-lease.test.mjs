@@ -876,11 +876,18 @@ test("the check before replicating retries an error that comes and goes", async 
 });
 
 test("only a network failure is a TypeError worth retrying", async () => {
+  const tries = { count: 0 };
   const failing = (error) =>
     createLease({
       holder: "a",
       revision: "s-00001-a",
-      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      sleep: async () => {
+        tries.count += 1;
+
+        if (tries.count >= 3) {
+          throw new Error("enough");
+        }
+      },
       storage: {
         read: async () => {
           throw error;
@@ -894,15 +901,10 @@ test("only a network failure is a TypeError worth retrying", async () => {
     failing(new TypeError("Cannot read properties of null")).acquire(),
     /Cannot read properties/,
   );
-
-  const retried = failing(new TypeError("fetch failed")).acquire();
-  const outcome = await Promise.race([
-    retried.then(
-      () => "done",
-      () => "rejected",
-    ),
-    new Promise((resolve) => setTimeout(() => resolve("still trying"), 50)),
-  ]);
-
-  assert.equal(outcome, "still trying");
+  assert.equal(tries.count, 0);
+  await assert.rejects(
+    failing(new TypeError("fetch failed")).acquire(),
+    /enough/,
+  );
+  assert.equal(tries.count, 3);
 });
