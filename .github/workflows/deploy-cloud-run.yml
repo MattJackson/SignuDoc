@@ -24,11 +24,15 @@
 #   CLOUD_RUN_SERVICE               optional, signudoc
 #   ARTIFACT_REPOSITORY             optional, signudoc
 #   DB_BACKEND                      optional, sqlite or postgres (sqlite)
-#   APP_URL                         optional, the site's address (https://sign.getbusbar.com)
+#   APP_URL                         optional, the site's address; unset keeps the service's current value
+#   FILES_BUCKET, DB_BUCKET, SQLITE_PATH
+#                                   optional, SQLite: what setup.sh was given (its defaults)
+#   BACKUP_BUCKET                   optional, SQLite: set it only if setup.sh made a backup bucket
 #
 # On SQLite the buckets are the ones setup.sh makes: <project>-<service>-files
-# for documents, <project>-<service>-db for the database replica and
-# <project>-<service>-backups for backups.
+# for documents and <project>-<service>-db for the database replica, unless
+# the variables above name others. The backup bucket is set only when
+# BACKUP_BUCKET is.
 #
 # See docs/google-cloud-run.md.
 
@@ -62,7 +66,7 @@ jobs:
       SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'signudoc' }}
       REPOSITORY: ${{ vars.ARTIFACT_REPOSITORY || 'signudoc' }}
       DB_BACKEND: ${{ vars.DB_BACKEND || 'sqlite' }}
-      APP_URL: ${{ vars.APP_URL || 'https://sign.getbusbar.com' }}
+      APP_URL: ${{ vars.APP_URL }}
     steps:
       - name: Check the settings
         env:
@@ -121,12 +125,25 @@ jobs:
         if: env.DB_BACKEND == 'sqlite'
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
+          FILES_BUCKET: ${{ vars.FILES_BUCKET }}
+          DB_BUCKET: ${{ vars.DB_BUCKET }}
+          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
+          SQLITE_PATH: ${{ vars.SQLITE_PATH }}
         run: |
-          env_vars="APP_URL=${APP_URL}"
-          env_vars+=",DATABASE_URL=sqlite:/data/signudoc.db"
-          env_vars+=",LITESTREAM_REPLICA_URL=gs://${PROJECT_ID}-${SERVICE}-db/db"
-          env_vars+=",STORAGE_DRIVER=gcs,GCS_BUCKET=${PROJECT_ID}-${SERVICE}-files"
-          env_vars+=",BACKUP_GCS_BUCKET=${PROJECT_ID}-${SERVICE}-backups"
+          # The names setup.sh uses unless it was given others. APP_URL and
+          # the backup bucket are only set when asked for, so what setup.sh
+          # chose stays.
+          files_bucket="${FILES_BUCKET:-${PROJECT_ID}-${SERVICE}-files}"
+          db_bucket="${DB_BUCKET:-${PROJECT_ID}-${SERVICE}-db}"
+          env_vars="DATABASE_URL=sqlite:${SQLITE_PATH:-/data/signudoc.db}"
+          env_vars+=",LITESTREAM_REPLICA_URL=gs://${db_bucket}/db"
+          env_vars+=",STORAGE_DRIVER=gcs,GCS_BUCKET=${files_bucket}"
+          if [ -n "${APP_URL}" ]; then
+            env_vars+=",APP_URL=${APP_URL}"
+          fi
+          if [ -n "${BACKUP_BUCKET}" ]; then
+            env_vars+=",BACKUP_GCS_BUCKET=${BACKUP_BUCKET}"
+          fi
           secrets="BETTER_AUTH_SECRET=${SERVICE}-better-auth-secret:latest"
           secrets+=",SETUP_TOKEN=${SERVICE}-setup-token:latest"
           secrets+=",RETENTION_JOB_SECRET=${SERVICE}-retention-job-secret:latest"

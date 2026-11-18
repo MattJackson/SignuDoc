@@ -18,7 +18,10 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 if [[ -z "${DB_BACKEND:-}" ]]; then
-  if exists run jobs describe "${MIGRATE_JOB}" --region="${REGION}"; then
+  # A failed lookup stops the script (set -e) instead of reading as "no job".
+  migrate_job="$(gc run jobs list --region="${REGION}" \
+    --filter="metadata.name=${MIGRATE_JOB}" --format='value(metadata.name)')"
+  if [[ -n "${migrate_job}" ]]; then
     DB_BACKEND=postgres
   else
     DB_BACKEND=sqlite

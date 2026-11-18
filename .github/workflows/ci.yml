@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Started by the Sync upstream workflow for its branch: a pull request that
+  # workflow opens with its own token does not start CI by itself.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}

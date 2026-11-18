@@ -770,6 +770,9 @@ export function SigningLiveShell({
         : await startGoogleSignInForSigning(signingToken);
 
     if (problem) {
+      // Drops ?google=1, so the next click starts a new Google sign-in
+      // instead of checking this same one again.
+      window.history.replaceState(null, "", window.location.pathname);
       setGoogleError(problem);
       setIsConfirmingGoogle(false);
       return;
