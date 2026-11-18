@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { DbExecutor } from "./db/connection.ts";
+import { GoogleCredentialsError } from "./integrations/google/credentials.ts";
 import {
   DirectoryError,
   type DirectoryClient,
@@ -281,5 +282,19 @@ test("suggest mode only suggests, and off and Part 11 say nothing", async () => 
       policy: policy("require"),
     }),
     { status: "not_applicable" },
+  );
+});
+
+test("a Google credentials failure is a lookup that could not be done", async () => {
+  const failing: DirectoryClient = {
+    ...directoryOf({}),
+    getUser: async () => {
+      throw new GoogleCredentialsError("The token endpoint refused.");
+    },
+  };
+
+  assert.deepEqual(
+    await findSenderManager("pat@example.com", { directory: failing }),
+    { status: "lookup_failed" },
   );
 });
