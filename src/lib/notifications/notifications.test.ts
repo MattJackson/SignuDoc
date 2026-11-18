@@ -22,7 +22,11 @@ import {
   retryDelaySeconds,
   updateForFailure,
 } from "./outbox.ts";
-import { readNotificationThresholds } from "./settings.ts";
+import {
+  buildSlackTestMessage,
+  describeSlackError,
+  readNotificationThresholds,
+} from "./settings.ts";
 
 // The channel-independent parts of notifications: the event model, the
 // messages, and the retry schedule.
@@ -350,4 +354,71 @@ test("the channels to come are listed, and Slack is not among them", () => {
     PLANNED_CHANNELS.map((channel) => channel.id),
     ["google_chat", "teams", "webhook"],
   );
+});
+
+test("an expired envelope's message says it expired and has no due date", () => {
+  // An envelope that passed its deadline keeps the stored status 'sent'.
+  const message = buildNotificationMessage({
+    appUrl: "https://sign.example.com",
+    envelope: { ...envelope, expiresAt: 1_800_000_000, status: "sent" },
+    kind: "envelope_expired",
+    occurredAt: 1_800_000_100,
+    payload: {},
+  });
+
+  assert.ok(message.details.includes("Expired"), message.details.join(" | "));
+  assert.ok(
+    message.details.every((detail) => !detail.startsWith("Due ")),
+    message.details.join(" | "),
+  );
+});
+
+test("locally made client errors are not described as Slack's answer", () => {
+  for (const code of ["network_error", "timeout", "invalid_response"]) {
+    assert.doesNotMatch(describeSlackError(code), /Slack answered/);
+  }
+
+  const http = describeSlackError("http_503");
+
+  assert.doesNotMatch(http, /Slack answered/);
+  assert.match(http, /503/);
+});
+
+function collectButtons(value: unknown, found: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectButtons(item, found);
+    }
+  } else if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+
+    if (record.type === "button") {
+      found.push(record);
+    }
+
+    for (const child of Object.values(record)) {
+      collectButtons(child, found);
+    }
+  }
+
+  return found;
+}
+
+test("button text stays within Block Kit's 75 characters, even with a long name", () => {
+  const content = buildSlackTestMessage("envelope_completed", {
+    appUrl: "https://sign.example.test",
+    brand: { logoUrl: null, name: "N".repeat(120) },
+  });
+  const buttons = collectButtons(content) as {
+    text: { text: string };
+  }[];
+
+  assert.ok(buttons.length > 0);
+
+  for (const button of buttons) {
+    assert.ok(
+      button.text.text.length <= 75,
+      `button text is ${String(button.text.text.length)} characters`,
+    );
+  }
 });
