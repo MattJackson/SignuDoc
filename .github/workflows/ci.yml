@@ -98,10 +98,11 @@ jobs:
           retention-days: 7
       # Full-page screenshots of the administrator's screens, from the
       # Postgres run (e2e/screenshots.spec.ts), to look at without running
-      # the app. Taken on the install the tests left behind, whether they
-      # passed or not, with the build they made.
+      # the app. Taken on the install the tests left behind, with the build
+      # they made, and only when the main suite passed: after a failure the
+      # install is half set up and the screenshots only add misleading errors.
       - run: npx playwright test --project=screenshots
-        if: always() && matrix.backend == 'postgres'
+        if: success() && matrix.backend == 'postgres'
         env:
           E2E_DATABASE_URL: ${{ matrix.database }}
           E2E_KEEP_DATABASE: "1"
