@@ -285,7 +285,7 @@ class SqliteFile {
   >();
   private schema: SchemaInfo | null = null;
   private currentNow: string | null = null;
-  readonly rewrite: (sql: string) => Rewritten;
+  readonly rewrite: ReturnType<typeof createRewriteCache>;
   references = 0;
 
   readonly connectionString: string;
@@ -382,6 +382,7 @@ class SqliteFile {
 
         if (/^\s*(CREATE|ALTER|DROP)\b/i.test(rewritten.sql)) {
           this.schema = null;
+          this.rewrite.clear();
 
           for (const connection of [this.writer, this.reader]) {
             this.prepared.get(connection)!.clear();
@@ -628,6 +629,7 @@ export class SqliteClient implements Holder {
   private transactionNow: string | null = null;
   private readonly keys = new Set<string>();
   private released = false;
+  private tail: Promise<unknown> = Promise.resolve();
 
   private readonly file: SqliteFile;
   private readonly lockTimeoutMs: number;
@@ -757,7 +759,22 @@ export class SqliteClient implements Holder {
     );
   }
 
-  private async execute(
+  /**
+   * Statements run in the order they were issued, one at a time, as on a pg
+   * client, so that a caller that does not await each one cannot make the
+   * second wait on the write lock behind the first.
+   */
+  private execute(
+    rewritten: Rewritten,
+    values: readonly unknown[],
+  ): Promise<SqliteQueryResult> {
+    const run = this.tail.then(() => this.executeNow(rewritten, values));
+
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async executeNow(
     rewritten: Rewritten,
     values: readonly unknown[],
   ): Promise<SqliteQueryResult> {
