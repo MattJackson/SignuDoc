@@ -4,7 +4,9 @@ import { useRouter } from "next/navigation";
 import { startTransition, useState } from "react";
 
 import { loadPicker } from "@/components/envelopes/google-picker";
-0;
+import { Button } from "@/components/ui/button";
+
+const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 // "Choose from Google Drive" on the new-envelope page. The Google Picker
 // shows the person's own Drive (and Shared Drives) in a frame from Google;
