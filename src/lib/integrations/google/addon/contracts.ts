@@ -78,13 +78,11 @@ const CONTRACT_COLUMNS = `
   (
     SELECT count(*)::int FROM signers waiting
     WHERE waiting.envelope_id = envelopes.id
-      AND waiting.role = 'signer'
       AND waiting.status = 'notified'
   ) AS "waitingSigners",
   (
     SELECT min(coalesce(waiting.last_nudged_at, 0))::bigint FROM signers waiting
     WHERE waiting.envelope_id = envelopes.id
-      AND waiting.role = 'signer'
       AND waiting.status = 'notified'
   ) AS "lastNudgedAt"
 `;

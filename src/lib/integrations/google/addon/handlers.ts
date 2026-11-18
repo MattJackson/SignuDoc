@@ -34,7 +34,6 @@ import type { AddonTrigger } from "./config.ts";
 import {
   listContractsFromDriveFile,
   listContractsWithEmail,
-  recordEnvelopeSource,
 } from "./contracts.ts";
 import {
   DriveApiError,
@@ -328,15 +327,6 @@ async function sendAttachment(
     return notify(describeDraftFailure(error));
   }
 
-  await recordEnvelopeSource({
-    envelopeId,
-    kind: "gmail",
-    ref: `${messageId}/${partId}`,
-    userId: user.id,
-  }).catch((error: unknown) => {
-    context.log("Noting a draft's Gmail source failed.", error);
-  });
-
   // The sender of the email is suggested as the first signer: the sender of
   // the envelope sees it on the next page and can change it.
   let suggestedSigner: GmailSender | null = null;
@@ -453,15 +443,6 @@ async function sendDriveFile(
     context.log("Making a draft from a Drive file failed.", error);
     return notify(describeDraftFailure(error));
   }
-
-  await recordEnvelopeSource({
-    envelopeId,
-    kind: "drive",
-    ref: fileId,
-    userId: user.id,
-  }).catch((error: unknown) => {
-    context.log("Noting a draft's Drive source failed.", error);
-  });
 
   return pushCard(
     draftCreatedCard({

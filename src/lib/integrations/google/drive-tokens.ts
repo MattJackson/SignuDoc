@@ -52,7 +52,15 @@ export type StoredDriveConnection = {
 
 /** Where connections are kept: Postgres, or a stand-in in tests. */
 export interface DriveConnectionRepository {
-  delete(userId: string): Promise<StoredDriveConnection | null>;
+  /**
+   * Removes the connection. Given the encrypted refresh token that was
+   * read, only a connection still holding it is removed, so one saved in
+   * the meantime is left alone.
+   */
+  delete(
+    userId: string,
+    expectedRefreshToken?: string,
+  ): Promise<StoredDriveConnection | null>;
   read(userId: string): Promise<StoredDriveConnection | null>;
   write(connection: StoredDriveConnection): Promise<void>;
 }
@@ -72,12 +80,21 @@ type CachedAccessToken = {
 
 declare global {
   var __signudocDriveAccessTokens: Map<string, CachedAccessToken> | undefined;
+  var __signudocDriveRefreshes: Map<string, Promise<string>> | undefined;
 }
 
 function accessTokenCache(): Map<string, CachedAccessToken> {
   globalThis.__signudocDriveAccessTokens ??= new Map();
 
   return globalThis.__signudocDriveAccessTokens;
+}
+
+// Refreshes under way, one per person, shared by every store in the process
+// (the routes make a new store for each call).
+function refreshesInFlight(): Map<string, Promise<string>> {
+  globalThis.__signudocDriveRefreshes ??= new Map();
+
+  return globalThis.__signudocDriveRefreshes;
 }
 
 function keyFor(userId: string, env: EnvSource): Buffer {
@@ -112,11 +129,15 @@ export function createPostgresDriveConnectionRepository(
   database: DbExecutor = getDb(),
 ): DriveConnectionRepository {
   return {
-    async delete(userId) {
+    async delete(userId, expectedRefreshToken) {
       return queryOne<ConnectionRow>(
         database,
-        `DELETE FROM google_drive_tokens WHERE user_id = $1 RETURNING ${SELECT_COLUMNS}`,
-        [userId],
+        `
+          DELETE FROM google_drive_tokens
+          WHERE user_id = $1 AND ($2::text IS NULL OR refresh_token = $2)
+          RETURNING ${SELECT_COLUMNS}
+        `,
+        [userId, expectedRefreshToken ?? null],
       );
     },
     async read(userId) {
@@ -171,7 +192,7 @@ export function createDriveTokenStore({
   repository = createPostgresDriveConnectionRepository(),
 }: DriveTokenStoreOptions = {}) {
   const cache = accessTokenCache();
-  const inFlight = new Map<string, Promise<string>>();
+  const inFlight = refreshesInFlight();
 
   async function client(): Promise<DriveOAuthClient> {
     const value = loadClient
@@ -202,14 +223,19 @@ export function createDriveTokenStore({
       : null;
   }
 
-  /** Stores a new connection, replacing any earlier one. */
+  /**
+   * Stores a new connection, replacing any earlier one, and returns the
+   * token it replaced. That token is not revoked here: for the same Google
+   * account it belongs to the grant the new token also belongs to, so
+   * revoking it would end the new connection too (connectDrive decides).
+   */
   async function save(input: {
     googleEmail: string;
     googleSubject: string;
     refreshToken: string;
     scope: string;
     userId: string;
-  }): Promise<void> {
+  }): Promise<{ googleSubject: string; refreshToken: string } | null> {
     const seconds = Math.floor(now() / 1000);
     const existing = await repository.read(input.userId);
 
@@ -227,14 +253,13 @@ export function createDriveTokenStore({
     });
     cache.delete(input.userId);
 
-    // The earlier token is no longer needed; Google is asked to forget it.
     const previous = existing
       ? decryptPrivateKey(existing.refreshToken, keyFor(input.userId, env))
       : null;
 
-    if (previous && previous !== input.refreshToken) {
-      await revokeToken(previous, fetchImpl);
-    }
+    return existing && previous && previous !== input.refreshToken
+      ? { googleSubject: existing.googleSubject, refreshToken: previous }
+      : null;
   }
 
   async function refresh(userId: string): Promise<string> {
@@ -254,7 +279,7 @@ export function createDriveTokenStore({
 
     if (!refreshToken) {
       // The auth secret changed: the token cannot be read any more.
-      await repository.delete(userId);
+      await repository.delete(userId, row.refreshToken);
       throw new DriveAuthorizationError(
         "not_connected",
         "Connect Google Drive again.",
@@ -295,8 +320,13 @@ export function createDriveTokenStore({
         error instanceof DriveAuthorizationError &&
         error.code === "invalid_grant"
       ) {
-        await repository.delete(userId);
-        cache.delete(userId);
+        // Only the connection that was tried: one saved meanwhile stays.
+        const removed = await repository.delete(userId, row.refreshToken);
+
+        if (removed) {
+          cache.delete(userId);
+        }
+
         throw new DriveAuthorizationError(
           "not_connected",
           "Google Drive was disconnected. Connect it again.",
@@ -309,12 +339,8 @@ export function createDriveTokenStore({
 
   /** A current access token for the person's Drive (drive.file). */
   async function getAccessToken(userId: string): Promise<string> {
-    const cached = cache.get(userId);
-
-    if (cached && cached.expiresAtMs - REFRESH_MARGIN_MS > now()) {
-      return cached.accessToken;
-    }
-
+    // Every call goes through refresh(), which reads the stored connection
+    // and answers from the cache only for the refresh token still stored.
     let pending = inFlight.get(userId);
 
     if (!pending) {
@@ -391,11 +417,12 @@ export async function connectDrive(
     env = process.env,
   }: { database?: DbPool; env?: EnvSource } = {},
 ): Promise<void> {
-  await withTransaction(async (tx) => {
-    await createDriveTokenStore({
+  const replaced = await withTransaction(async (tx) => {
+    const previous = await createDriveTokenStore({
       env,
       repository: createPostgresDriveConnectionRepository(tx),
     }).save({ ...input, userId: actor.id });
+
     await recordSystemAuditEvent(
       {
         actorEmail: actor.email,
@@ -408,7 +435,17 @@ export async function connectDrive(
       },
       tx,
     );
+
+    return previous;
   }, database);
+
+  // After the commit, and only when the person connected a different Google
+  // account: the old token is then of no use. For the same account it
+  // belongs to the grant the new token is part of, and revoking it would
+  // end the new connection too.
+  if (replaced && replaced.googleSubject !== input.googleSubject) {
+    await revokeToken(replaced.refreshToken);
+  }
 }
 
 /** Revokes and forgets a connection, and records it in the audit trail. */

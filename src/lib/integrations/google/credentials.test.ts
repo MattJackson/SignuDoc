@@ -208,7 +208,7 @@ test("a token request with no answer is given up on, and the next call asks agai
       });
     }) as typeof fetch,
     timeoutMs: 20,
-  } as Parameters<typeof createGoogleCredentials>[0]);
+  });
 
   assert.ok(credentials);
 

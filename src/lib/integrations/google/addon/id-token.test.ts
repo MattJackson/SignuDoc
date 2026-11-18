@@ -5,7 +5,6 @@ import { test } from "node:test";
 import type { AddonConfig } from "./config.ts";
 import {
   createJwksCache,
-  type JwksCacheOptions,
   IdTokenError,
   verifyGoogleIdToken,
   type IdTokenProblem,
@@ -339,7 +338,7 @@ test("a key request with no answer is given up on, and the next call asks again"
     }) as typeof fetch,
     now: () => NOW_MS,
     timeoutMs: 20,
-  } as JwksCacheOptions);
+  });
   const within = <T>(promise: Promise<T>) => {
     let timer: NodeJS.Timeout | undefined;
 

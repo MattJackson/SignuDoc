@@ -5,7 +5,11 @@ import {
   type KeyObject,
 } from "node:crypto";
 
-import { googleUrl } from "../endpoints.ts";
+import {
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "../endpoints.ts";
 
 // Verifies ID tokens signed by Google, with node:crypto and no library.
 //
@@ -76,6 +80,8 @@ type FetchLike = typeof fetch;
 export type JwksCacheOptions = {
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** How long reading the keys may take, in milliseconds. */
+  timeoutMs?: number;
   url?: string;
 };
 
@@ -95,6 +101,7 @@ function maxAgeMs(cacheControl: string | null): number {
 export function createJwksCache({
   fetchImpl = fetch,
   now = Date.now,
+  timeoutMs = GOOGLE_REQUEST_TIMEOUT_MS,
   url = GOOGLE_JWKS_URL,
 }: JwksCacheOptions = {}): JwksCache {
   let keys = new Map<string, KeyObject>();
@@ -105,16 +112,33 @@ export function createJwksCache({
   async function refresh(): Promise<void> {
     fetchedAtMs = now();
 
-    const response = await fetchImpl(googleUrl(url));
+    // Whatever goes wrong reading the keys (network, timeout, status, body)
+    // is "keys_unavailable": a problem on Google's side, not a bad token.
+    let body: { keys?: unknown };
+    let response: Response;
 
-    if (!response.ok) {
-      throw new IdTokenError(
-        "keys_unavailable",
-        `Google's signing keys could not be read (${String(response.status)}).`,
-      );
+    try {
+      response = await fetchImpl(googleUrl(url), {
+        signal: googleTimeoutSignal(timeoutMs),
+      });
+
+      if (!response.ok) {
+        throw new IdTokenError(
+          "keys_unavailable",
+          `Google's signing keys could not be read (${String(response.status)}).`,
+        );
+      }
+
+      body = (await response.json()) as { keys?: unknown };
+    } catch (error) {
+      throw error instanceof IdTokenError
+        ? error
+        : new IdTokenError(
+            "keys_unavailable",
+            "Google's signing keys could not be read.",
+          );
     }
 
-    const body = (await response.json()) as { keys?: unknown };
     const next = new Map<string, KeyObject>();
 
     for (const jwk of Array.isArray(body.keys) ? body.keys : []) {

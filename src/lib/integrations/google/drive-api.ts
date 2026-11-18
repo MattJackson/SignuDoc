@@ -8,7 +8,12 @@
 // status and Google's short reason code only (such as "notFound" or
 // "exportSizeLimitExceeded"), never the message.
 
-import { googleUrl } from "./endpoints.ts";
+import {
+  GOOGLE_MEDIA_TIMEOUT_MS,
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "./endpoints.ts";
 
 export const DRIVE_API_BASE_URL = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD_BASE_URL =
@@ -57,13 +62,18 @@ async function readReason(response: Response): Promise<string | null> {
   }
 }
 
-/** Sends one request with the token, and throws a DriveApiError unless ok. */
+/**
+ * Sends one request with the token, and throws a DriveApiError unless ok.
+ * A request still unanswered after timeoutMs (the body included) ends as a
+ * "could not be reached" error.
+ */
 export async function driveFetch(
   fetchImpl: FetchLike,
   accessToken: string,
   what: string,
   url: string,
   init: RequestInit = {},
+  timeoutMs: number = GOOGLE_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const headers = new Headers(init.headers);
 
@@ -72,7 +82,11 @@ export async function driveFetch(
   let response: Response;
 
   try {
-    response = await fetchImpl(googleUrl(url), { ...init, headers });
+    response = await fetchImpl(googleUrl(url), {
+      ...init,
+      headers,
+      signal: googleTimeoutSignal(timeoutMs, init.signal),
+    });
   } catch {
     throw new DriveApiError(what, null, null);
   }
@@ -90,8 +104,16 @@ export async function driveJson<T>(
   what: string,
   url: string,
   init: RequestInit = {},
+  timeoutMs: number = GOOGLE_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
-  const response = await driveFetch(fetchImpl, accessToken, what, url, init);
+  const response = await driveFetch(
+    fetchImpl,
+    accessToken,
+    what,
+    url,
+    init,
+    timeoutMs,
+  );
 
   return (await response.json()) as T;
 }
@@ -223,6 +245,7 @@ export async function uploadDriveFile<T extends { id: string }>({
       headers: { "content-type": contentType },
       method: "PUT",
     },
+    GOOGLE_MEDIA_TIMEOUT_MS,
   );
 }
 
