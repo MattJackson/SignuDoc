@@ -42,6 +42,18 @@ export function sqliteFilePath(connectionString: string): string {
 }
 
 /**
+ * lower() as Postgres has it: every letter folds, not only ASCII, which is all
+ * SQLite's own lower() does. See the same function in db/sqlite/open.mjs.
+ */
+function lowerForSql(value: unknown): string | null | Uint8Array {
+  if (value === null || value instanceof Uint8Array) {
+    return value;
+  }
+
+  return String(value).toLowerCase();
+}
+
+/**
  * Opens the file with the settings every connection uses: WAL, so the
  * read-only connection and Litestream read while the app writes;
  * synchronous=FULL, so a commit is on disk before it returns; foreign keys.
@@ -67,6 +79,8 @@ export function openSqliteDatabase(
   });
 
   try {
+    database.function("lower", { deterministic: true }, lowerForSql);
+
     if (!readOnly) {
       database.exec("PRAGMA journal_mode = WAL");
     }
