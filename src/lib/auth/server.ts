@@ -371,7 +371,8 @@ export function createAppAuth({
       // migrated would refuse every sign-in until it was restarted.
       database: { validateSchema: false },
       // Where the visitor's address is read from, for rate limits and
-      // sessions: the same headers the rest of the app trusts.
+      // sessions: the same address the rest of the app uses (see
+      // getClientIpHeaderNames in src/lib/security/request.ts).
       ipAddress: { ipAddressHeaders: getClientIpHeaderNames(env) },
       // Secure cookies whenever the site is served over HTTPS, which is
       // always in production except for a build run on localhost.

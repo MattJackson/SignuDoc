@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+import { withClientIpHeader } from "@/lib/security/request";
 import { supportsDirectUploads } from "@/lib/services/storage/driver";
 
 const DEFAULT_PERMISSIONS_POLICY = [
@@ -159,9 +160,17 @@ function applySecurityHeaders(response: NextResponse, pathname: string) {
 // and trusting it here would bounce that visitor between /login and
 // /dashboard until it ran out.
 
+// The visitor's address is worked out once here and handed on in a header
+// of the app's own (src/lib/security/request.ts), replacing any value the
+// visitor sent, so Better Auth's rate limits see the same address as the
+// rest of the app.
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  return applySecurityHeaders(NextResponse.next(), pathname);
+  const response = NextResponse.next({
+    request: { headers: withClientIpHeader(request.headers) },
+  });
+
+  return applySecurityHeaders(response, pathname);
 }
 
 export const config = {

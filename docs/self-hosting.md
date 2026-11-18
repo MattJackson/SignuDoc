@@ -313,6 +313,16 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 
 Sign-in, sign-up, password reset, the signing pages, uploads and sending are rate limited per visitor. The counts are kept in the `rate_limits` table in Postgres, so they hold across every instance of the app. On Vercel the visitor's address is read from the header Vercel sets itself, which a visitor cannot forge. If the database cannot be reached, each instance falls back to counting in its own memory.
 
+### The visitor's address
+
+Rate limits, sessions and the audit trail record each visitor's IP address. Away from Vercel it is read from `X-Forwarded-For`, counting from the right: every proxy appends the address it saw the request come from, so only the entries your own proxies add can be trusted, and anything to the left of them is whatever the visitor sent.
+
+- With one proxy in front of the app (an nginx or Caddy that appends to the header), the default is right: the last entry.
+- With more than one, set `TRUSTED_PROXY_HOPS` to how many append an entry. A request with fewer entries than that did not come through all of them, and gets no address.
+- Behind a proxy that writes the visitor's address into a header of its own and replaces any value the visitor sent, set `CLIENT_IP_HEADER` to that header, such as `cf-connecting-ip` behind Cloudflare or `x-real-ip` behind an nginx that sets it. Only that header is then read. Set it only when the app cannot be reached except through that proxy, since anyone who can reach the app directly can send the header.
+
+`cf-connecting-ip` and `x-real-ip` are never trusted unless `CLIENT_IP_HEADER` names them.
+
 ## Bot protection
 
 The app can use [Vercel BotID](https://vercel.com/docs/botid), an invisible check that a request comes from a real browser, on the requests a script would go for: creating an account, signing in, asking for a password reset or verification email, the contact form and first-run setup.
