@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Pool } from "pg";
+
+import { replaceDbPoolForTests } from "./db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import {
   googleSigningFor,
   isWorkspaceAddress,
+  loadGoogleSigningPolicy,
   readGoogleSigningSetting,
   resolveGoogleSigningPolicy,
   type GoogleSigningPolicy,
@@ -167,4 +172,23 @@ test("a required Google check comes first and keeps every check the sender asked
     }),
     ["email_code"],
   );
+});
+
+test("a settings read that fails is an error, never the setting turned off", async () => {
+  const unreachable = {
+    query: () => Promise.reject(new Error("connection refused")),
+  } as unknown as Pool;
+  const replaced = replaceDbPoolForTests(unreachable);
+
+  invalidateIntegrationSettingsCache();
+
+  try {
+    await assert.rejects(loadGoogleSigningPolicy({}), /connection refused/);
+  } finally {
+    invalidateIntegrationSettingsCache();
+
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
 });

@@ -8,19 +8,23 @@ import { after, before, test } from "node:test";
 import { PDFDocument } from "pdf-lib";
 import type pg from "pg";
 
+import { replaceDbPoolForTests } from "./db/connection.ts";
 import { openTestDatabase } from "./db/test-database.ts";
 import {
+  correctSentEnvelopeSigner,
   EnvelopeMutationError,
   getReviewEnvelopeDataForUser,
   replaceDraftEnvelopeFields,
   replaceDraftEnvelopeSigners,
   sendDraftEnvelope,
 } from "./envelopes.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import type {
   DirectoryClient,
   DirectoryUser,
 } from "./integrations/google/directory.ts";
 import {
+  checkManagerPolicy,
   managerPolicyAppliesTo,
   type ManagerPolicy,
 } from "./manager-policy.ts";
@@ -334,4 +338,163 @@ test("the review page says why a send is blocked", async () => {
   assert.ok(review);
   assert.equal(review.managerSuggestion, null);
   assert.equal(review.canSend, true);
+});
+
+test("a rule limited only to teams that no longer exist covers everyone", async () => {
+  const member = randomUUID();
+  const outsider = randomUUID();
+  const teamId = randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const id of [member, outsider]) {
+    createdUsers.push(id);
+    await database.query(
+      `insert into public."user" (id, name, email, role) values ($1, 'Person', $2, 'user')`,
+      [id, `${id}@example.test`],
+    );
+  }
+
+  createdTeams.push(teamId);
+  await database.query(
+    `insert into teams (id, name, created_at, updated_at) values ($1, $2, $3, $3)`,
+    [teamId, `Gone ${teamId}`, now],
+  );
+  await database.query(
+    `insert into team_members (team_id, user_id, added_at) values ($1, $2, $3)`,
+    [teamId, member, now],
+  );
+
+  const goneTeamOnly: ManagerPolicy = {
+    mode: "require",
+    source: "settings",
+    teamIds: [teamId],
+  };
+
+  assert.equal(
+    await managerPolicyAppliesTo(outsider, goneTeamOnly, database),
+    false,
+  );
+
+  await database.query(`delete from teams where id = $1`, [teamId]);
+
+  // The settings page shows no team limit now, which means everyone.
+  assert.equal(
+    await managerPolicyAppliesTo(outsider, goneTeamOnly, database),
+    true,
+  );
+
+  const outsiderEmail = `${outsider}@example.test`;
+  const check = await checkManagerPolicy(
+    { email: outsiderEmail, id: outsider },
+    [],
+    {
+      database,
+      directory: directoryFor(outsiderEmail, null),
+      policy: goneTeamOnly,
+    },
+  );
+
+  assert.equal(check.status, "blocked");
+});
+
+test("correcting a sent approver cannot replace the manager the rule requires", async () => {
+  const manager = `boss-${randomUUID()}@example.test`;
+  const draft = await createDraft([
+    { email: manager, role: "approver", step: 1 },
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 2 },
+  ]);
+  const directory = directoryFor(draft.senderEmail, manager);
+
+  await sendDraftEnvelope(draft.userId, draft.envelopeId, send, {
+    database,
+    directory,
+    managerPolicy: requireForEveryone,
+  });
+
+  const approver = await database.query<{ id: string }>(
+    `select id from signers where envelope_id = $1 and role = 'approver'`,
+    [draft.envelopeId],
+  );
+  const previous = process.env.MANAGER_APPROVAL;
+
+  process.env.MANAGER_APPROVAL = "require";
+
+  try {
+    await assert.rejects(
+      correctSentEnvelopeSigner(
+        draft.userId,
+        draft.envelopeId,
+        approver.rows[0]!.id,
+        { email: `mine-${randomUUID()}@example.test` },
+        { senderEmail: draft.senderEmail, senderName: "Sam Sender" },
+        { database, directory },
+      ),
+      (error: unknown) =>
+        error instanceof EnvelopeMutationError && error.statusCode === 409,
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MANAGER_APPROVAL;
+    } else {
+      process.env.MANAGER_APPROVAL = previous;
+    }
+  }
+
+  const after = await database.query<{ email: string }>(
+    `select email from signers where id = $1`,
+    [approver.rows[0]!.id],
+  );
+
+  assert.equal(after.rows[0]?.email, manager);
+});
+
+test("a send is refused, not quietly relaxed, when the Google signing setting cannot be read", async () => {
+  const draft = await createDraft([
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 1 },
+  ]);
+  // Only the stored integration settings cannot be read.
+  const failing = new Proxy(database, {
+    get(target, property) {
+      if (property === "query") {
+        return (text: unknown, ...rest: unknown[]) =>
+          typeof text === "string" && /integration_settings/.test(text)
+            ? Promise.reject(new Error("connection refused"))
+            : (target.query as unknown as (...args: unknown[]) => unknown).call(
+                target,
+                text,
+                ...rest,
+              );
+      }
+
+      const value = Reflect.get(target, property, target) as unknown;
+
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+  const replaced = replaceDbPoolForTests(failing);
+
+  invalidateIntegrationSettingsCache();
+
+  const originalError = console.error;
+
+  console.error = () => undefined;
+
+  try {
+    await assert.rejects(
+      sendDraftEnvelope(draft.userId, draft.envelopeId, send, {
+        database,
+        managerPolicy: { mode: "off", source: "default", teamIds: [] },
+      }),
+      (error: unknown) =>
+        error instanceof EnvelopeMutationError && error.statusCode === 503,
+    );
+  } finally {
+    console.error = originalError;
+    invalidateIntegrationSettingsCache();
+    replaceDbPoolForTests(replaced ?? database);
+  }
+
+  assert.equal(await statusOf(draft.envelopeId), "draft");
 });
