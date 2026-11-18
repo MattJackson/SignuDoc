@@ -21,6 +21,9 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
+  // The Docker image (Dockerfile) sets NEXT_OUTPUT=standalone to get a
+  // self-contained server.js. Unset, as on Vercel, the build is unchanged.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   // Finished PDFs are drawn with fonts read from disk at runtime, cut down
   // by a WebAssembly subsetter (src/lib/services/pdf-fonts.ts). Listing the
   // files here makes sure they are copied into the deployed functions.

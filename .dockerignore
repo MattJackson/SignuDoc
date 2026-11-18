@@ -1,0 +1,21 @@
+# Kept out of the image build context: secrets, local data, build output
+# and everything the image does not need.
+.git
+.github
+.claude
+.env
+.env.*
+!.env.example
+.data
+.next
+node_modules
+*.tsbuildinfo
+next-env.d.ts
+test-results
+playwright-report
+e2e
+docs
+deploy
+Dockerfile
+docker-compose.yml
+.dockerignore

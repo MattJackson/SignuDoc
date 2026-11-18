@@ -2,6 +2,11 @@
 #   npm run db:start    start it and apply migrations
 #   npm run db:stop     stop it (data is kept)
 #   npm run db:reset    wipe it and start fresh
+#
+# The app itself, built from the Dockerfile, is optional and only starts
+# with the "app" profile. It keeps files on a local volume and writes email
+# to /data/outbox instead of sending it:
+#   docker compose --profile app up --build    then open http://localhost:3000
 services:
   db:
     image: postgres:17
@@ -19,5 +24,34 @@ services:
       timeout: 3s
       retries: 30
 
+  migrate:
+    profiles: ["app"]
+    build: .
+    image: signudoc:local
+    command: ["node", "db/migrate.mjs"]
+    environment:
+      DATABASE_URL: postgres://signudoc:signudoc@db:5432/signudoc
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    profiles: ["app"]
+    image: signudoc:local
+    environment:
+      DATABASE_URL: postgres://signudoc:signudoc@db:5432/signudoc
+      APP_URL: http://localhost:3000
+      BETTER_AUTH_SECRET: local-docker-compose-secret-change-me-0123456789
+      STORAGE_DRIVER: local
+      EMAIL_DRIVER: capture
+    ports:
+      - "127.0.0.1:3000:8080"
+    volumes:
+      - signudoc-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   signudoc-db:
+  signudoc-data:
