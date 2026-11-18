@@ -5,7 +5,6 @@
 // getDb() in the same process, pointed at the same URL (some tests set
 // DATABASE_URL to it), shares the pool's connections and write lock.
 import { rmSync } from "node:fs";
-import path from "node:path";
 
 import type pg from "pg";
 
