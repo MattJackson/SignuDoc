@@ -65,6 +65,17 @@ export const POSTGRES_ONLY: {
       "A Postgres cursor for the export; SQLite reads a snapshot instead.",
   },
   {
+    contains: "pg_constraint",
+    file: "src/lib/backup.ts",
+    reason: "The foreign keys between tables; SQLite reads them with PRAGMA.",
+  },
+  {
+    contains: "DELETE FROM ",
+    file: "src/lib/backup.ts",
+    reason:
+      "The Postgres restore empties each table; SQLite's restore does its own.",
+  },
+  {
     contains: "json_populate_recordset",
     file: "src/lib/backup.ts",
     reason: "The restore's bulk insert; SQLite inserts row by row.",
