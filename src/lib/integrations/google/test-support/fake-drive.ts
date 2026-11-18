@@ -10,7 +10,6 @@ import {
   sendMasked,
   storeDrive,
   type FakeAccessToken,
-  type FakeGoogleState,
   type FakeRequest,
   type StoredFile,
 } from "./fake-state.ts";
