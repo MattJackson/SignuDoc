@@ -34,6 +34,8 @@ const SETTINGS_PAGES = [
 ];
 
 const ONBOARDING_STEPS = [
+  "name",
+  "branding",
   "organization",
   "email",
   "google-sign-in",

@@ -4,6 +4,7 @@ import { useState, type ComponentType, type FormEvent } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
+import { BrandingPanel } from "@/components/settings/branding-panel";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
 import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
 import { GoogleAddonSection } from "@/components/settings/google-addon-panel";
@@ -185,6 +186,77 @@ function NameStep({ data, onChanged }: StepFormProps) {
   );
 }
 
+function BrandingStep({ data, onChanged }: StepFormProps) {
+  const [view, setView] = useState(data.organization);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+
+    const result = await saveOrganization(view, {});
+
+    setSaving(false);
+    setErrors(result.fieldErrors);
+
+    if (result.settings) {
+      setView(result.settings);
+      setFeedback({ message: "Saved.", tone: "success" });
+      onChanged();
+    } else {
+      setFeedback({
+        message: result.message ?? GENERIC_ERROR_MESSAGE,
+        tone: "error",
+      });
+    }
+  }
+
+  return (
+    <form className="space-y-6" noValidate onSubmit={submit}>
+      <Notice feedback={feedback} />
+      <div className="max-w-md">
+        <FieldShell
+          disabled={saving}
+          error={errors.organizationName}
+          helper="Shown to signers and in every email this site sends."
+          label="Organization name"
+          name="organization-name"
+          onChange={(event) => {
+            setView((current) => ({
+              ...current,
+              organizationName: event.target.value,
+            }));
+            setErrors((current) => ({ ...current, organizationName: "" }));
+            setFeedback(null);
+          }}
+          readOnly={false}
+          value={view.organizationName}
+        />
+      </div>
+      <BrandingPanel
+        brandColor={view.brandColor}
+        brandColorError={errors.brandColor}
+        disabled={saving}
+        logoUrl={view.logoUrl}
+        onBrandColorChange={(brandColor) => {
+          setView((current) => ({ ...current, brandColor }));
+          setErrors((current) => ({ ...current, brandColor: "" }));
+          setFeedback(null);
+        }}
+        onLogoChange={(logoUrl) => {
+          setView((current) => ({ ...current, logoUrl }));
+          onChanged();
+        }}
+      />
+      <ShellButton className="w-fit" loading={saving} type="submit">
+        {saving ? "Saving..." : "Save name and color"}
+      </ShellButton>
+    </form>
+  );
+}
+
 function OrganizationStep({ data, onChanged }: StepFormProps) {
   const [view, setView] = useState(data.organization);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -214,7 +286,9 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
       onChanged();
     } else {
       setFeedback({
-        message: result.message ?? GENERIC_ERROR_MESSAGE,
+        message: result.fieldErrors.organizationName
+          ? "Name the organization first, in the Logo and organization step."
+          : (result.message ?? GENERIC_ERROR_MESSAGE),
         tone: "error",
       });
     }
@@ -224,16 +298,6 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
     <form className="space-y-6" noValidate onSubmit={submit}>
       <Notice feedback={feedback} />
       <div className="grid gap-4 sm:grid-cols-2">
-        <FieldShell
-          disabled={saving}
-          error={errors.organizationName}
-          helper="Shown in the header and in every email this site sends."
-          label="Organization name"
-          name="organization-name"
-          onChange={change("organizationName")}
-          readOnly={false}
-          value={view.organizationName}
-        />
         <FieldShell
           disabled={saving || view.supportAddressFromEnv}
           error={errors.supportAddress}
@@ -466,6 +530,7 @@ export const STEP_FORMS: Record<
   ComponentType<StepFormProps>
 > = {
   backups: BackupsStep,
+  branding: BrandingStep,
   email: EmailStep,
   "google-addon": GoogleAddonStep,
   "google-directory": GoogleDirectoryStep,

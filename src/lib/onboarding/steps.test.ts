@@ -60,6 +60,7 @@ test("the steps come in the order onboarding walks them", () => {
     ONBOARDING_STEPS.map((step) => step.id),
     [
       "name",
+      "branding",
       "organization",
       "email",
       "google-sign-in",
@@ -499,6 +500,26 @@ test("the name step is done once the app has a name, or the organization's is ke
   );
   assert.equal(
     await check("name", context({ marks: { name: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the branding step is done with a logo, or once it is skipped on purpose", async () => {
+  assert.equal(await check("branding", context()), "not_started");
+  assert.equal(
+    await check(
+      "branding",
+      context({
+        settings: resolveSettings(
+          { ...stored, logoVersion: "0123456789abcdef" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("branding", context({ marks: { branding: "confirmed" } })),
     "done",
   );
 });

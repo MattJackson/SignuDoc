@@ -46,6 +46,7 @@ const STATUS_PILLS: Record<OnboardingStepStatus, string> = {
 };
 
 const CONFIRM_LABELS: Partial<Record<OnboardingStepId, string>> = {
+  branding: "Continue without a logo",
   name: "Keep the organization's name",
   retention: "Keep as it is",
 };

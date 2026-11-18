@@ -43,6 +43,7 @@ import { type EnvSource } from "../utils/env.ts";
 
 export type OnboardingStepId =
   | "name"
+  | "branding"
   | "organization"
   | "email"
   | "google-sign-in"
@@ -114,6 +115,28 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "What do you want to call this app? The name is used in the header, in emails, and for everything set up in Google and Slack.",
     title: "App name",
+  },
+  {
+    check: async ({ marks, settings }) => {
+      const name = settings.organizationName ?? "The organization";
+
+      if (settings.logoVersion !== null) {
+        return { detail: `${name}, with its logo.`, status: "done" };
+      }
+
+      return marks.branding === "confirmed"
+        ? { detail: `${name}, without a logo.`, status: "done" }
+        : {
+            detail: "No logo yet. The header shows the name.",
+            status: "not_started",
+          };
+    },
+    confirmable: true,
+    id: "branding",
+    settingsHref: "/settings/organization",
+    summary:
+      "Your organization's name and logo, taken from your website or uploaded, and its color.",
+    title: "Logo and organization",
   },
   {
     check: async ({ settings }) => {
