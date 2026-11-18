@@ -7,8 +7,10 @@ import {
 
 // The organization's Google Workspace directory, read through the Admin SDK
 // Directory API with plain fetch and the shared credentials (credentials.ts):
-// people to suggest as recipients, and group membership for the
-// administrator group.
+// people to suggest as recipients, group membership for the administrator
+// group, and one person's own entry: whether the account is suspended, and
+// who their manager is (the "manager" relation an administrator sets in the
+// Admin console, or that an HR sync writes).
 //
 // Two ways to give the app read access, both read-only:
 //
@@ -93,6 +95,20 @@ export type DirectoryPerson = { email: string; name: string };
 
 export type DirectoryGroup = { email: string; name: string };
 
+/** One person's entry in the directory, as far as SignuDoc reads it. */
+export type DirectoryUser = {
+  /** Archived accounts cannot sign in, like suspended ones. */
+  archived: boolean;
+  email: string;
+  /**
+   * The address in the user's "manager" relation, lower-cased, or null when
+   * the directory names no manager.
+   */
+  managerEmail: string | null;
+  name: string;
+  suspended: boolean;
+};
+
 export interface DirectoryClient {
   /** Groups the user is a direct member of. */
   listUserGroups(email: string): Promise<DirectoryGroup[]>;
@@ -100,6 +116,12 @@ export interface DirectoryClient {
   isGroupMember(groupEmail: string, memberEmail: string): Promise<boolean>;
   /** Active people whose name or email address starts with the term. */
   searchUsers(term: string, limit?: number): Promise<DirectoryPerson[]>;
+  /**
+   * One person's entry, or null when Google has no such user (it never
+   * existed in this Workspace, or it was deleted). Any other failure throws
+   * a DirectoryError, so "could not ask" is never read as "gone".
+   */
+  getUser(email: string): Promise<DirectoryUser | null>;
 }
 
 type FetchLike = typeof fetch;
@@ -186,6 +208,37 @@ type UsersResponse = {
     suspended?: boolean;
   }>;
 };
+
+type UserResponse = {
+  archived?: boolean;
+  name?: { fullName?: string };
+  primaryEmail?: string;
+  relations?: Array<{ customType?: string; type?: string; value?: string }>;
+  suspended?: boolean;
+};
+
+/**
+ * The manager's address from a user's relations. Google keeps the manager
+ * as a relation of type "manager" whose value is the address. A relation
+ * with a custom type is the organization's own and is not read as one.
+ */
+export function managerFromRelations(
+  relations: UserResponse["relations"],
+): string | null {
+  for (const relation of relations ?? []) {
+    const value = relation.value?.trim().toLowerCase();
+
+    if (
+      relation.type === "manager" &&
+      value &&
+      /^[^@\s]+@[^@\s]+$/.test(value)
+    ) {
+      return value;
+    }
+  }
+
+  return null;
+}
 
 type GroupsResponse = {
   groups?: Array<{ email?: string; name?: string }>;
@@ -348,7 +401,41 @@ export function createDirectoryClient({
     });
   }
 
-  return { isGroupMember, listUserGroups, searchUsers };
+  async function getUser(email: string): Promise<DirectoryUser | null> {
+    const userKey = email.trim().toLowerCase();
+
+    return cached(`user|${userKey}`, async () => {
+      const params = new URLSearchParams({
+        fields: "primaryEmail,name/fullName,suspended,archived,relations",
+        projection: "basic",
+        viewType: "admin_view",
+      });
+      let body: UserResponse;
+
+      try {
+        body = (await get(
+          `/users/${encodeURIComponent(userKey)}?${params.toString()}`,
+          GOOGLE_SCOPES.directoryUserReadonly,
+        )) as UserResponse;
+      } catch (error) {
+        if (error instanceof DirectoryError && error.status === 404) {
+          return null;
+        }
+
+        throw error;
+      }
+
+      return {
+        archived: body.archived === true,
+        email: body.primaryEmail?.toLowerCase() ?? userKey,
+        managerEmail: managerFromRelations(body.relations),
+        name: body.name?.fullName ?? "",
+        suspended: body.suspended === true,
+      };
+    });
+  }
+
+  return { getUser, isGroupMember, listUserGroups, searchUsers };
 }
 
 type SharedDirectory = { client: DirectoryClient; key: string };

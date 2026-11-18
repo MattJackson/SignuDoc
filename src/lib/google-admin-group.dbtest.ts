@@ -94,6 +94,7 @@ function directoryWith(members: Set<string>, fail = false): DirectoryClient {
 
       return members.has(email);
     },
+    getUser: async () => null,
     listUserGroups: async () => [],
     searchUsers: async () => [],
   };
