@@ -464,6 +464,26 @@ async function afterPasswordSignIn(
   }
 }
 
+/**
+ * Marks a new session as signed in through the identity provider. A signer
+ * who confirms who they are with Google (google-signing.ts) is believed
+ * only on a session marked so: a password session of the same account says
+ * nothing about Google. A failure leaves the session unmarked, which only
+ * means it cannot be used for that.
+ */
+async function markSessionSignedInWithProvider(token: string) {
+  try {
+    await getDb().query(
+      `UPDATE public.session SET sign_in_method = 'sso' WHERE token = $1`,
+      [token],
+    );
+  } catch (error) {
+    if (!isMissingSchemaError(error)) {
+      console.error("[auth] Could not mark a single sign-on session:", error);
+    }
+  }
+}
+
 /** The identity provider sending someone back (auth/sso.ts). */
 function isProviderCallback(path: string | undefined): boolean {
   return path === "/callback/:id" || (path?.startsWith("/callback/") ?? false);
@@ -479,6 +499,7 @@ async function afterProviderSignIn(ctx: HookContext, returned: unknown) {
     typeof ctx.params?.id === "string" ? ctx.params.id : "unknown";
 
   if (session) {
+    await markSessionSignedInWithProvider(session.session.token);
     await record(ctx, {
       actorEmail: session.user.email,
       actorUserId: session.user.id,

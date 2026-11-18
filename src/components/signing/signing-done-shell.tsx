@@ -4,10 +4,15 @@ import { PublicLegalFooter } from "@/components/layout/public-legal-links";
 const fallbackEnvelopeTitle = "this document";
 
 type SigningDoneShellProps = {
+  /** An approver approved, rather than a signer signing. */
+  approved?: boolean;
   envelopeTitle?: string | null;
 };
 
-export function SigningDoneShell({ envelopeTitle }: SigningDoneShellProps) {
+export function SigningDoneShell({
+  approved = false,
+  envelopeTitle,
+}: SigningDoneShellProps) {
   const resolvedEnvelopeTitle =
     envelopeTitle && envelopeTitle.trim().length > 0
       ? envelopeTitle.trim()
@@ -50,7 +55,7 @@ export function SigningDoneShell({ envelopeTitle }: SigningDoneShellProps) {
             You&apos;re all done.
           </h1>
           <p className="mx-auto mt-4 max-w-[480px] text-base leading-7 text-(--secondary)">
-            Your signature has been recorded for{" "}
+            Your {approved ? "approval" : "signature"} has been recorded for{" "}
             <span className="font-bold text-(--fg)">
               &quot;{resolvedEnvelopeTitle}&quot;
             </span>

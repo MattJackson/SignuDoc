@@ -18,6 +18,19 @@
 --   'handed_over' when an envelope moves to another account because its
 --   sender left the organization (directory-sync.ts).
 --
+-- * signers.require_google_sign_in: the signer must be signed in to this
+--   site with Google, as the address the envelope was sent to, before the
+--   document opens (google-signing.ts). Set when the envelope is sent, for
+--   signers in the Workspace domains while the setting says so, and kept
+--   with the signer so a later change of the setting does not change the
+--   rules an envelope went out under.
+--
+-- * session.sign_in_method: how a session was signed in, 'sso' for the
+--   organization's identity provider. Written when the provider sends
+--   someone back (auth/sign-in-events.ts); null for a password sign-in and
+--   for every session from before this migration. Only a session marked
+--   'sso' confirms a signer's identity with Google.
+--
 -- A copy of the app from before this migration still runs on this database
 -- as long as no approver has been added: it reads signers by role 'signer'
 -- and would leave an approver out of the signing order. Roll back past this
@@ -46,6 +59,12 @@ alter table public.signers
       role in ('signer', 'approver')
       or (status = 'pending' and signing_token_hash is null)
     );
+
+alter table public.signers
+  add column if not exists require_google_sign_in boolean not null default false;
+
+alter table public.session
+  add column if not exists sign_in_method text;
 
 -- An approver places no fields. Checked when fields are saved and when the
 -- envelope is sent; this keeps a row written by hand from slipping through.
