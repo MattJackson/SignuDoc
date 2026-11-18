@@ -317,3 +317,36 @@ test("a run that is not set up says so before it touches anything", async () => 
   );
   assert.equal(asked, 0);
 });
+
+test("the scheduler's status says whether a sync that could not run or stopped early failed", async () => {
+  const { directorySyncHttpStatus } =
+    (await import("./directory-sync.ts")) as Record<string, unknown> as {
+      directorySyncHttpStatus: (outcome: unknown) => number;
+    };
+  const ran = {
+    accounts: [],
+    counts: {},
+    dryRun: false,
+    maxPerRun: 100,
+    moreToCheck: false,
+    ranAt: 0,
+    status: "ran",
+    stoppedEarly: false,
+  };
+
+  assert.equal(
+    directorySyncHttpStatus({
+      reason: "no_directory",
+      status: "not_configured",
+    }),
+    503,
+  );
+  assert.equal(directorySyncHttpStatus({ status: "no_domains" }), 503);
+  assert.equal(
+    directorySyncHttpStatus({ reason: "off", status: "not_configured" }),
+    200,
+  );
+  assert.equal(directorySyncHttpStatus({ status: "already_running" }), 200);
+  assert.equal(directorySyncHttpStatus(ran), 200);
+  assert.equal(directorySyncHttpStatus({ ...ran, stoppedEarly: true }), 502);
+});

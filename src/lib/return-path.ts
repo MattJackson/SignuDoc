@@ -15,11 +15,9 @@ function hasSpaceOrControl(value: string): boolean {
   return false;
 }
 
-export function safeReturnPath(
-  value: string | null | undefined,
-  fallback: string,
-): string {
+export function safeReturnPath(value: unknown, fallback: string): string {
   if (
+    typeof value !== "string" ||
     !value ||
     !value.startsWith("/") ||
     value.startsWith("//") ||

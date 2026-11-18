@@ -129,3 +129,23 @@ export function integrationForStep(stepId: string): IntegrationInfo | null {
     INTEGRATIONS.find((integration) => integration.step === stepId) ?? null
   );
 }
+
+/**
+ * How many of the integrations in the groups shown are connected, and how
+ * many there are, so a count never includes a card that is not on the page.
+ */
+export function countConnected(
+  states: Readonly<Record<IntegrationId, { status: ConnectionStatus }>>,
+  groups: readonly IntegrationInfo["group"][],
+): { connected: number; total: number } {
+  const shown = INTEGRATIONS.filter((integration) =>
+    groups.includes(integration.group),
+  );
+
+  return {
+    connected: shown.filter(
+      (integration) => states[integration.id].status === "connected",
+    ).length,
+    total: shown.length,
+  };
+}

@@ -333,3 +333,23 @@ test("a directory request with no answer is given up on", async () => {
     DirectoryError,
   );
 });
+
+test("settings that cannot be read are an error, not a directory that is off", async () => {
+  const { resolveDirectoryForSearch } =
+    (await import("./directory.ts")) as Record<string, unknown> as {
+      resolveDirectoryForSearch: (
+        loadSettings: () => Promise<null>,
+        env: Record<string, string | undefined>,
+      ) => Promise<{ client?: unknown; error?: string }>;
+    };
+  const result = await resolveDirectoryForSearch(async () => {
+    throw new Error("database is down");
+  }, {});
+
+  assert.equal(result.error, "database is down");
+  assert.equal(result.client, undefined);
+
+  assert.deepEqual(await resolveDirectoryForSearch(async () => null, {}), {
+    client: null,
+  });
+});

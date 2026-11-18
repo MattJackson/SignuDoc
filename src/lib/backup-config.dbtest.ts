@@ -349,3 +349,53 @@ test("a second run waits for the first, and a turned-off schedule skips", async 
 
   assert.equal(runs.find((run) => run.id === "busy")?.status, "failed");
 });
+
+test("the run slot is claimed only when a run is about to start", async () => {
+  let claims = 0;
+  const claimSlot = async () => {
+    claims += 1;
+
+    return false;
+  };
+  const run = () =>
+    runConfiguredBackup({
+      claimSlot,
+      createSource: () => memoryStore(),
+      createTarget: () => memoryStore(),
+      database,
+      deadline: Date.now() + 60_000,
+      env,
+      trigger: "schedule",
+    });
+
+  // Nothing chosen yet: not configured, and the slot is not spent.
+  assert.deepEqual(await run(), { status: "not_configured" });
+  assert.equal(claims, 0);
+
+  // Chosen but switched off: disabled, and the slot is not spent.
+  await saveBackupConfig(
+    actor,
+    {
+      destination: { bucket: "acme-backups", kind: "gcs", prefix: "" },
+      enabled: false,
+      keepDays: 30,
+    },
+    { database, env },
+  );
+  assert.deepEqual(await run(), { status: "disabled" });
+  assert.equal(claims, 0);
+
+  // Ready to run: the slot is claimed once, and a refusal starts no run.
+  await saveBackupConfig(
+    actor,
+    {
+      destination: { bucket: "acme-backups", kind: "gcs", prefix: "" },
+      enabled: true,
+      keepDays: 30,
+    },
+    { database, env },
+  );
+  assert.deepEqual(await run(), { status: "busy" });
+  assert.equal(claims, 1);
+  assert.equal((await listBackupRuns(10, database)).length, 0);
+});

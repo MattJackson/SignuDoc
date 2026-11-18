@@ -428,6 +428,27 @@ export type DirectorySyncOutcome =
       stoppedEarly: boolean;
     };
 
+/**
+ * The HTTP status a scheduler should see for an outcome: a sync that is turned
+ * on but cannot run, or that stopped because the directory failed, shows as
+ * failed there.
+ */
+export function directorySyncHttpStatus(outcome: DirectorySyncOutcome): number {
+  if (outcome.status === "no_domains") {
+    return 503;
+  }
+
+  if (outcome.status === "not_configured") {
+    return outcome.reason === "no_directory" ? 503 : 200;
+  }
+
+  if (outcome.status === "ran" && outcome.stoppedEarly) {
+    return 502;
+  }
+
+  return 200;
+}
+
 export type RunDirectorySyncOptions = {
   database?: DbPool;
   /** Replaced in tests. Null means the directory is not set up. */

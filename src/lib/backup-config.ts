@@ -664,6 +664,7 @@ export type BackupRunOutcome =
  * the daily call and by "Run backup now".
  */
 export async function runConfiguredBackup({
+  claimSlot,
   createSource = () => createAppFilesStore(),
   createTarget = (target: BackupTarget) => createBackupTargetStore(target),
   database = getDb(),
@@ -671,6 +672,11 @@ export async function runConfiguredBackup({
   env = process.env,
   trigger,
 }: {
+  /**
+   * Called once a run is about to start, after the checks that decide whether
+   * one can happen at all. Returning false skips the run, reported as busy.
+   */
+  claimSlot?: () => Promise<boolean>;
   createSource?: () => BackupStore;
   createTarget?: (target: BackupTarget) => BackupStore;
   database?: DbPool;
@@ -706,6 +712,10 @@ export async function runConfiguredBackup({
           : "The backup Blob token is for this install's own store.",
       status: "misconfigured",
     };
+  }
+
+  if (claimSlot && !(await claimSlot())) {
+    return { status: "busy" };
   }
 
   const id = await startRun(trigger, config.target, database);

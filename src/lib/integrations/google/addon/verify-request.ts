@@ -71,16 +71,13 @@ function tokenProblem(error: unknown): string | null {
   return error instanceof IdTokenError ? error.problem : null;
 }
 
-/**
- * Google's signing keys could not be read: nothing is known about the
- * request, so it is not called forged. The error passes on as it is, and the
- * route answers it as a server problem without counting it against the
- * caller's failures.
- */
-function rethrowKeysUnavailable(error: unknown): void {
-  if (error instanceof IdTokenError && error.problem === "keys_unavailable") {
-    throw error;
-  }
+// Not being able to fetch Google's keys is the server's trouble, not a bad
+// request: it passes through as it is, so the route answers 500 and does not
+// count it against the caller.
+function isInfrastructureFailure(error: unknown): boolean {
+  return (
+    !(error instanceof IdTokenError) || error.problem === "keys_unavailable"
+  );
 }
 
 /** Throws AddonRequestError unless Google sent the request for a known user. */
@@ -122,11 +119,9 @@ export async function authenticateAddonRequest({
       );
     }
   } catch (error) {
-    if (error instanceof AddonRequestError) {
+    if (error instanceof AddonRequestError || isInfrastructureFailure(error)) {
       throw error;
     }
-
-    rethrowKeysUnavailable(error);
 
     throw new AddonRequestError(
       "not_from_google",
@@ -145,7 +140,9 @@ export async function authenticateAddonRequest({
       token: userIdToken,
     });
   } catch (error) {
-    rethrowKeysUnavailable(error);
+    if (isInfrastructureFailure(error)) {
+      throw error;
+    }
 
     throw new AddonRequestError(
       "no_user",

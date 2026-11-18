@@ -8,6 +8,8 @@ import {
   managerPolicyAppliesTo,
 } from "@/lib/manager-policy";
 import { readStoredSettings } from "@/lib/settings";
+import { logRouteError } from "@/lib/security/logging";
+import { getClientIpAddress, getRequestPathname } from "@/lib/security/request";
 import {
   applyRateLimit,
   buildRateLimitKey,
@@ -40,25 +42,40 @@ export async function GET(request: Request) {
     return limited;
   }
 
-  const [policy, settings] = await Promise.all([
-    loadManagerPolicy(),
-    readStoredSettings(),
-  ]);
-  const part11 = settings?.part11Mode ?? false;
-  const applies =
-    !part11 && (await managerPolicyAppliesTo(session.user.id, policy));
-  const found = await findSenderManager(session.user.email);
+  try {
+    const [policy, settings] = await Promise.all([
+      loadManagerPolicy(),
+      readStoredSettings(),
+    ]);
+    const part11 = settings?.part11Mode ?? false;
+    const applies =
+      !part11 && (await managerPolicyAppliesTo(session.user.id, policy));
+    const found = await findSenderManager(session.user.email);
 
-  return NextResponse.json(
-    {
-      // Approvers are not offered in Part 11 mode, so neither is this.
-      available: !part11,
-      manager: found.status === "found" ? found.manager : null,
-      message:
-        found.status === "found" ? null : describeSenderManagerProblem(found),
-      policy: applies ? policy.mode : "off",
-      status: found.status,
-    },
-    { headers: { "cache-control": "private, no-store" } },
-  );
+    return NextResponse.json(
+      {
+        // Approvers are not offered in Part 11 mode, so neither is this.
+        available: !part11,
+        manager: found.status === "found" ? found.manager : null,
+        message:
+          found.status === "found" ? null : describeSenderManagerProblem(found),
+        policy: applies ? policy.mode : "off",
+        status: found.status,
+      },
+      { headers: { "cache-control": "private, no-store" } },
+    );
+  } catch (error) {
+    logRouteError(error, {
+      category: "directory_manager_failure",
+      ipAddress: getClientIpAddress(request.headers),
+      message: "The sender's manager could not be looked up.",
+      path: getRequestPathname(request),
+      userId: session.user.id,
+    });
+
+    return NextResponse.json(
+      { error: "Your manager could not be looked up." },
+      { status: 500 },
+    );
+  }
 }
