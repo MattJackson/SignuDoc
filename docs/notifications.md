@@ -21,7 +21,25 @@ Nothing is sent until an administrator sets a channel up, and email works as bef
 | No activity        | Nobody has opened or signed it for a number of days (7 by default). | Yes                       |
 | Backup failed      | The daily backup failed or left files out. Administrators only.     | Yes                       |
 
-A message names the envelope by its title, says what happened and who did it (a signer's name and address), where the envelope stands (status, how many have signed, the sender, the deadline), and has a button that opens the envelope here. It never carries the document, a field's value or a decline reason: whoever can read the channel is sent to SignuDoc, which checks who they are, for anything more.
+Every message has the same layout. Your organization's name (and logo, when the site is on https and has one) is at the top. Below it, a coloured bar: blue for progress, green when done, amber for a warning, red when something went wrong, grey for a voided envelope. Then one line in plain words, such as "Alex Chen signed **Acme MSA** — 2 of 3 signed", where the envelope stands (status, the sender, the deadline, when it happened), and buttons:
+
+- **Open envelope** on every envelope message.
+- **View certificate** when an envelope is completed.
+- **Send reminder** on "Deadline coming up" and "No activity", in the sender's own direct message. It opens the envelope, where the reminder is sent.
+
+The buttons are plain links. A message never carries the document, a field's value or a reason someone gave for declining or rejecting: whoever can read the channel is sent to SignuDoc, which checks who they are, for anything more. Settings, Notifications shows a preview of each kind of message, with your organization's name and logo.
+
+### One message per envelope
+
+- **In a channel**, the first post about an envelope starts a thread. Later events reply in that thread, and the first post is edited to show where the envelope stands now. So a channel has one message per envelope, always up to date.
+- **In a direct message**, progress (sent, opened, signed, approved, voided) edits one message per envelope, such as "2 of 3 signed". Slack does not notify for an edit. A new message arrives only when something needs the sender: completed, declined, rejected, expired, a deadline coming up, or no activity. That also brings the progress message up to date.
+
+If someone deletes the first post or the progress message, the next event posts a new one.
+
+### Fewer messages
+
+- **Bursts.** A signature, an approval or an opening waits a minute before it is sent. If another event about the same envelope comes for the same place in that minute, only the newest is sent, since every message shows the envelope as it is now. Three people signing in a row make one message, not three. Completed, declined and the other outcomes do not wait.
+- **Your own actions.** Nobody gets a direct message about something they did themselves: a sender who signs their own envelope is not told they signed it. Channels still hear about it, and outcomes such as "completed" still reach everyone.
 
 "Deadline coming up" is sent once per deadline (moving the deadline and coming close again sends it again), and "No activity" once per envelope. Activity is anything in the envelope's audit trail except the emails and reminders SignuDoc itself sent. Only envelopes sent in the last 90 days are checked for activity, so turning notifications on does not announce every forgotten envelope.
 
@@ -38,11 +56,11 @@ Slack finds a person by the email address of their account here (`users.lookupBy
 
 Under Settings, Notifications (also a step of onboarding):
 
-1. **Create the app.** Open [api.slack.com/apps](https://api.slack.com/apps?new_app=1), choose From a manifest, pick your workspace, and paste the manifest the page shows. It is filled in with your organization's name and this site's address.
+1. **Create the app.** Open [api.slack.com/apps](https://api.slack.com/apps?new_app=1), choose From a manifest, pick your workspace, and paste the manifest the page shows. It is filled in with your organization's name (or SignuDoc), a description, this site's address, and your brand colour when white text reads well on it. Slack does not take an icon in a manifest, so the page has a "Download app icon (512×512)" link: your logo, or SignuDoc's mark when there is none. In Slack, open your app's Basic Information page, then Display Information, and upload it.
 2. **Install it and paste the token.** Under Install App, install it to your workspace and copy the Bot User OAuth Token (`xoxb-...`) into the page. It is stored encrypted, like the other secrets in Settings, and never shown again. `SLACK_BOT_TOKEN`, when set, wins and the page shows the token as fixed.
 3. **Test the connection.** The page asks Slack (`auth.test`) which workspace the token belongs to.
 4. **Direct messages** are on once the token is saved. Turn them off to only post to channels. "Send me a test message" checks that Slack finds you.
-5. **Invite the app to each channel** that should get posts (`/invite @AppName` in the channel), then add a rule for it. The page lists public channels to pick from; for a private channel, invite the app and paste the channel's ID from its details.
+5. **Invite the app to each channel** that should get posts (`/invite @AppName` in the channel), then add a rule for it. The page lists public channels to pick from; for a private channel, invite the app and paste the channel's ID from its details. Each rule has a "Send test" button that posts a sample of its first event to the channel and says what Slack answered.
 
 ### Why these scopes
 
@@ -55,16 +73,18 @@ The manifest asks for four bot scopes and nothing else:
 | `users:read.email` | Find a person by their email address, for direct messages.                                                                                   |
 | `channels:read`    | List public channels to pick from when making a rule. Private channels are pasted by ID instead, so `groups:read` is not needed.             |
 
-The app has no event subscriptions, slash commands or interactivity, and cannot read messages. The button in a message is a plain link.
+The app has no event subscriptions, slash commands or interactivity, and cannot read messages. The buttons in a message are plain links. `chat:write` also lets it edit its own messages, which is how a thread's first post and a progress message stay up to date.
 
 ## How delivery works
 
 1. Every envelope audit event is queued in `notification_events` by a database trigger, in the audit event's own transaction. So an event that is recorded is never missed, and one that is rolled back is never announced. The notifications job queues its own events (deadlines, idle envelopes, failed backups) the same way, each under a key that makes it happen once.
-2. Right after a request that recorded an audit event, the app turns queued events into deliveries (`notification_deliveries`, one per person or channel, unique, so never two to the same place) and sends them. On Vercel this runs in `after()`, once the response has gone.
+2. Right after a request that recorded an audit event, the app turns queued events into deliveries (`notification_deliveries`, one per person or channel, unique, so never two to the same place) and sends them. On Vercel this runs in `after()`, once the response has gone. A signature waits a minute (see Fewer messages), so that run waits for it, up to three times, rather than leave it for the next scheduled run.
 3. A failed send is tried again 1, 2, 4... minutes later, up to six hours apart, eight times in all. When Slack asks to slow down (HTTP 429), its `Retry-After` is kept and nothing more goes to Slack until it has passed; that does not count as a try. A channel that does not exist, or that the app was never invited to, fails at once. Only Slack's HTTP status and error code are kept, never what else it sent back.
 4. `/api/internal/notifications` runs the whole job: it notices deadlines, idle envelopes and failed backups, and sends whatever is due, retries included. See [Notifications](self-hosting.md#notifications) in the self-hosting guide for scheduling it.
 
-Delivery is at least once: a run cut off between Slack taking a message and the app noting it sends that message again later. Events older than three days that were never processed (notifications switched off, say) are dropped rather than announced late. Processed events are deleted after 30 days.
+5. Before a delivery posts or edits an envelope's message in a place, it takes a short lease on that message (`notification_threads`). So two runs never both start a thread for the same envelope. A delivery that finds the lease taken waits five seconds, which does not count as a try. A delivery left behind by a burst is marked skipped as "superseded"; the page counts those as combined into a later message.
+
+Delivery is at least once: a run cut off between Slack taking a message and the app noting it sends that message again later. Events older than three days that were never processed (notifications switched off, say) are dropped rather than announced late. Processed events are deleted after 30 days, and a thread nobody has touched for 90 days is forgotten.
 
 ## Settings and environment variables
 
@@ -79,8 +99,8 @@ Every change of these settings and of the rules is recorded in the install's aud
 
 ## Adding a channel
 
-A channel is an implementation of `NotificationChannel` (`src/lib/notifications/channel.ts`): how it says whether it is set up, how it finds a person by email, and how it sends a message to an address. Add it to `registry.ts` and give it a setup section on the page; the outbox, the rules and everyone's choices already work for any channel by its id.
+A channel is an implementation of `NotificationChannel` (`src/lib/notifications/channel.ts`): how it says whether it is set up, how it finds a person by email, and how it sends a message to an address. `send` is told where the message goes (a thread in a channel, one message edited in place, or a new message) and the message to edit or reply to, and returns the message to remember; a tool without threads or edits can post a new message every time and return none. Add it to `registry.ts` and give it a setup section on the page; the outbox, the rules and everyone's choices already work for any channel by its id.
 
 ## Adding an event
 
-Add the kind to `notificationEventKinds` and `NOTIFICATION_EVENTS` in `src/lib/notifications/events.ts`, with the audit event it comes from, and its headline in `message.ts`. A new kind of envelope audit event is already queued by the trigger; no migration is needed. The pages, the rules and the choices list whatever is in `events.ts`.
+Add the kind to `notificationEventKinds` and `NOTIFICATION_EVENTS` in `src/lib/notifications/events.ts`, with the audit event it comes from, its headline and tone in `message.ts`, and its emoji in `slack/layout.ts`. Say in `events.ts` whether it edits the progress message (`IN_PLACE_KINDS`) and whether it waits for a burst (`BURST_KINDS`). A new kind of envelope audit event is already queued by the trigger; no migration is needed. The pages, the rules and the choices list whatever is in `events.ts`.
