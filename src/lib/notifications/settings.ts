@@ -342,7 +342,29 @@ export async function saveNotificationSettings(
     update["notifications.stuckDays"] = String(input.stuckDays);
   }
 
+  const tokenChange = update[SLACK_TOKEN_SETTING];
+  const previousToken =
+    tokenChange === undefined
+      ? undefined
+      : (await getIntegrationSettings(env))[SLACK_TOKEN_SETTING];
+
   await saveIntegrationSettings(update, actor, { area: "notifications", env });
+
+  // The people and messages remembered belong to the workspace the old
+  // token was for; a new token may be for another one.
+  if (
+    tokenChange !== undefined &&
+    (tokenChange ?? undefined) !== previousToken
+  ) {
+    const database = getDb();
+
+    await database.query(
+      `DELETE FROM notification_identities WHERE channel = 'slack'`,
+    );
+    await database.query(
+      `DELETE FROM notification_threads WHERE channel = 'slack'`,
+    );
+  }
 
   return getNotificationsAdminView(env);
 }
@@ -364,11 +386,20 @@ const SLACK_ERROR_WORDS: Record<string, string> = {
   ratelimited: "Slack asked to slow down. Try again in a minute.",
   token_revoked:
     "The token was revoked. Reinstall the app and paste the new token.",
+  invalid_response: "Slack sent back something that could not be read.",
+  network_error: "Slack could not be reached. Check the network and try again.",
+  timeout: "Slack did not answer in time. Try again in a minute.",
   users_not_found:
     "Slack has nobody with your email address. Your Slack account needs the same address as this one.",
 };
 
 export function describeSlackError(code: string): string {
+  const status = /^http_(\d{3})$/.exec(code);
+
+  if (status) {
+    return `Slack could not be reached properly (HTTP ${status[1] ?? ""}).`;
+  }
+
   return SLACK_ERROR_WORDS[code] ?? `Slack answered with the error "${code}".`;
 }
 
