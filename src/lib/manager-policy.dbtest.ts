@@ -415,6 +415,8 @@ test("correcting a sent approver cannot replace the manager the rule requires", 
     `select id from signers where envelope_id = $1 and role = 'approver'`,
     [draft.envelopeId],
   );
+  // Not written inline: the option for the directory arrives with the fix.
+  const correctionOptions = { database, directory };
   const previous = process.env.MANAGER_APPROVAL;
 
   process.env.MANAGER_APPROVAL = "require";
@@ -427,7 +429,7 @@ test("correcting a sent approver cannot replace the manager the rule requires", 
         approver.rows[0]!.id,
         { email: `mine-${randomUUID()}@example.test` },
         { senderEmail: draft.senderEmail, senderName: "Sam Sender" },
-        { database, directory },
+        correctionOptions,
       ),
       (error: unknown) =>
         error instanceof EnvelopeMutationError && error.statusCode === 409,
