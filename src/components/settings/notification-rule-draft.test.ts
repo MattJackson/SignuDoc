@@ -10,7 +10,7 @@ import {
 const rule = {
   destination: "C123",
   destinationName: "#sales",
-  events: ["envelope_completed"],
+  events: ["envelope_completed" as const],
   id: "rule-1",
   teamId: null,
 };
