@@ -63,6 +63,7 @@ test("the steps come in the order onboarding walks them", () => {
       "branding",
       "organization",
       "email",
+      "google-workspace",
       "google-sign-in",
       "google-directory",
       "people",
@@ -520,6 +521,35 @@ test("the branding step is done with a logo, or once it is skipped on purpose", 
   );
   assert.equal(
     await check("branding", context({ marks: { branding: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the Google Workspace step wants sign-in, the customer ID and the Picker", async () => {
+  assert.equal(await check("google-workspace", context()), "not_started");
+
+  const signIn = {
+    "sso.clientId": "client.apps.googleusercontent.com",
+    "sso.clientSecret": "secret",
+    "sso.issuer": "https://accounts.google.com",
+  };
+
+  assert.equal(
+    await check("google-workspace", context({ stored: signIn })),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "google-workspace",
+      context({
+        stored: {
+          ...signIn,
+          "drive.appId": "123456789012",
+          "drive.pickerApiKey": "AIzaKey",
+          "google.customerId": "C01ab2cd3",
+        },
+      }),
+    ),
     "done",
   );
 });

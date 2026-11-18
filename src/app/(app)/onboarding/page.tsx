@@ -7,6 +7,10 @@ import { getGoogleDriveView } from "@/lib/google-drive";
 import { getGoogleAddonView } from "@/lib/google-addon";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import {
+  describeSetupTarget,
+  toSetupTargetView,
+} from "@/lib/google-workspace-setup";
+import {
   getOnboardingState,
   isOnboardingStepId,
   type OnboardingStepId,
@@ -41,6 +45,7 @@ export default async function OnboardingPage({
     stored,
     backups,
     seal,
+    googleSetup,
   ] = await Promise.all([
     getOnboardingState(),
     getGoogleWorkspaceView(),
@@ -49,6 +54,7 @@ export default async function OnboardingPage({
     readStoredSettings(),
     getBackupSettingsView(),
     getSealSettingsView(),
+    describeSetupTarget(),
   ]);
   // With no step named, the first one not done yet.
   const current: OnboardingStepId | "done" =
@@ -65,6 +71,7 @@ export default async function OnboardingPage({
         backups,
         googleDrive,
         googleAddon,
+        googleSetup: toSetupTargetView(googleSetup),
         googleWorkspace,
         organization: toOrganizationSettingsView(resolveSettings(stored)),
         seal,

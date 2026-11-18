@@ -15,6 +15,25 @@ There are eight parts. Only the first is needed for sign-in. Parts 4 to 6 are se
 7. [Google Drive](#7-google-drive): start envelopes from Drive, and keep executed copies in a Shared Drive
 8. [The Gmail and Drive add-on](#8-the-gmail-and-drive-add-on): send for signature from the side panel
 
+## Setting it up: automatic or manual
+
+Onboarding starts by asking what the app should be called (such as BusbarSigner) and for the organization's logo, which can be taken from its own website. The app name is then suggested everywhere Google or Slack asks for one. The **Google Workspace** step (also at `/settings/google-setup`, and **Run automatic setup** in each Google panel in Settings) then offers two ways:
+
+**Automatic.** Google has no API for the consent screen or the OAuth client, so step A is one copy-paste: create the consent screen (**Internal**) and a **Web application** client with this site's origin and all three redirect URIs (sign-in `/api/auth/callback/sso`, Drive `/api/google/drive/callback`, setup `/settings/google-setup`), and paste the client ID and secret. Step B signs in once, through that client, as a Workspace super admin who can also change the Cloud project (an Owner). The server then, showing each step as it goes:
+
+- a. turns on the APIs the app uses (Service Usage `services:batchEnable`): Admin SDK, Drive, Picker, Drive Labels, API Keys, IAM, IAM Credentials, Cloud Resource Manager;
+- b. creates the `<app> Picker` browser key, held to the Picker API and `https://<your site>/*` (API Keys API), and saves it with the project number;
+- c. reads and saves the Workspace customer ID (Admin SDK `customers.get`);
+- d. creates the `<app> directory reader` admin role (Users, Read and Groups, Read) and assigns it to the site's service account (Admin SDK roles and role assignments; the account's unique ID from IAM), and turns directory suggestions on;
+- e. creates the `<app> Executed` Shared Drive, if executed copies are wanted, with the service account as Content manager;
+- f. runs the directory, admin group and Shared Drive tests with the site's own service account.
+
+The token is used only during that request, revoked at the end (`https://oauth2.googleapis.com/revoke`) and never stored. Every step keeps what is already in place, so the setup can be run again to fix anything. It stops if the account is not a super admin or cannot change the project. The scopes asked for are `cloud-platform`, `admin.directory.rolemanagement`, `admin.directory.user.readonly`, `admin.directory.customer.readonly` and, with a Shared Drive, `drive`.
+
+**Manual.** The same steps a to f, each a project-scoped link, the values to copy, a field to paste into and a test. The parts below describe each in full.
+
+Drive's **Open with** (Drive UI integration) and the Marketplace listing have no API either; they stay an optional manual step (sections 7 and 8).
+
 ## 1. Google sign-in
 
 ### Create the OAuth client
@@ -23,7 +42,7 @@ In the [Google Cloud console](https://console.cloud.google.com), in the project 
 
 1. Open **Google Auth Platform**. A project needs a consent screen before it can have a client: if it has none, choose **Get started**, give the app name and a support address, choose **Internal** under **Audience**, add a contact address and choose **Create**. Only accounts in your Workspace can then use the client, and Google does not need to review the app.
 2. Open **Clients**, choose **Create client**, and pick **Web application**.
-3. Under **Authorized redirect URIs**, add `https://<your site>/api/auth/callback/sso`. The page in Settings shows the exact value for your site, with a copy button. It is built from `APP_URL` (or `BETTER_AUTH_URL`); if the site does not know its own address yet, set one of those.
+3. Under **Authorized redirect URIs**, add `https://<your site>/api/auth/callback/sso`, and also `/api/google/drive/callback` and `/settings/google-setup` on the same site, so Drive and the automatic setup work without coming back here. The page in Settings shows the exact value for your site, with a copy button. It is built from `APP_URL` (or `BETTER_AUTH_URL`); if the site does not know its own address yet, set one of those.
 4. The scopes are the basic ones, `openid`, `email` and `profile`. Nothing else is asked for.
 5. Copy the **client ID** and **client secret**.
 

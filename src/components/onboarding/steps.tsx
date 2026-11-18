@@ -7,6 +7,7 @@ import { BackupSettingsSection } from "@/components/settings/backup-settings-sec
 import { BrandingPanel } from "@/components/settings/branding-panel";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
 import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
+import { GoogleWorkspaceSetup } from "@/components/settings/google-setup";
 import { GoogleAddonSection } from "@/components/settings/google-addon-panel";
 import {
   GoogleDirectorySection,
@@ -20,6 +21,7 @@ import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleAddonView } from "@/lib/google-addon";
 import { PeopleSettingsForm } from "@/components/settings/people-settings-panel";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
+import type { SetupTargetView } from "@/lib/google-workspace-setup";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
 import type { SealSettingsView } from "@/lib/seal-setup";
@@ -33,6 +35,7 @@ export type OnboardingData = {
   backups: BackupSettingsView;
   googleDrive: GoogleDriveView;
   googleAddon: GoogleAddonView;
+  googleSetup: SetupTargetView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   seal: SealSettingsView;
@@ -387,6 +390,18 @@ function EmailStep({ onChanged }: StepFormProps) {
   return <EmailSetupPanel onStatusChange={() => onChanged()} />;
 }
 
+function GoogleWorkspaceStep({ data, onChanged }: StepFormProps) {
+  return (
+    <GoogleWorkspaceSetup
+      drive={data.googleDrive}
+      onChanged={onChanged}
+      returnTo="/onboarding?step=google-workspace"
+      target={data.googleSetup}
+      workspace={data.googleWorkspace}
+    />
+  );
+}
+
 function GoogleSignInStep({ data }: StepFormProps) {
   const workspace = useGoogleWorkspace(data.googleWorkspace);
 
@@ -536,6 +551,7 @@ export const STEP_FORMS: Record<
   "google-directory": GoogleDirectoryStep,
   "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
+  "google-workspace": GoogleWorkspaceStep,
   name: NameStep,
   notifications: NotificationsStep,
   organization: OrganizationStep,

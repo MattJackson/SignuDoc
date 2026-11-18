@@ -46,6 +46,7 @@ export type OnboardingStepId =
   | "branding"
   | "organization"
   | "email"
+  | "google-workspace"
   | "google-sign-in"
   | "google-directory"
   | "people"
@@ -203,6 +204,40 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "Connect Resend, verify the sending domain, and send yourself a test email.",
     title: "Email",
+  },
+  {
+    check: async ({ env, stored }) => {
+      const sso = readSsoConfig(env, stored);
+
+      if (!sso?.google) {
+        return {
+          detail: "Not set up yet: choose Automatic or Manual.",
+          status: "not_started",
+        };
+      }
+
+      const missing = [
+        readDirectoryConfig(env, stored).customer === "my_customer"
+          ? "the customer ID"
+          : null,
+        readPickerConfig(env, stored).ready ? null : "the Picker key",
+      ].filter(Boolean);
+
+      return missing.length === 0
+        ? {
+            detail: "Sign-in, the directory and the Drive Picker are set up.",
+            status: "done",
+          }
+        : {
+            detail: `Google sign-in works; still missing ${missing.join(" and ")}. Run the automatic setup, or finish the manual steps.`,
+            status: "needs_attention",
+          };
+    },
+    id: "google-workspace",
+    settingsHref: "/settings/google-setup",
+    summary:
+      "Set up Google sign-in, the Workspace directory, the Drive Picker and a Shared Drive, automatically with one super admin sign-in, or step by step.",
+    title: "Google Workspace",
   },
   {
     check: async ({ env, stored }) => {

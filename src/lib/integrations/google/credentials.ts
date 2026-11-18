@@ -131,6 +131,40 @@ export async function readGoogleProjectNumber({
   }
 }
 
+const PROJECT_ID_URL =
+  "http://metadata.google.internal/computeMetadata/v1/project/project-id";
+
+/**
+ * The ID of the Google Cloud project the app runs in, from the metadata
+ * server, or GOOGLE_CLOUD_PROJECT. Null when neither is there; never throws.
+ */
+export async function readGoogleProjectId({
+  env = process.env,
+  fetchImpl = fetch,
+}: { env?: EnvSource; fetchImpl?: FetchLike } = {}): Promise<string | null> {
+  const fromEnv = readEnv(env, "GOOGLE_CLOUD_PROJECT");
+
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  if (!isOnGoogleCloud(env)) {
+    return null;
+  }
+
+  try {
+    const response = await fetchImpl(PROJECT_ID_URL, {
+      headers: { "Metadata-Flavor": "Google" },
+      signal: AbortSignal.timeout(PROJECT_NUMBER_TIMEOUT_MS),
+    });
+    const id = response.ok ? (await response.text()).trim() : "";
+
+    return /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Forgets the cached project number, for tests. */
 export function resetGoogleProjectNumberCache() {
   cachedProjectNumber = null;

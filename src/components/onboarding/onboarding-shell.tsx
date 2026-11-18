@@ -62,6 +62,10 @@ function stepBrand(
   step: OnboardingStepState,
   storageDriver: string | null,
 ): BrandId | null {
+  if (step.id === "google-workspace") {
+    return "google";
+  }
+
   if (step.id === "storage") {
     return storageDriver === "gcs"
       ? "google-cloud"

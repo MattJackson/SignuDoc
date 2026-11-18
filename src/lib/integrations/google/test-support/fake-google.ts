@@ -15,6 +15,7 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { handleCloud } from "./fake-cloud.ts";
 import { handleDirectory } from "./fake-directory.ts";
 import { handleDrive } from "./fake-drive.ts";
 import {
@@ -44,7 +45,8 @@ import {
 // sign-in (OpenID Connect discovery, the authorization page, the token
 // endpoint, JWKS and userinfo), service account tokens (the JWT bearer
 // grant, with domain-wide delegation, and IAM signJwt), the Admin SDK
-// directory (fake-directory.ts) and Drive (fake-drive.ts). One plain Node
+// directory (fake-directory.ts), Drive (fake-drive.ts), and the Cloud and
+// Admin SDK calls of the automatic Workspace setup (fake-cloud.ts). One plain Node
 // HTTP server on 127.0.0.1, no dependencies.
 //
 // The app is pointed at it with GOOGLE_OAUTH_BASE_URL and
@@ -948,7 +950,11 @@ ${accounts}
       return;
     }
 
-    if (handleDirectory(context) || handleDrive(context)) {
+    if (
+      handleCloud(context) ||
+      handleDirectory(context) ||
+      handleDrive(context)
+    ) {
       return;
     }
 
