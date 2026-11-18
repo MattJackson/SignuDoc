@@ -23,7 +23,7 @@ export const EMPTY_RULE: RuleDraft = {
 export function draftFromRule(rule: {
   destination: string;
   destinationName: string | null;
-  enabled: boolean;
+  enabled?: boolean;
   events: NotificationEventKind[];
   id: string;
   teamId: string | null;
@@ -31,7 +31,7 @@ export function draftFromRule(rule: {
   return {
     destination: rule.destination,
     destinationName: rule.destinationName ?? "",
-    enabled: rule.enabled,
+    enabled: rule.enabled ?? true,
     events: rule.events,
     id: rule.id,
     teamId: rule.teamId ?? "",
