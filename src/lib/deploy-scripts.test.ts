@@ -28,6 +28,9 @@ if [ -n "\${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then
 fi
 if [[ "$*" == *"jobs list"* ]]; then printf '%s' "\${STUB_JOBS:-}"; fi
 if [[ "$*" == *"versions add"* ]]; then cat > /dev/null; fi
+for arg in "$@"; do
+  if [[ "$arg" == --lifecycle-file=* ]]; then cat "\${arg#--lifecycle-file=}" >> "$STUB_LOG"; echo >> "$STUB_LOG"; fi
+done
 exit 0
 `;
 
@@ -155,4 +158,35 @@ test("MISC-10: the docs give the same retry schedule as setup.sh", () => {
 
   assert.doesNotMatch(docs, /notifications every 15 minutes/);
   assert.doesNotMatch(docs, /wake it every 15 minutes by default/);
+});
+
+test("setup.sh deletes noncurrent versions in the replica and backup buckets", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    BACKUP_REGION: "europe-west1",
+    DB_BACKEND: "sqlite",
+  });
+
+  assert.equal(status, 0);
+
+  for (const [bucket, days] of [
+    ["test-project-signudoc-db", 7],
+    ["test-project-signudoc-backups", 30],
+  ] as const) {
+    const lines = calls.split("\n");
+    const at = lines.findIndex((line) =>
+      line.startsWith(
+        `storage buckets update gs://${bucket} --lifecycle-file=`,
+      ),
+    );
+
+    assert.notEqual(at, -1, `${bucket} has a lifecycle rule`);
+    assert.deepEqual(JSON.parse(lines[at + 1] ?? ""), {
+      rule: [
+        {
+          action: { type: "Delete" },
+          condition: { daysSinceNoncurrentTime: days, isLive: false },
+        },
+      ],
+    });
+  }
 });

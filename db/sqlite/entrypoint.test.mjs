@@ -38,6 +38,9 @@ test("a sqlite: URL starts through the SQLite start script, however it is writte
     "Sqlite:/data/x.db",
     "  sqlite:/data/x.db",
     " Sqlite:/tmp/x.db",
+    "\nsqlite:/data/x.db",
+    "\r\nSQLITE:/data/x.db",
+    "\tsqlite:/data/x.db",
   ]) {
     assert.equal(started(url), "db/sqlite/start.mjs", JSON.stringify(url));
   }
