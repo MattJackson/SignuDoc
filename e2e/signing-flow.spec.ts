@@ -1434,7 +1434,7 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: "Require two-step sign-in" })
       .click();
