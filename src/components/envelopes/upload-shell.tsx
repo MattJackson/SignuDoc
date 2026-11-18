@@ -11,6 +11,7 @@ import {
   type ChangeEvent,
   type DragEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
@@ -104,6 +105,7 @@ function UploadShellLayout({
   onTitleChange,
   onContinue,
   previewUrl,
+  startFrom,
   summary,
   title,
 }: {
@@ -118,6 +120,7 @@ function UploadShellLayout({
   onRemoveFile: () => void;
   onTitleChange: (event: ChangeEvent<HTMLInputElement>) => void;
   previewUrl: string | null;
+  startFrom?: ReactNode;
   summary: UploadSummary | null;
   title: string;
 }) {
@@ -133,9 +136,12 @@ function UploadShellLayout({
     <div className="space-y-5">
       <PageHeader
         action={
-          <Link className="btn-quiet min-h-11 px-4" href="/templates">
-            Start from a template
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {startFrom}
+            <Link className="btn-quiet min-h-11 px-4" href="/templates">
+              Start from a template
+            </Link>
+          </div>
         }
         description="Step 1 of 4 - Upload document"
         title="New envelope"
@@ -326,9 +332,14 @@ type UploadShellProps = {
    * null when uploads go through the app.
    */
   directUploadPrefix?: string | null;
+  /** Other ways to start, shown beside "Start from a template". */
+  startFrom?: ReactNode;
 };
 
-export function UploadShell({ directUploadPrefix = null }: UploadShellProps) {
+export function UploadShell({
+  directUploadPrefix = null,
+  startFrom = null,
+}: UploadShellProps) {
   const router = useRouter();
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState<UploadSummary | null>(null);
@@ -605,6 +616,7 @@ export function UploadShell({ directUploadPrefix = null }: UploadShellProps) {
         onRemoveFile={handleRemoveFile}
         onTitleChange={handleTitleChange}
         previewUrl={previewUrl}
+        startFrom={startFrom}
         summary={summary}
         title={title}
       />
