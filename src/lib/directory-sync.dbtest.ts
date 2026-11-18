@@ -893,6 +893,7 @@ test("a manager whose standing could not be looked up is not taken as gone", asy
   const sent = await createEnvelope(ada.id, "sent");
   // The manager is outside the Workspace domains, so they are asked about
   // only as someone's manager, and the directory cannot answer.
+  await createSession(ada.id);
   const managerEmail = `grace@${newDomain()}`;
   const { directory } = fakeDirectory({
     [ada.email]: suspended(ada.email, managerEmail),
@@ -901,20 +902,23 @@ test("a manager whose standing could not be looked up is not taken as gone", asy
       503,
     ),
   });
-  const { outcome } = await run(domain, directory);
+  const { at, outcome } = await run(domain, directory);
   const result = resultFor(outcome, ada.id);
 
-  assert.equal(result?.action, "skipped");
+  assert.equal(result?.action, "offboarded");
+  assert.equal(result?.action === "offboarded" ? result.blocked : null, true);
   assert.equal(
-    result?.action === "skipped" ? result.why : null,
-    "lookup_failed",
+    result?.action === "offboarded" ? result.envelopesKept : null,
+    1,
   );
   assert.equal(outcome.counts.lookupFailures, 1);
+  // Access ends at once; only the hand-over waits for the manager.
+  assert.equal((await userRow(ada.id)).blockedAt, at);
+  assert.equal(await sessionCount(ada.id), 0);
   assert.deepEqual(await envelopeRow(sent), {
     handedOverAt: null,
     userId: ada.id,
   });
-  assert.equal((await userRow(ada.id)).blockedAt, null);
   // Asked again first next time.
   assert.equal((await userRow(ada.id)).checkedAt, null);
 });

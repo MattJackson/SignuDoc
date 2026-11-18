@@ -500,3 +500,75 @@ test("a send is refused, not quietly relaxed, when the Google signing setting ca
 
   assert.equal(await statusOf(draft.envelopeId), "draft");
 });
+
+test("correcting a sent approver asks the directory before any row is locked", async () => {
+  const manager = `boss-${randomUUID()}@example.test`;
+  const draft = await createDraft([
+    { email: manager, role: "approver", step: 1 },
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 2 },
+  ]);
+  const base = directoryFor(draft.senderEmail, manager);
+
+  await sendDraftEnvelope(draft.userId, draft.envelopeId, send, {
+    database,
+    directory: base,
+    managerPolicy: requireForEveryone,
+  });
+
+  const approver = await database.query<{ id: string }>(
+    `select id from signers where envelope_id = $1 and role = 'approver'`,
+    [draft.envelopeId],
+  );
+  let askedWhileLocked = 0;
+  let asked = 0;
+  const directory: DirectoryClient = {
+    ...base,
+    getUser: async (email) => {
+      asked += 1;
+
+      // A row another transaction holds is skipped by SKIP LOCKED; on
+      // SQLite the write lock makes this query wait, which the timeout
+      // counts as held too.
+      const free = await Promise.race([
+        database.query(
+          `select id from envelopes where id = $1 for update skip locked`,
+          [draft.envelopeId],
+        ),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+
+      if (free === null || free.rows.length === 0) {
+        askedWhileLocked += 1;
+      }
+
+      return base.getUser(email);
+    },
+  };
+  const correctionOptions = { database, directory };
+  const previous = process.env.MANAGER_APPROVAL;
+
+  process.env.MANAGER_APPROVAL = "require";
+
+  try {
+    await assert.rejects(
+      correctSentEnvelopeSigner(
+        draft.userId,
+        draft.envelopeId,
+        approver.rows[0]!.id,
+        { email: `mine-${randomUUID()}@example.test` },
+        { senderEmail: draft.senderEmail, senderName: "Sam Sender" },
+        correctionOptions,
+      ),
+      (error: unknown) => error instanceof EnvelopeMutationError,
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MANAGER_APPROVAL;
+    } else {
+      process.env.MANAGER_APPROVAL = previous;
+    }
+  }
+
+  assert.ok(asked > 0);
+  assert.equal(askedWhileLocked, 0);
+});
