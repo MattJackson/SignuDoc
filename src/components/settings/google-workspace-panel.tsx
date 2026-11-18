@@ -10,7 +10,6 @@ import {
   CheckItem,
   CopyValue,
   EnvLockedNotice,
-  ExternalButton,
   ExternalLink,
   IntegrationPanel,
   Notice,
@@ -20,6 +19,12 @@ import {
 } from "@/components/settings/integration-kit";
 import { saveFailureMessage } from "@/components/settings/google-save-notice";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import {
+  apiLibraryUrl,
+  consoleUrl,
+  googleProjectId,
+  originOf,
+} from "@/lib/google-console";
 import type {
   DirectoryTestResult,
   GoogleWorkspaceView,
@@ -34,7 +39,8 @@ import type {
 // the same service account.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
-const GOOGLE_CONSOLE_URL = "https://console.cloud.google.com";
+const ADMIN_ACCOUNT_SETTINGS_URL =
+  "https://admin.google.com/ac/accountsettings/profile";
 const ADMIN_ROLES_URL = "https://admin.google.com/ac/roles";
 const ADMIN_DELEGATION_URL =
   "https://admin.google.com/ac/owl/domainwidedelegation";
@@ -42,36 +48,6 @@ const DIRECTORY_SCOPES = [
   "https://www.googleapis.com/auth/admin.directory.user.readonly",
   "https://www.googleapis.com/auth/admin.directory.group.readonly",
 ];
-
-/**
- * The Google Cloud project this site runs in, from its service account's
- * address (name@project.iam.gserviceaccount.com), so links open the right
- * project's console. Null when it is not known.
- */
-export function googleProjectId(serviceAccountEmail: string | null) {
-  const match =
-    /@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/.exec(
-      serviceAccountEmail ?? "",
-    );
-
-  return match ? match[1] : null;
-}
-
-/** The scheme and host of this site, which Google calls its origin. */
-function originOf(url: string | null): string | null {
-  try {
-    return url ? new URL(url).origin : null;
-  } catch {
-    return null;
-  }
-}
-
-/** A page of the Google Cloud console, in this site's project if known. */
-function consoleUrl(path: string, project: string | null) {
-  return project
-    ? `${GOOGLE_CONSOLE_URL}${path}?project=${encodeURIComponent(project)}`
-    : `${GOOGLE_CONSOLE_URL}${path}`;
-}
 
 type SaveResult = {
   error?: string;
@@ -345,51 +321,43 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
 
       <SetupSteps>
         <CheckItem ok={signIn.ready} title="1. Create the OAuth client">
-          <p>
-            In Google Cloud, create an OAuth client for this site.
-            {project ? (
-              <>
-                {" "}
-                The link opens project <strong>{project}</strong>, where this
-                site runs.
-              </>
-            ) : null}
-          </p>
-          <ActionRow>
-            <ExternalButton
-              href={consoleUrl("/auth/clients/create", project)}
-              variant="primary"
-            >
-              Create the OAuth client
-            </ExternalButton>
-          </ActionRow>
-          <ol className="list-decimal space-y-1 pl-5">
+          {project ? (
+            <p>
+              The links open project <strong>{project}</strong>, where this site
+              runs.
+            </p>
+          ) : null}
+          <ol className="list-decimal space-y-2 pl-5">
             <li>
-              If Google asks to configure the Google Auth Platform first, give
-              it the app name below and your support address, and choose{" "}
-              <strong>Internal</strong> so only accounts in your Workspace can
-              use it. (Set later under{" "}
-              <ExternalLink href={consoleUrl("/auth/audience", project)}>
-                Audience
+              No consent screen yet?{" "}
+              <ExternalLink href={consoleUrl("/auth/overview", project)}>
+                Open Google Auth Platform
               </ExternalLink>
-              .)
+              , choose <strong>Get started</strong>, paste the app name below,
+              add your support and contact addresses, and choose{" "}
+              <strong>Internal</strong> as the audience.
             </li>
             <li>
-              For Application type, choose <strong>Web application</strong> and
-              give it the name below.
+              <ExternalLink href={consoleUrl("/auth/clients/create", project)}>
+                Create the OAuth client
+              </ExternalLink>
+              : choose <strong>Web application</strong> and paste the name
+              below.
             </li>
             <li>
-              Add the JavaScript origin and the redirect URI below, exactly as
-              shown, then choose Create.
+              Paste the JavaScript origin under{" "}
+              <strong>Authorized JavaScript origins</strong> and the redirect
+              URI under <strong>Authorized redirect URIs</strong>, then choose
+              Create.
             </li>
-            <li>
-              Copy the client ID and client secret Google shows into the form in
-              step 2. The scopes are the basic ones (openid, email and profile);
-              an Internal app needs no review by Google.
-            </li>
+            <li>Copy the client ID and secret into step 2.</li>
           </ol>
           <div className="grid gap-4">
-            <CopyValue label="App name" value={productName} />
+            <CopyValue
+              hint="Use it for the app name and for the client name."
+              label="App name"
+              value={productName}
+            />
             {siteOrigin ? (
               <CopyValue
                 hint="Under Authorized JavaScript origins."
@@ -647,7 +615,9 @@ export function GoogleDirectorySection({
   workspace: Workspace;
 }) {
   const { save, view } = workspace;
+  const { productName } = useBranding();
   const { directory, serviceAccount } = view;
+  const project = googleProjectId(serviceAccount.email);
   const [values, setValues] = useState({
     adminGroup:
       view.adminGroup.source === "settings"
@@ -784,18 +754,22 @@ export function GoogleDirectorySection({
           title="2. Let it read the directory"
         >
           <p>
+            <ExternalLink href={apiLibraryUrl("admin.googleapis.com", project)}>
+              Enable the Admin SDK API
+            </ExternalLink>
+            , then use one of these.
+          </p>
+          <p>
             <strong>Recommended: a read-only administrator role.</strong> No
-            domain-wide delegation, so the service account can never act as
-            anyone.
+            domain-wide delegation.
           </p>
           <ol className="list-decimal space-y-1 pl-5">
             <li>
-              In the Google Admin console, open{" "}
+              Open{" "}
               <ExternalLink href={ADMIN_ROLES_URL}>
-                Account, Admin roles
-              </ExternalLink>{" "}
-              and choose Create new role. Name it, for example, &quot;SignuDoc
-              directory reader&quot;.
+                Admin console, Account, Admin roles
+              </ExternalLink>
+              , choose Create new role, and paste the name below.
             </li>
             <li>
               Under Admin API privileges, tick <strong>Users, Read</strong> and{" "}
@@ -803,21 +777,37 @@ export function GoogleDirectorySection({
             </li>
             <li>
               Open the new role, choose Assign service accounts, and paste the
-              service account above.
+              service account from step 1.
             </li>
           </ol>
+          <CopyValue
+            label="Role name"
+            value={`${productName} directory reader`}
+          />
           <p>
-            <strong>Or: domain-wide delegation.</strong> In{" "}
+            <strong>Or: domain-wide delegation.</strong> Open{" "}
             <ExternalLink href={ADMIN_DELEGATION_URL}>
               Security, API controls, Domain-wide delegation
+            </ExternalLink>{" "}
+            and add the service account&apos;s client ID (its{" "}
+            <ExternalLink
+              href={consoleUrl("/iam-admin/serviceaccounts", project)}
+            >
+              unique ID
             </ExternalLink>
-            , add the service account&apos;s client ID with only these scopes,
-            and name an administrator for it to read the directory as.
+            ) with these scopes, then enter an administrator below.
           </p>
           <CopyValue
             label="Directory scopes"
             value={DIRECTORY_SCOPES.join(",")}
           />
+          <p>
+            With the admin role, also enter your Customer ID, shown under{" "}
+            <ExternalLink href={ADMIN_ACCOUNT_SETTINGS_URL}>
+              Admin console, Account, Account settings
+            </ExternalLink>
+            .
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <FieldShell
               disabled={pending !== null || directory.adminSubjectFromEnv}
@@ -844,7 +834,7 @@ export function GoogleDirectorySection({
               helper={
                 directory.customerFromEnv
                   ? fromEnvHelper("GOOGLE_WORKSPACE_CUSTOMER_ID")
-                  : "Optional. Empty means your own Workspace (my_customer)."
+                  : "Needed with the admin role (starts with C). Optional with delegation."
               }
               label="Customer ID"
               name="customer-id"

@@ -12,7 +12,13 @@ import {
   SetupSteps,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
+import { useBranding } from "@/components/layout/branding-provider";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import {
+  apiLibraryUrl,
+  consoleUrl,
+  googleProjectId,
+} from "@/lib/google-console";
 import type { GoogleAddonView } from "@/lib/google-addon";
 
 // Settings, Google Workspace, the add-on, and the onboarding step of the
@@ -23,8 +29,11 @@ import type { GoogleAddonView } from "@/lib/google-addon";
 // request against. The full guide is docs/google-workspace.md.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
-const MARKETPLACE_SDK_URL =
-  "https://console.cloud.google.com/apis/api/appsmarket-component.googleapis.com";
+const MARKETPLACE_SDK_API = "appsmarket-component.googleapis.com";
+const MARKETPLACE_SDK_PATH =
+  "/apis/api/appsmarket-component.googleapis.com/googleapps_sdk";
+const DEPLOYMENT_ID = "signudoc";
+const DEPLOYMENT_FILE = "signudoc-addon.json";
 const ADMIN_MARKETPLACE_APPS_URL =
   "https://admin.google.com/ac/apps/gmail/marketplace/apps";
 
@@ -63,6 +72,8 @@ export function GoogleAddonSection({
   initialView: GoogleAddonView;
 }) {
   const [view, setView] = useState(initialView);
+  const { productName } = useBranding();
+  const project = googleProjectId(initialView.siteServiceAccountEmail);
   const [values, setValues] = useState({
     clientId:
       initialView.clientId.source === "settings"
@@ -147,9 +158,8 @@ export function GoogleAddonSection({
           {json ? (
             <>
               <p>
-                This is the add-on&apos;s deployment, with this site&apos;s
-                address in every URL. Save it as{" "}
-                <code>signudoc-addon.json</code>.
+                Download the deployment, or copy it into a file with the name
+                below.
               </p>
               <pre className="max-h-72 overflow-auto rounded-xl bg-white p-3 font-mono text-[0.75rem] leading-5 text-(--fg)">
                 {json}
@@ -159,12 +169,13 @@ export function GoogleAddonSection({
                 {/* A plain link: the file comes from an API route, not a page. */}
                 <a
                   className="btn-quiet"
-                  download="signudoc-addon.json"
+                  download={DEPLOYMENT_FILE}
                   href="/api/admin/google/addon?download=1"
                 >
-                  Download signudoc-addon.json
+                  Download {DEPLOYMENT_FILE}
                 </a>
               </div>
+              <CopyValue label="File name" value={DEPLOYMENT_FILE} />
             </>
           ) : (
             <p>
@@ -177,10 +188,18 @@ export function GoogleAddonSection({
 
         <CheckItem ok={null} title="2. Deploy it with gcloud">
           <p>
-            In a terminal signed in to the Google Cloud project that will own
-            the add-on (the one this site runs in is a good choice), run:
+            In a terminal, run these in order
+            {project ? ", in the project this site runs in" : ""}:
           </p>
           <ul className="space-y-3">
+            {project ? (
+              <li>
+                <CopyValue
+                  label="Select the project"
+                  value={`gcloud config set project ${project}`}
+                />
+              </li>
+            ) : null}
             {view.commands.map((entry) => (
               <li className="space-y-1" key={entry.command}>
                 <CopyValue label={entry.purpose} value={entry.command} />
@@ -191,11 +210,8 @@ export function GoogleAddonSection({
 
         <CheckItem ok={view.ready} title="3. Paste what Google printed">
           <p>
-            <code>gcloud workspace-add-ons get-authorization</code> prints the
-            add-on&apos;s service account (serviceAccountEmail) and its OAuth
-            client ID (oauthClientId). Every request to this site must carry an
-            ID token for that service account, and the user&apos;s ID token must
-            be for that client, or it is turned away.
+            Run the get-authorization command above, and paste its
+            serviceAccountEmail and oauthClientId here.
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <FieldShell
@@ -250,39 +266,40 @@ export function GoogleAddonSection({
         </CheckItem>
 
         <CheckItem ok={null} title="4. Install it for your organization">
-          <p>
-            <code>gcloud workspace-add-ons deployments install</code> installs
-            it for you only, to try it. To give it to everyone, privately and
-            without publishing it:
-          </p>
+          <p>To give it to everyone, privately and without publishing it:</p>
           <ol className="list-decimal space-y-1 pl-5">
             <li>
-              In the same project, enable the{" "}
-              <ExternalLink href={MARKETPLACE_SDK_URL}>
-                Google Workspace Marketplace SDK
-              </ExternalLink>
-              . Under App configuration, set the visibility to{" "}
-              <strong>Private</strong>, choose Google Workspace add-on, pick{" "}
-              <strong>Deploy using an alternate runtime</strong>, and enter the
-              deployment ID, <code>signudoc</code>. Fill in Store listing and
-              publish it; a private app is only listed in your domain and is not
-              reviewed by Google.
+              <ExternalLink href={apiLibraryUrl(MARKETPLACE_SDK_API, project)}>
+                Enable the Google Workspace Marketplace SDK
+              </ExternalLink>{" "}
+              in the same project.
             </li>
             <li>
-              A Workspace administrator opens{" "}
+              Open its{" "}
+              <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
+                App configuration
+              </ExternalLink>
+              : set the visibility to <strong>Private</strong>, choose Google
+              Workspace add-on, pick{" "}
+              <strong>Deploy using an alternate runtime</strong> and paste the
+              deployment ID.
+            </li>
+            <li>
+              Fill in the Store listing, using the name below, and publish.
+            </li>
+            <li>
+              In{" "}
               <ExternalLink href={ADMIN_MARKETPLACE_APPS_URL}>
                 Admin console, Apps, Google Workspace Marketplace apps
               </ExternalLink>
-              , finds it under the apps for your domain, and installs it for
-              everyone or for chosen organizational units. Users then see it in
-              Gmail and Drive without being asked to allow it.
+              , find it and install it for everyone or for chosen organizational
+              units.
             </li>
           </ol>
-          <p>
-            People use it with their SignuDoc account, matched by their Google
-            address. Anyone who has none yet is asked to sign in to SignuDoc
-            once.
-          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <CopyValue label="Deployment ID" value={DEPLOYMENT_ID} />
+            <CopyValue label="App name" value={productName} />
+          </div>
         </CheckItem>
       </SetupSteps>
 
@@ -291,20 +308,18 @@ export function GoogleAddonSection({
           <summary className="cursor-pointer font-semibold text-(--fg)">
             The URLs Google calls, and the scopes it asks for
           </summary>
-          <ul className="mt-2 space-y-1">
+          <div className="mt-3 grid gap-3">
             {view.endpoints.map((endpoint) => (
-              <li key={endpoint.trigger}>
-                <code>{endpoint.url}</code>
-              </li>
+              <CopyValue
+                key={endpoint.trigger}
+                label={endpoint.trigger}
+                value={endpoint.url}
+              />
             ))}
-          </ul>
-          <ul className="mt-2 space-y-1">
             {view.scopes.map((scope) => (
-              <li key={scope}>
-                <code>{scope}</code>
-              </li>
+              <CopyValue key={scope} label="Scope" value={scope} />
             ))}
-          </ul>
+          </div>
         </details>
       ) : null}
     </div>

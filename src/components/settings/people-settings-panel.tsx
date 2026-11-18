@@ -244,18 +244,6 @@ export function PeopleSettingsForm({ onSaved }: { onSaved?: () => void }) {
       <fieldset className="well grid gap-3 p-4">
         <legend className="sr-only">Offboarding</legend>
         <p className="font-bold text-(--fg)">Offboarding</p>
-        <p className="text-[0.8125rem] leading-5 text-(--secondary)">
-          A scheduled job checks accounts against the Workspace directory.
-          Someone suspended or deleted there can no longer sign in here, and
-          their open envelopes and drafts go to their manager, or to an
-          administrator. The last administrator and the break-glass addresses
-          are never touched. The job needs a job secret: CRON_SECRET (on Vercel,
-          whose cron sends it) or RETENTION_JOB_SECRET; see the Google Workspace
-          guide for the schedule.
-          {view.directory.enabled
-            ? ""
-            : " This needs the Workspace directory, which is off."}
-        </p>
         <label className="flex items-center gap-2 text-sm text-(--fg)">
           <input
             checked={draft.directorySync}
@@ -266,8 +254,22 @@ export function PeopleSettingsForm({ onSaved }: { onSaved?: () => void }) {
             }
             type="checkbox"
           />
-          Offboard people the directory suspended or deleted
+          Offboard people Google suspends or deletes
         </label>
+        <p className="text-[0.8125rem] leading-5 text-(--secondary)">
+          Checked daily. They can no longer sign in, and their open envelopes
+          and drafts go to their manager.
+        </p>
+        {!view.directory.enabled ? (
+          <p className="text-xs text-(--tertiary)">
+            Turn on the Workspace directory first.
+          </p>
+        ) : !view.directorySync.scheduled ? (
+          <p className="text-xs text-(--tertiary)">
+            Not scheduled: this site has no job secret (CRON_SECRET or
+            RETENTION_JOB_SECRET). See the Google Workspace guide.
+          </p>
+        ) : null}
         {view.directorySync.fromEnv ? (
           <p className="text-xs text-(--tertiary)">
             Set by DIRECTORY_SYNC in the environment.

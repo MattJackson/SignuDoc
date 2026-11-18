@@ -84,6 +84,58 @@ const JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const ASSERTION_LIFETIME_SECONDS = 3600;
 
+const PROJECT_NUMBER_URL =
+  "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id";
+const PROJECT_NUMBER_TIMEOUT_MS = 2000;
+
+let cachedProjectNumber: string | null = null;
+
+/**
+ * The number of the Google Cloud project the app runs in, from the metadata
+ * server, to prefill setup forms. Null when not on Google Cloud or when it
+ * cannot be read; it never throws. A found number is kept for later calls.
+ */
+export async function readGoogleProjectNumber({
+  env = process.env,
+  fetchImpl = fetch,
+}: { env?: EnvSource; fetchImpl?: FetchLike } = {}): Promise<string | null> {
+  if (cachedProjectNumber) {
+    return cachedProjectNumber;
+  }
+
+  if (!isOnGoogleCloud(env)) {
+    return null;
+  }
+
+  try {
+    const response = await fetchImpl(PROJECT_NUMBER_URL, {
+      headers: { "Metadata-Flavor": "Google" },
+      signal: AbortSignal.timeout(PROJECT_NUMBER_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const number = (await response.text()).trim();
+
+    if (!/^\d{6,20}$/.test(number)) {
+      return null;
+    }
+
+    cachedProjectNumber = number;
+
+    return number;
+  } catch {
+    return null;
+  }
+}
+
+/** Forgets the cached project number, for tests. */
+export function resetGoogleProjectNumberCache() {
+  cachedProjectNumber = null;
+}
+
 /** True when the app runs somewhere with a Google metadata server. */
 export function isOnGoogleCloud(env: EnvSource = process.env): boolean {
   return Boolean(

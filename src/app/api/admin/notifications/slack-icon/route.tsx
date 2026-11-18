@@ -25,7 +25,8 @@ function dataUrl(contentType: string, bytes: Uint8Array | string): string {
   return `data:${contentType};base64,${buffer.toString("base64")}`;
 }
 
-async function iconContent() {
+async function iconContent(size: number) {
+  const px = (value: number) => Math.round((value * size) / SIZE);
   const branding = await getBranding();
   const logo = branding.logoUrl ? await readBrandLogo() : null;
   const background = branding.brandColor;
@@ -36,10 +37,10 @@ async function iconContent() {
     const image = (
       <img
         alt=""
-        height={background ? 300 : 400}
+        height={px(background ? 300 : 400)}
         src={dataUrl(logo.contentType, logo.bytes)}
         style={{ objectFit: "contain" }}
-        width={background ? 300 : 400}
+        width={px(background ? 300 : 400)}
       />
     );
 
@@ -59,11 +60,11 @@ async function iconContent() {
             style={{
               alignItems: "center",
               background: "#ffffff",
-              borderRadius: 72,
+              borderRadius: px(72),
               display: "flex",
-              height: 392,
+              height: px(392),
               justifyContent: "center",
-              width: 392,
+              width: px(392),
             }}
           >
             {image}
@@ -88,7 +89,7 @@ async function iconContent() {
           background: background ?? DEFAULT_BRAND_COLOR,
           color: "#ffffff",
           display: "flex",
-          fontSize: 300,
+          fontSize: px(300),
           fontWeight: 700,
           height: "100%",
           justifyContent: "center",
@@ -104,9 +105,9 @@ async function iconContent() {
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <img
         alt=""
-        height={SIZE}
+        height={size}
         src={dataUrl("image/svg+xml", SIGNUDOC_MARK)}
-        width={SIZE}
+        width={size}
       />
     </div>
   );
@@ -121,18 +122,21 @@ export async function GET(request: Request) {
 
   // ?download=1 saves it as a file; otherwise it is shown (the preview
   // of messages on the same page uses it as the app's picture).
-  const download = new URL(request.url).searchParams.get("download") === "1";
+  const params = new URL(request.url).searchParams;
+  const download = params.get("download") === "1";
+  // ?size=256 is the size Drive's "Open with" setup asks for.
+  const size = params.get("size") === "256" ? 256 : SIZE;
 
   try {
-    const image = new ImageResponse(await iconContent(), {
+    const image = new ImageResponse(await iconContent(size), {
       headers: {
         "cache-control": "private, max-age=300",
         "content-disposition": download
-          ? 'attachment; filename="slack-app-icon.png"'
+          ? `attachment; filename="app-icon-${String(size)}.png"`
           : "inline",
       },
-      height: SIZE,
-      width: SIZE,
+      height: size,
+      width: size,
     });
 
     // The picture is drawn while its body is read, after a 200 would have gone

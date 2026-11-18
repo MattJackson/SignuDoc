@@ -8,6 +8,7 @@ import {
   type IntegrationSettingsActor,
   type IntegrationSettingsUpdate,
 } from "./integration-settings.ts";
+import { getGoogleCredentials } from "./integrations/google/credentials.ts";
 import {
   ADDON_TRIGGERS,
   addonEndpointUrl,
@@ -41,6 +42,8 @@ export type GoogleAddonView = {
   ready: boolean;
   scopes: string[];
   serviceAccount: { source: AddonSettingSource; value: string | null };
+  /** The service account this site itself runs as, when known. */
+  siteServiceAccountEmail: string | null;
   siteUrl: string | null;
 };
 
@@ -73,6 +76,14 @@ export async function addonWorkspaceDomains(
       settings.signupMode === "domains" ? settings.allowedEmailDomains : [],
     stored,
   });
+}
+
+async function siteServiceAccountEmail(): Promise<string | null> {
+  try {
+    return (await getGoogleCredentials()?.getServiceAccountEmail()) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getGoogleAddonView(
@@ -111,6 +122,7 @@ export async function getGoogleAddonView(
       source: config.serviceAccountSource,
       value: config.serviceAccountEmail,
     },
+    siteServiceAccountEmail: await siteServiceAccountEmail(),
     siteUrl,
   };
 }

@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { startTransition, useState } from "react";
 
-import { Button } from "@/components/ui/button";
+import { loadPicker } from "@/components/envelopes/google-picker";
+0;
 
 // "Choose from Google Drive" on the new-envelope page. The Google Picker
 // shows the person's own Drive (and Shared Drives) in a frame from Google;
@@ -16,100 +17,7 @@ import { Button } from "@/components/ui/button";
 // "Connect Google Drive" first.
 // https://developers.google.com/workspace/drive/picker/guides/overview
 
-const GOOGLE_API_SCRIPT = "https://apis.google.com/js/api.js";
-const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
-
-type PickedDocument = { id: string; mimeType?: string; name?: string };
-type PickerResponse = { action: string; docs?: PickedDocument[] };
-
-type DocsView = {
-  setEnableDrives(enabled: boolean): DocsView;
-  setIncludeFolders(included: boolean): DocsView;
-  setMimeTypes(mimeTypes: string): DocsView;
-  setSelectFolderEnabled(enabled: boolean): DocsView;
-};
-
-type PickerBuilder = {
-  addView(view: DocsView): PickerBuilder;
-  build(): { setVisible(visible: boolean): void };
-  enableFeature(feature: unknown): PickerBuilder;
-  setAppId(appId: string): PickerBuilder;
-  setCallback(callback: (response: PickerResponse) => void): PickerBuilder;
-  setDeveloperKey(key: string): PickerBuilder;
-  setOAuthToken(token: string): PickerBuilder;
-  setOrigin(origin: string): PickerBuilder;
-  setTitle(title: string): PickerBuilder;
-};
-
-type PickerNamespace = {
-  Action: { CANCEL: string; PICKED: string };
-  DocsView: new (viewId?: unknown) => DocsView;
-  Feature: { SUPPORT_DRIVES: unknown };
-  PickerBuilder: new () => PickerBuilder;
-  ViewId: { DOCS: unknown };
-};
-
-type GoogleWindow = Window & {
-  gapi?: {
-    load(
-      name: string,
-      options: { callback: () => void; onerror?: () => void },
-    ): void;
-  };
-  google?: { picker?: PickerNamespace };
-};
-
-let pickerLoading: Promise<PickerNamespace> | null = null;
-
-function loadPicker(): Promise<PickerNamespace> {
-  const win = window as GoogleWindow;
-
-  if (win.google?.picker) {
-    return Promise.resolve(win.google.picker);
-  }
-
-  pickerLoading ??= new Promise<PickerNamespace>((resolve, reject) => {
-    const whenGapi = () => {
-      const gapi = (window as GoogleWindow).gapi;
-
-      if (!gapi) {
-        reject(new Error("Google's script did not load."));
-        return;
-      }
-
-      gapi.load("picker", {
-        callback: () => {
-          const picker = (window as GoogleWindow).google?.picker;
-
-          if (picker) {
-            resolve(picker);
-          } else {
-            reject(new Error("The Google Picker did not load."));
-          }
-        },
-        onerror: () => reject(new Error("The Google Picker did not load.")),
-      });
-    };
-
-    if ((window as GoogleWindow).gapi) {
-      whenGapi();
-      return;
-    }
-
-    const script = document.createElement("script");
-
-    script.async = true;
-    script.src = GOOGLE_API_SCRIPT;
-    script.onload = whenGapi;
-    script.onerror = () => reject(new Error("Google's script did not load."));
-    document.head.appendChild(script);
-  }).catch((error: unknown) => {
-    pickerLoading = null;
-    throw error;
-  });
-
-  return pickerLoading;
-}
+0;
 
 type PickerToken = { accessToken: string; apiKey: string; appId: string };
 

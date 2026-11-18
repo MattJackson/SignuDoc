@@ -12,7 +12,14 @@ import {
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
 import { exportsView, readExports } from "@/components/settings/drive-exports";
+import { loadPicker } from "@/components/envelopes/google-picker";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import { useBranding } from "@/components/layout/branding-provider";
+import {
+  apiLibraryUrl,
+  consoleUrl,
+  googleProjectId,
+} from "@/lib/google-console";
 import type {
   GoogleDriveView,
   LabelListResult,
@@ -29,14 +36,9 @@ import type { DriveExportListItem } from "@/lib/integrations/google/drive-export
 // and the state of each executed-copy export with a way to retry it.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
-const CLOUD_LIBRARY_URL = "https://console.cloud.google.com/apis/library";
-const CLOUD_CREDENTIALS_URL =
-  "https://console.cloud.google.com/apis/credentials";
-const DRIVE_UI_URL =
-  "https://console.cloud.google.com/apis/api/drive.googleapis.com/drive_sdk";
-const DATA_ACCESS_URL = "https://console.cloud.google.com/auth/scopes";
-const MARKETPLACE_SDK_URL =
-  "https://console.cloud.google.com/apis/api/appsmarket-component.googleapis.com/googleapps_sdk";
+const DRIVE_UI_PATH = "/apis/api/drive.googleapis.com/drive_sdk";
+const MARKETPLACE_SDK_PATH =
+  "/apis/api/appsmarket-component.googleapis.com/googleapps_sdk";
 const ADMIN_LABELS_URL = "https://admin.google.com/ac/dc/labels";
 const ADMIN_DRIVE_SHARING_URL =
   "https://admin.google.com/ac/managedsettings/55656082996/sharing";
@@ -141,11 +143,13 @@ export function GoogleDriveSection({
   initialView: GoogleDriveView;
 }) {
   const [view, setView] = useState(initialView);
+  const { productName } = useBranding();
+  const project = googleProjectId(view.serviceAccountEmail);
   const [values, setValues] = useState({
     appId:
       initialView.picker.appIdSource === "settings"
         ? (initialView.picker.appId ?? "")
-        : "",
+        : (initialView.projectNumber ?? ""),
     exportDriveId:
       initialView.export.driveIdSource === "settings"
         ? (initialView.export.driveId ?? "")
@@ -168,6 +172,7 @@ export function GoogleDriveSection({
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<string | null>(null);
+  const [pickerTest, setPickerTest] = useState<Notice>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [drives, setDrives] = useState<SharedDriveListResult | null>(null);
   const [driveTest, setDriveTest] = useState<SharedDriveTestResult | null>(
@@ -274,6 +279,67 @@ export function GoogleDriveSection({
     }
   }
 
+  // Opens the real Google Picker with the saved key and project number, as
+  // the new-envelope page does, and says whether it opened.
+  async function testPicker() {
+    setPending("test_picker");
+    setPickerTest(null);
+
+    try {
+      const response = await fetch("/api/google/drive/picker", {
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        accessToken?: string;
+        apiKey?: string;
+        appId?: string;
+        error?: string;
+      } | null;
+
+      if (
+        !response.ok ||
+        !payload?.accessToken ||
+        !payload.apiKey ||
+        !payload.appId
+      ) {
+        setPickerTest({
+          message: payload?.error ?? GENERIC_ERROR_MESSAGE,
+          tone: "error",
+        });
+        return;
+      }
+
+      const picker = await loadPicker();
+      let reported = false;
+
+      new picker.PickerBuilder()
+        .addView(new picker.DocsView(picker.ViewId.DOCS))
+        .setAppId(payload.appId)
+        .setOAuthToken(payload.accessToken)
+        .setDeveloperKey(payload.apiKey)
+        .setOrigin(window.location.origin)
+        .setTitle("Picker test: close this when it has opened")
+        .setCallback(() => {
+          if (!reported) {
+            reported = true;
+            setPickerTest({ message: "The Picker opened.", tone: "success" });
+          }
+        })
+        .build()
+        .setVisible(true);
+    } catch (error) {
+      setPickerTest({
+        message:
+          error instanceof Error && error.message
+            ? `The Picker did not open: ${error.message}`
+            : "The Picker did not open. Check that nothing in this browser blocks Google.",
+        tone: "error",
+      });
+    } finally {
+      setPending(null);
+    }
+  }
+
   async function retry(envelopeId: string) {
     await run<RetryResult>(
       `retry:${envelopeId}`,
@@ -315,23 +381,32 @@ export function GoogleDriveSection({
           )}
           <ol className="list-decimal space-y-1 pl-5">
             <li>
-              In the{" "}
-              <ExternalLink href={CLOUD_LIBRARY_URL}>API library</ExternalLink>,
-              enable the <strong>Google Drive API</strong>, the{" "}
-              <strong>Google Picker API</strong> and, for labels, the{" "}
-              <strong>Drive Labels API</strong>.
-            </li>
-            <li>
-              In{" "}
-              <ExternalLink href={DATA_ACCESS_URL}>
-                Google Auth Platform, Data access
+              Enable the{" "}
+              <ExternalLink
+                href={apiLibraryUrl("drive.googleapis.com", project)}
+              >
+                Google Drive API
               </ExternalLink>
-              , add the scope{" "}
-              <code>https://www.googleapis.com/auth/drive.file</code>. It only
-              reaches files a person opens with, or picks in, this site.
+              , the{" "}
+              <ExternalLink
+                href={apiLibraryUrl("picker.googleapis.com", project)}
+              >
+                Google Picker API
+              </ExternalLink>{" "}
+              and, for labels,{" "}
+              <ExternalLink
+                href={apiLibraryUrl("drivelabels.googleapis.com", project)}
+              >
+                Drive Labels API
+              </ExternalLink>
+              .
             </li>
             <li>
-              In the sign-in OAuth client, add a second authorized redirect URI:
+              Open the sign-in{" "}
+              <ExternalLink href={consoleUrl("/auth/clients", project)}>
+                OAuth client
+              </ExternalLink>{" "}
+              and add a second authorized redirect URI:
               {view.callbackUri ? (
                 <CopyValue label="Redirect URI" value={view.callbackUri} />
               ) : (
@@ -350,15 +425,36 @@ export function GoogleDriveSection({
         >
           <p>
             Adds &quot;Choose from Google Drive&quot; to the new-envelope page.
-            Google Docs, Word and PDF files become a draft. In{" "}
-            <ExternalLink href={CLOUD_CREDENTIALS_URL}>
-              Credentials
-            </ExternalLink>
-            , create an <strong>API key</strong>, restrict it to the Google
-            Picker API and to this site&apos;s address, and paste it here with
-            the project <strong>number</strong> (on the project&apos;s
-            dashboard).
           </p>
+          <ol className="list-decimal space-y-1 pl-5">
+            <li>
+              In{" "}
+              <ExternalLink href={consoleUrl("/apis/credentials", project)}>
+                Credentials
+              </ExternalLink>
+              , choose Create credentials, <strong>API key</strong>, and paste
+              the name below.
+            </li>
+            <li>
+              Under Application restrictions choose <strong>Websites</strong>{" "}
+              and paste the website restriction. Under API restrictions choose{" "}
+              <strong>Google Picker API</strong>.
+            </li>
+            <li>
+              Paste the key below
+              {view.projectNumber ? null : (
+                <>
+                  {" "}
+                  with the project number, shown on the{" "}
+                  <ExternalLink href={consoleUrl("/home/dashboard", project)}>
+                    project&apos;s dashboard
+                  </ExternalLink>
+                </>
+              )}
+              , save, and test it.
+            </li>
+          </ol>
+          <CopyValue label="API key name" value={`${productName} Picker`} />
           {view.siteUrl ? (
             <CopyValue
               label="Website restriction"
@@ -392,7 +488,9 @@ export function GoogleDriveSection({
               helper={
                 view.picker.appIdSource === "env"
                   ? fromEnv("GOOGLE_DRIVE_APP_ID")
-                  : "The Cloud project's number (the Picker's app ID)."
+                  : view.projectNumber
+                    ? "Filled in from the Cloud project this site runs in."
+                    : "The Cloud project's number, on its dashboard."
               }
               label="Project number"
               name="drive-app-id"
@@ -406,27 +504,37 @@ export function GoogleDriveSection({
               }
             />
           </div>
-          <ShellButton
-            disabled={pending !== null}
-            loading={pending === "picker"}
-            onClick={() =>
-              void save(
-                "picker",
-                {
-                  ...(view.picker.apiKeySource === "env"
-                    ? {}
-                    : { pickerApiKey: values.pickerApiKey }),
-                  ...(view.picker.appIdSource === "env"
-                    ? {}
-                    : { appId: values.appId }),
-                },
-                "Saved. The new-envelope page offers Google Drive to everyone who signs in with Google.",
-              )
-            }
-            variant="secondary"
-          >
-            Save Picker settings
-          </ShellButton>
+          <div className="flex flex-wrap gap-2">
+            <ShellButton
+              disabled={pending !== null}
+              loading={pending === "picker"}
+              onClick={() =>
+                void save(
+                  "picker",
+                  {
+                    ...(view.picker.apiKeySource === "env"
+                      ? {}
+                      : { pickerApiKey: values.pickerApiKey }),
+                    ...(view.picker.appIdSource === "env"
+                      ? {}
+                      : { appId: values.appId }),
+                  },
+                  "Saved. The new-envelope page offers Google Drive to everyone who signs in with Google.",
+                )
+              }
+              variant="secondary"
+            >
+              Save Picker settings
+            </ShellButton>
+            <ShellButton
+              disabled={pending !== null || !view.picker.ready}
+              loading={pending === "test_picker"}
+              onClick={() => void testPicker()}
+            >
+              Test the Picker
+            </ShellButton>
+          </div>
+          <Feedback notice={pickerTest} />
         </CheckItem>
 
         <CheckItem
@@ -434,13 +542,30 @@ export function GoogleDriveSection({
           title='3. Optional: "Open with" this site in Drive'
         >
           <p>
-            In the Cloud console, open the{" "}
-            <ExternalLink href={DRIVE_UI_URL}>
+            Open the{" "}
+            <ExternalLink href={consoleUrl(DRIVE_UI_PATH, project)}>
               Google Drive API, Drive UI integration
             </ExternalLink>{" "}
-            page, fill in the application name and icons, and enter exactly
-            these values. Tick <strong>Importing</strong> so Google Docs can be
-            opened too; Drive then hands this site the document as a PDF.
+            page, paste these values, upload the icon, tick{" "}
+            <strong>Importing</strong> (so Google Docs open too) and save.
+          </p>
+          <CopyValue label="Application name" value={productName} />
+          <CopyValue
+            label="Short description"
+            value={`Send documents for signature with ${productName}.`}
+          />
+          <CopyValue
+            label="Long description"
+            value={`Open a PDF, Word document or Google Doc in ${productName} to send it for signature.`}
+          />
+          <p>
+            <a
+              className="font-semibold text-(--accent-ink) underline"
+              download="drive-app-icon-256.png"
+              href="/api/admin/notifications/slack-icon?size=256&download=1"
+            >
+              Download the 256 by 256 icon
+            </a>
           </p>
           {view.openUrl ? (
             <CopyValue label="Open URL" value={view.openUrl} />
@@ -466,19 +591,13 @@ export function GoogleDriveSection({
             label="Secondary file extensions"
             value={view.openWith.secondaryExtensions.join(",")}
           />
-          <CopyValue
-            label="Import formats"
-            value={view.openWith.importFormats.join(",")}
-          />
           <p>
-            For &quot;Open with&quot; to show up for everyone, list the app
-            privately for your organization with the{" "}
-            <ExternalLink href={MARKETPLACE_SDK_URL}>
+            To show "Open with" for everyone, list the app privately with the{" "}
+            <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
               Google Workspace Marketplace SDK
             </ExternalLink>{" "}
-            (with the Drive integration on and the drive.file scope), and
-            install it for the domain from the Admin console. Someone who opens
-            a file is asked to sign in here and to connect Drive the first time.
+            (Drive integration on, drive.file scope), then install it for the
+            domain from the Admin console.
           </p>
         </CheckItem>
 

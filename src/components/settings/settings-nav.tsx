@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect } from "react";
 
 import { cn } from "@/lib/cn";
 
@@ -41,6 +42,12 @@ export function SettingsNav({
   isAdmin: boolean;
 }) {
   const pathname = usePathname();
+
+  // Next scrolls a new page to its own top, which sits under the sticky
+  // header; start each Settings page at the top of the window instead.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
   const groups: NavGroup[] = [
     {
       items: [

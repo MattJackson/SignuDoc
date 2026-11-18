@@ -36,7 +36,7 @@ export type PeopleSettingsView = {
     /** The Workspace directory is turned on, which two of these need. */
     enabled: boolean;
   };
-  directorySync: { enabled: boolean; fromEnv: boolean };
+  directorySync: { enabled: boolean; fromEnv: boolean; scheduled: boolean };
   googleSigning: {
     /** Google sign-in is set up and the Workspace domains are known. */
     available: boolean;
@@ -94,6 +94,9 @@ export async function getPeopleSettingsView({
     directorySync: {
       enabled: readDirectorySyncSetting(env, stored).enabled,
       fromEnv: Boolean(readEnv(env, "DIRECTORY_SYNC")),
+      scheduled: Boolean(
+        readEnv(env, "CRON_SECRET") || readEnv(env, "RETENTION_JOB_SECRET"),
+      ),
     },
     googleSigning: {
       available: googleSigning.available,

@@ -12,6 +12,7 @@ import { CONVERTIBLE_MIME_TYPES } from "./integrations/google/convert.ts";
 import {
   getGoogleCredentials,
   GOOGLE_SCOPES,
+  readGoogleProjectNumber,
   type GoogleCredentials,
 } from "./integrations/google/credentials.ts";
 import {
@@ -65,7 +66,6 @@ export const DRIVE_OPEN_PATH = "/api/google/drive/open";
 export const DRIVE_UI_INTEGRATION = {
   defaultExtensions: ["pdf"],
   defaultMimeTypes: ["application/pdf"],
-  importFormats: ["application/pdf"],
   secondaryExtensions: ["docx", "doc", "odt", "rtf"],
   secondaryMimeTypes: [
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -106,6 +106,8 @@ export type GoogleDriveView = {
     appIdSource: DriveSettingSource;
     ready: boolean;
   };
+  /** The Cloud project's number, when this site runs on Google Cloud. */
+  projectNumber: string | null;
   serviceAccountEmail: string | null;
   siteUrl: string | null;
 };
@@ -170,6 +172,7 @@ export async function getGoogleDriveView(
     openUrl: url ? `${url}${DRIVE_OPEN_PATH}` : null,
     openWith: DRIVE_UI_INTEGRATION,
     picker,
+    projectNumber: await readGoogleProjectNumber({ env }),
     serviceAccountEmail,
     siteUrl: url,
   };

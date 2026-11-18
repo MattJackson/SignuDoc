@@ -21,7 +21,7 @@ There are eight parts. Only the first is needed for sign-in. Parts 4 to 6 are se
 
 In the [Google Cloud console](https://console.cloud.google.com), in the project the site runs in (or any project in your organization):
 
-1. Open **Google Auth Platform**, **Audience**, and set the user type to **Internal**. Only accounts in your Workspace can then use the client, and Google does not need to review the app.
+1. Open **Google Auth Platform**. A project needs a consent screen before it can have a client: if it has none, choose **Get started**, give the app name and a support address, choose **Internal** under **Audience**, add a contact address and choose **Create**. Only accounts in your Workspace can then use the client, and Google does not need to review the app.
 2. Open **Clients**, choose **Create client**, and pick **Web application**.
 3. Under **Authorized redirect URIs**, add `https://<your site>/api/auth/callback/sso`. The page in Settings shows the exact value for your site, with a copy button. It is built from `APP_URL` (or `BETTER_AUTH_URL`); if the site does not know its own address yet, set one of those.
 4. The scopes are the basic ones, `openid`, `email` and `profile`. Nothing else is asked for.
@@ -86,7 +86,7 @@ There are two ways. The first is preferred.
 2. In SignuDoc, set "Act as administrator" (or `GOOGLE_WORKSPACE_ADMIN_SUBJECT`) to an administrator the service account reads the directory as.
 3. On Google Cloud without a key, the service account also needs the **Service Account Token Creator** role on itself, so the app can sign the delegation assertion through the IAM Credentials API.
 
-"Customer ID" (or `GOOGLE_WORKSPACE_CUSTOMER_ID`) is only needed to read a Workspace other than the one the service account belongs to; it defaults to your own (`my_customer`).
+"Customer ID" (or `GOOGLE_WORKSPACE_CUSTOMER_ID`) is required with the read-only administrator role: a service account belongs to no Workspace, so Google refuses `my_customer` (the default) with a 400. Find it in the Admin console under Account, Account settings (it starts with C). With domain-wide delegation it can stay empty.
 
 ### Test it and turn it on
 
@@ -223,12 +223,12 @@ A document that is not a PDF is turned into one with Drive: uploaded to the pers
 In the Google Cloud project of the OAuth client:
 
 1. Enable the **Google Drive API** and the **Google Picker API** (and, for labels, the **Drive Labels API**).
-2. In **Google Auth Platform**, **Data access**, add the `drive.file` scope. For an Internal app Google does not review it.
+2. An Internal app needs no scope listed: the `drive.file` scope is asked for when each person connects Drive. (An External app must add it under **Google Auth Platform**, **Data access**.)
 3. In the OAuth client, add a second authorized redirect URI, `https://<your site>/api/google/drive/callback`. Settings shows the exact value with a copy button.
 
 ### Start from Google Drive
 
-In **APIs & Services**, **Credentials**, create an **API key**. Restrict it to the Google Picker API, and to this site's address as an HTTP referrer (`https://<your site>/*`). In Settings paste it as the browser API key, with the project **number** (from the project's dashboard; the Picker calls it the app ID). Neither is a secret: both are sent to the browser. Or set `GOOGLE_PICKER_API_KEY` and `GOOGLE_DRIVE_APP_ID`.
+In **APIs & Services**, **Credentials**, create an **API key**. Restrict it to the Google Picker API, and to this site's address as an HTTP referrer (`https://<your site>/*`). In Settings paste it as the browser API key, with the project **number** (the Picker calls it the app ID; on Google Cloud the field is filled in for you, otherwise it is on the project's dashboard). "Test the Picker" then opens the real Picker with the saved values and says whether it opened. Neither is a secret: both are sent to the browser. Or set `GOOGLE_PICKER_API_KEY` and `GOOGLE_DRIVE_APP_ID`.
 
 The Picker is loaded from `apis.google.com` and shows Drive in a frame from `docs.google.com`; the site's Content Security Policy allows those on the app's own pages, and not on the pages signers and downloads use.
 
@@ -243,7 +243,7 @@ In the Cloud console, open **Google Drive API**, **Drive UI integration**, give 
 | Default file extensions   | `pdf`                                                                                                                                                |
 | Secondary MIME types      | `application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,application/vnd.oasis.opendocument.text,application/rtf` |
 | Secondary file extensions | `docx,doc,odt,rtf`                                                                                                                                   |
-| Importing                 | On, with import format `application/pdf`, so Google Docs can be opened too                                                                           |
+| Importing                 | On, so Google Docs can be opened too (no import formats to enter)                                                                                    |
 
 Drive then sends the person to the open URL with a `state` naming the file. They are asked to sign in to SignuDoc if they are not, and to connect Drive the first time; a draft is made from the file and they continue with choosing its signers. The Google account that opened the file in Drive has to be the one connected.
 

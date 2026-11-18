@@ -148,7 +148,7 @@ export function describeDirectoryStatus(status: number | null): string {
     case null:
       return "Google's directory could not be reached.";
     case 400:
-      return "Google refused the request (400). Check the customer ID and the group address.";
+      return "Google refused the request (400). With the admin role, enter the Customer ID from Admin console, Account settings; also check the group address.";
     case 401:
     case 403:
       return `Google did not allow the directory to be read (${String(status)}). Check that the service account has the read-only administrator role, or, with domain-wide delegation, that both directory scopes are granted.`;

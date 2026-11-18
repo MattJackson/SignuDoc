@@ -6,7 +6,9 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import {
   BrandMark,
   CopyButton,
+  CopyValue,
   EnvLockedNotice,
+  ExternalLink,
   Notice as KitNotice,
   SetupStep,
   StatusBadge,
@@ -291,14 +293,9 @@ function SlackSetup({ onView, view }: SectionProps) {
           <ol className="list-decimal space-y-1 pl-5">
             <li>
               Open{" "}
-              <a
-                className="font-semibold text-(--accent-ink) underline underline-offset-4"
-                href={SLACK_NEW_APP_URL}
-                rel="noreferrer"
-                target="_blank"
-              >
+              <ExternalLink href={SLACK_NEW_APP_URL}>
                 Slack&apos;s app page
-              </a>
+              </ExternalLink>
               , choose <strong>From a manifest</strong>, and pick your
               workspace.
             </li>
@@ -324,18 +321,8 @@ function SlackSetup({ onView, view }: SectionProps) {
             </p>
           </div>
           <p>
-            It asks for only what notifications need:{" "}
-            {slack.scopes.map((scope, index) => (
-              <span key={scope}>
-                {index > 0 ? ", " : ""}
-                <code>{scope}</code>
-              </span>
-            ))}
-            . <code>chat:write</code> posts the messages;{" "}
-            <code>users:read</code> and <code>users:read.email</code> find each
-            person by their email address for direct messages; and{" "}
-            <code>channels:read</code> lists public channels to pick from below.
-            The app cannot read messages, and posts only where it is invited.
+            The manifest asks only for what notifications need. The app cannot
+            read messages.
           </p>
         </Step>
 
@@ -346,8 +333,7 @@ function SlackSetup({ onView, view }: SectionProps) {
           <p>
             In the app&apos;s settings, open <strong>Install App</strong>,
             install it to your workspace, and copy the{" "}
-            <strong>Bot User OAuth Token</strong> (it starts with{" "}
-            <code>xoxb-</code>).
+            <strong>Bot User OAuth Token</strong> (it starts with xoxb-).
           </p>
           {locked ? (
             <EnvLockedNotice variables={["SLACK_BOT_TOKEN"]} />
@@ -471,11 +457,15 @@ function SlackSetup({ onView, view }: SectionProps) {
           title="5. Invite the app to channels"
         >
           <p>
-            For a channel to receive posts, open it in Slack and type{" "}
-            <code>/invite @</code> followed by the app&apos;s name. Then add a
-            rule for it below. For a private channel, invite the app and paste
-            the channel&apos;s ID (at the bottom of the channel&apos;s details).
+            In each channel that should get posts, paste this into the message
+            box and send it. Then add a rule for the channel below. For a
+            private channel, also paste its ID (at the bottom of the
+            channel&apos;s details).
           </p>
+          <CopyValue
+            label="Invite command"
+            value={`/invite @${slack.appName}`}
+          />
         </Step>
       </ol>
     </div>

@@ -4,9 +4,12 @@ import { useState } from "react";
 
 import {
   BrandMark,
+  CopyValue,
   EnvLockedNotice,
+  ExternalLink,
 } from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import { consoleUrl, googleProjectId } from "@/lib/google-console";
 import type {
   BackupRun,
   BackupRunOutcome,
@@ -377,17 +380,32 @@ export function BackupSettingsSection({
               readOnly={false}
               value={values.prefix}
             />
-            <p className="text-sm leading-6 text-(--secondary) sm:col-span-2">
-              Grant <code>roles/storage.objectAdmin</code> on the bucket to{" "}
+            <div className="space-y-3 sm:col-span-2">
+              <p className="text-sm leading-6 text-(--secondary)">
+                In{" "}
+                <ExternalLink
+                  href={consoleUrl(
+                    "/storage/browsers",
+                    googleProjectId(view.serviceAccountEmail),
+                  )}
+                >
+                  Cloud Storage
+                </ExternalLink>
+                , open the bucket, turn on object versioning, and under
+                Permissions grant the role below to the service account.
+              </p>
+              <CopyValue label="Role" value="roles/storage.objectAdmin" />
               {view.serviceAccountEmail ? (
-                <code className="break-all text-(--fg)">
-                  {view.serviceAccountEmail}
-                </code>
+                <CopyValue
+                  label="Service account"
+                  value={view.serviceAccountEmail}
+                />
               ) : (
-                "the service account the app runs as"
+                <p className="text-sm leading-6 text-(--secondary)">
+                  Use the service account the app runs as.
+                </p>
               )}
-              , and turn on object versioning for the bucket.
-            </p>
+            </div>
           </div>
         ) : null}
 

@@ -3,9 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
+import { useBranding } from "@/components/layout/branding-provider";
 import {
+  CopyButton,
+  CopyValue,
   EnvLockedNotice,
   ExternalButton,
+  ExternalLink,
   IntegrationPanel,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
@@ -93,6 +97,7 @@ export function EmailSetupPanel({
   /** Told when the status changes, so onboarding can move on. */
   onStatusChange?: (status: EmailStatus) => void;
 } = {}) {
+  const { productName } = useBranding();
   const [status, setStatus] = useState<EmailStatus | null>(null);
   const [keyState, setKeyState] = useState<KeyState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -316,26 +321,21 @@ export function EmailSetupPanel({
             </p>
             <ol className="list-decimal space-y-1 pl-5 text-sm leading-6 text-(--secondary)">
               <li>
-                Sign in to Resend and open{" "}
-                <a
-                  className="font-semibold text-(--accent-ink) underline underline-offset-4"
-                  href={RESEND_API_KEYS_URL}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  API keys
-                </a>
-                .
+                Open Resend&apos;s{" "}
+                <ExternalLink href={RESEND_API_KEYS_URL}>API keys</ExternalLink>
+                , choose Add API Key and paste the name below.
               </li>
               <li>
-                Create a key with Full access, so this page can add your domain
-                and show its DNS records. A sending-only key works too, but then
-                the domain is set up in Resend itself.
+                Choose Full access, so this page can add your domain and show
+                its DNS records, then create it.
               </li>
               <li>
                 Paste it here. It is checked with Resend, then stored encrypted.
               </li>
             </ol>
+          </div>
+          <div className="max-w-xl">
+            <CopyValue label="API key name" value={productName} />
           </div>
           <div className="max-w-xl">
             <FieldShell
@@ -595,9 +595,11 @@ function DnsRecordsTable({
               </td>
               <td className="px-4 py-3 font-mono text-[0.8rem] break-all text-(--fg)">
                 {record.name}
+                <CopyButton label="record name" value={record.name} />
               </td>
               <td className="px-4 py-3 font-mono text-[0.8rem] break-all text-(--fg)">
                 {record.value}
+                <CopyButton label="record value" value={record.value} />
               </td>
               <td className="px-4 py-3 text-(--secondary)">
                 {describeRecordStatus(record.status)}
