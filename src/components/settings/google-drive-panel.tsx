@@ -93,6 +93,14 @@ async function postAction<T>(body: Record<string, unknown>): Promise<T | null> {
   }
 }
 
+async function fetchExports(): Promise<DriveExportListItem[] | null> {
+  return readExports(
+    await postAction<{ exports?: DriveExportListItem[] }>({
+      action: "list_exports",
+    }),
+  );
+}
+
 function formatTime(seconds: number | null): string {
   return seconds
     ? new Date(seconds * 1000).toLocaleString(undefined, {
@@ -212,26 +220,16 @@ export function GoogleDriveSection({
     }
   }
 
-  async function fetchExports(): Promise<DriveExportListItem[] | null> {
-    const list = readExports(
-      await postAction<{ exports?: DriveExportListItem[] }>({
-        action: "list_exports",
-      }),
-    );
-
+  function applyExports(list: DriveExportListItem[] | null) {
     if (list === null) {
       setNotice({ message: "Could not load the export list.", tone: "error" });
+    } else {
+      setExports(list);
     }
-
-    return list;
   }
 
   async function loadExports() {
-    const list = await fetchExports();
-
-    if (list !== null) {
-      setExports(list);
-    }
+    applyExports(await fetchExports());
   }
 
   useEffect(() => {
@@ -242,8 +240,8 @@ export function GoogleDriveSection({
     let cancelled = false;
 
     void fetchExports().then((list) => {
-      if (!cancelled && list !== null) {
-        setExports(list);
+      if (!cancelled) {
+        applyExports(list);
       }
     });
 
