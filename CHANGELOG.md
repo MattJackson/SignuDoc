@@ -28,6 +28,20 @@ is based on (docs/development.md, "Maintaining the fork").
   Google Cloud, or a service account key anywhere else).
 - Signers can sign at the same time, and teams can see each other's
   envelopes.
+- Approvers in the signing order, the sender's manager approving first,
+  employees signing with Google, and offboarding from the directory.
+- Google Drive: start envelopes from Drive or with "Open with", and keep
+  executed copies in a Shared Drive, with a Drive label.
+- A Gmail and Drive add-on to send documents for signature from the side
+  panel.
+- Onboarding at `/onboarding` walks an administrator through the rest of
+  setup, one step at a time, including the seal certificate and timestamp
+  server.
+
+### Notifications
+
+- Slack notifications for senders, teammates and channels, and for
+  administrators when a backup fails.
 
 ### Updates
 
