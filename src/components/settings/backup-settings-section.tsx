@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 
-import { EnvLockedNotice } from "@/components/settings/integration-kit";
+import {
+  BrandMark,
+  EnvLockedNotice,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   BackupRun,
@@ -324,6 +327,12 @@ export function BackupSettingsSection({
                 type="radio"
                 value={option.value}
               />
+              {option.value === "gcs" || option.value === "blob" ? (
+                <BrandMark
+                  brand={option.value === "gcs" ? "google-cloud" : "vercel"}
+                  size="sm"
+                />
+              ) : null}
               <span className="space-y-1">
                 <span className="block text-sm font-bold text-(--fg)">
                   {option.label}
