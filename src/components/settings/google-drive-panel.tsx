@@ -594,7 +594,7 @@ export function GoogleDriveSection({
             value={view.openWith.secondaryExtensions.join(",")}
           />
           <p>
-            To show "Open with" for everyone, list the app privately with the{" "}
+            To show &quot;Open with&quot; for everyone, list the app privately with the{" "}
             <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
               Google Workspace Marketplace SDK
             </ExternalLink>{" "}
