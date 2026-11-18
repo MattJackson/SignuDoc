@@ -1059,9 +1059,13 @@ async function syncAccounts({
 
   // A manager who has left too is no one to hand work to. Their answer is
   // usually in already; otherwise they are asked once.
-  async function managerIfActive(email: string | null): Promise<string | null> {
+  // A manager who could not be looked up is not known to be gone: the
+  // account waits for the next run instead of going to an administrator.
+  async function managerIfActive(
+    email: string | null,
+  ): Promise<{ error: string } | { email: string | null }> {
     if (!email) {
-      return null;
+      return { email: null };
     }
 
     const key = email.trim().toLowerCase();
@@ -1072,13 +1076,19 @@ async function syncAccounts({
       standings.set(key, standing);
     }
 
-    return standing.state === "active" ? key : null;
+    if (standing.state === "unknown") {
+      return { error: standing.error };
+    }
+
+    return { email: standing.state === "active" ? key : null };
   }
 
   // In a dry run nothing is committed, so the accounts it would already
   // have blocked are left out by hand when choosing who takes over and
   // whether an administrator is the last one.
   const imaginedBlocked: string[] = [];
+  // Skipped for want of an answer about their manager: asked again first.
+  const lookupFailedIds = new Set<string>();
   let used = 0;
 
   for (const { account, standing } of looked) {
@@ -1133,13 +1143,27 @@ async function syncAccounts({
           break;
         }
 
-        const managerEmail = await managerIfActive(plan.managerEmail);
+        const manager = await managerIfActive(plan.managerEmail);
+
+        if ("error" in manager) {
+          counts.lookupFailures += 1;
+          lookupFailedIds.add(account.id);
+          results.push({
+            action: "skipped",
+            email: account.email,
+            error: manager.error,
+            userId: account.id,
+            why: "lookup_failed",
+          });
+          break;
+        }
+
         const outcome = await inTransaction(dryRun, database, (tx) =>
           offboardAccount(tx, {
             account,
             breakGlass,
             excludedIds: imaginedBlocked,
-            managerEmail,
+            managerEmail: manager.email,
             now,
             reason: plan.reason,
           }),
@@ -1156,7 +1180,11 @@ async function syncAccounts({
           break;
         }
 
-        if (!outcome.blocked && outcome.envelopes.length === 0) {
+        if (
+          !outcome.blocked &&
+          outcome.envelopes.length === 0 &&
+          outcome.envelopesKept === 0
+        ) {
           break;
         }
 
@@ -1211,7 +1239,9 @@ async function syncAccounts({
     const answered = looked
       .filter(
         ({ account, standing }) =>
-          standing.state !== "unknown" && !deferred.has(account.id),
+          standing.state !== "unknown" &&
+          !deferred.has(account.id) &&
+          !lookupFailedIds.has(account.id),
       )
       .map(({ account }) => account.id);
 

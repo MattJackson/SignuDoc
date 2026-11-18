@@ -125,7 +125,7 @@ import {
 } from "./signing-steps.ts";
 import {
   googleSigningFor,
-  loadGoogleSigningPolicy,
+  loadGoogleSigningPolicyOrOff,
   type GoogleSigningPolicy,
 } from "./google-signing.ts";
 
@@ -1390,7 +1390,7 @@ async function googleCheckFor(
     return "require";
   }
 
-  const current = policy ?? (await loadGoogleSigningPolicy());
+  const current = policy ?? (await loadGoogleSigningPolicyOrOff());
 
   return googleSigningFor(current, context.signer, context.envelope) === "off"
     ? "off"
@@ -1677,7 +1677,7 @@ export async function verifySignerCheck(
   let passed = false;
   const policy =
     parsed.method === "google"
-      ? (googleSigningPolicy ?? (await loadGoogleSigningPolicy()))
+      ? (googleSigningPolicy ?? (await loadGoogleSigningPolicyOrOff()))
       : null;
   // The Google check may also be taken when it is only offered.
   const allowed = policy

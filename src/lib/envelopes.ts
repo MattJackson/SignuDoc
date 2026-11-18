@@ -211,6 +211,8 @@ type CorrectSentEnvelopeSignerContext = {
 
 type CorrectSentEnvelopeSignerOptions = {
   database?: DbPool;
+  /** Replaced in tests: the Workspace directory, null when it is off. */
+  directory?: DirectoryClient | null;
   emailService?: EmailService;
   nowUnixTimestamp?: number;
 };
@@ -1719,7 +1721,10 @@ const PART11_APPROVER_MESSAGE =
 /** The administrator's rule about the sender's manager, for this draft. */
 async function checkManagerPolicyForSender(
   userId: string,
-  signers: readonly PersistedSignerRecord[],
+  signers: readonly Pick<
+    PersistedSignerRecord,
+    "email" | "role" | "signOrder" | "signingStep"
+  >[],
   {
     database,
     directory,
@@ -3295,8 +3300,11 @@ export async function sendDraftEnvelope(
   return sendEnvelopeResponseSchema.parse({
     envelopeId,
     expiresAt,
+    // Only those whose invitation went out.
     notifiedSignerName: describeNotifiedSigners(
-      firstSigners.map((signer) => signer.name),
+      firstSigners
+        .filter((signer) => invitationMessageIds.has(signer.id))
+        .map((signer) => signer.name),
     ),
     redirectPath: `/envelopes/${envelopeId}`,
     sentAt,
@@ -3431,6 +3439,7 @@ export async function correctSentEnvelopeSigner(
   context: CorrectSentEnvelopeSignerContext,
   {
     database = getDb(),
+    directory,
     emailService,
     nowUnixTimestamp = Math.floor(Date.now() / 1000),
   }: CorrectSentEnvelopeSignerOptions = {},
@@ -3592,6 +3601,27 @@ export async function correctSentEnvelopeSigner(
           : duplicateSignerEmailMessage,
         400,
       );
+    }
+
+    // The administrator's rule about the sender's manager was checked when
+    // this was sent. Changing an approver's address must not swap out the
+    // manager it required, so the rule is checked again with the new one.
+    if (
+      signer.role === "approver" &&
+      nextEmail.toLowerCase() !== signer.email.toLowerCase()
+    ) {
+      const current = await listSignersForEnvelopeId(envelopeId, tx);
+      const managerCheck = await checkManagerPolicyForSender(
+        userId,
+        current.map((person) =>
+          person.id === signerId ? { ...person, email: nextEmail } : person,
+        ),
+        { database: tx, directory, part11: false },
+      );
+
+      if (managerCheck.status === "blocked") {
+        throw new EnvelopeMutationError(managerCheck.message, 409);
+      }
     }
 
     let issuedLink: IssuedSigningLink | null = null;
