@@ -10,6 +10,8 @@ import {
   GOOGLE_TOKEN_URL,
   openOAuthState,
   readIdTokenClaims,
+  refreshAccessToken,
+  revokeToken,
   safeReturnPath,
   sealOAuthState,
 } from "./drive-oauth.ts";
@@ -541,4 +543,52 @@ test("two stores asking for one person's token at once make one request", async 
 
   assert.deepEqual(tokens, ["access-1", "access-1"]);
   assert.equal(google.calls.length, 1);
+});
+
+// A fetch that answers only when its signal aborts.
+function hangingFetch() {
+  return ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(init.signal?.reason);
+      });
+    })) as typeof fetch;
+}
+
+function within<T>(promise: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error("Still waiting after the deadline."));
+      }, 2000);
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+test("a token request with no answer ends as a could-not-be-reached error", async () => {
+  await assert.rejects(
+    within(
+      refreshAccessToken({
+        client,
+        fetchImpl: hangingFetch(),
+        refreshToken: "refresh-1",
+        timeoutMs: 20,
+      } as Parameters<typeof refreshAccessToken>[0]),
+    ),
+    (error) =>
+      error instanceof DriveAuthorizationError && error.code === "failed",
+  );
+});
+
+test("a revoke request with no answer is given up on and reports false", async () => {
+  const revoke = revokeToken as (
+    ...args: [...Parameters<typeof revokeToken>, number]
+  ) => Promise<boolean>;
+
+  assert.equal(await within(revoke("refresh-1", hangingFetch(), 20)), false);
 });

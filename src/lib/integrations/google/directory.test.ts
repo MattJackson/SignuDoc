@@ -305,3 +305,31 @@ test("only a relation of type manager names the manager", () => {
     "m@example.com",
   );
 });
+
+test("a directory request with no answer is given up on", async () => {
+  const { credentials } = fakeCredentials();
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl: ((_url: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason);
+        });
+      })) as typeof fetch,
+    timeoutMs: 20,
+  } as Parameters<typeof createDirectoryClient>[0]);
+  let timer: NodeJS.Timeout | undefined;
+  const hung = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("Still waiting after the deadline."));
+    }, 2000);
+  });
+
+  await assert.rejects(
+    Promise.race([client.getUser("pat@example.com"), hung]).finally(() => {
+      clearTimeout(timer);
+    }),
+    DirectoryError,
+  );
+});
