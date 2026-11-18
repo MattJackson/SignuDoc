@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getAuthSession } from "@/lib/auth/server";
+import { getBackupSettingsView } from "@/lib/backup-config";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import {
   getOnboardingState,
@@ -11,6 +12,7 @@ import {
   type OnboardingStepId,
 } from "@/lib/onboarding/steps";
 import { toOrganizationSettingsView } from "@/lib/organization-settings";
+import { getSealSettingsView } from "@/lib/seal-setup";
 import { readStoredSettings, resolveSettings } from "@/lib/settings";
 import { describeStorageDriver } from "@/lib/storage-check";
 
@@ -39,10 +41,12 @@ export default async function OnboardingPage({
 
   const { step: rawStep } = await searchParams;
   const requested = Array.isArray(rawStep) ? rawStep[0] : rawStep;
-  const [steps, googleWorkspace, stored] = await Promise.all([
+  const [steps, googleWorkspace, stored, backups, seal] = await Promise.all([
     getOnboardingState(),
     getGoogleWorkspaceView(),
     readStoredSettings(),
+    getBackupSettingsView(),
+    getSealSettingsView(),
   ]);
   // With no step named, the first one not done yet.
   const current: OnboardingStepId | "done" =
@@ -56,8 +60,10 @@ export default async function OnboardingPage({
     <OnboardingShell
       current={current}
       data={{
+        backups,
         googleWorkspace,
         organization: toOrganizationSettingsView(resolveSettings(stored)),
+        seal,
         storage: describeStorageDriver(),
       }}
       steps={steps}

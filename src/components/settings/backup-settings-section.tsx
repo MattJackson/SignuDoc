@@ -114,8 +114,11 @@ function describeOutcome(outcome: BackupRunOutcome): {
 
 export function BackupSettingsSection({
   initialView,
+  onChange,
 }: {
   initialView: BackupSettingsView;
+  /** Called after a save or a run, so onboarding can read its checklist again. */
+  onChange?: () => void;
 }) {
   const [view, setView] = useState(initialView);
   const [values, setValues] = useState(() => toFormValues(initialView));
@@ -165,6 +168,7 @@ export function BackupSettingsSection({
       setView(next);
       setValues(toFormValues(next));
       setNotice({ message: "Backup settings saved.", tone: "success" });
+      onChange?.();
     } catch (error) {
       setNotice({
         message: error instanceof Error ? error.message : GENERIC_ERROR_MESSAGE,
@@ -221,6 +225,7 @@ export function BackupSettingsSection({
 
       setView(result.view);
       setNotice(describeOutcome(result.outcome));
+      onChange?.();
     } catch (error) {
       setNotice({
         message: error instanceof Error ? error.message : GENERIC_ERROR_MESSAGE,
