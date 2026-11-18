@@ -3,7 +3,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 import { getDb, withTransaction, type DbPool } from "./db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import { emailSchema, nameSchema } from "./schemas/common.ts";
+import { storeDefaultTimestampServer } from "./seal-settings.ts";
 import {
   closeSignupUntilSetupFinishes,
   invalidateSettingsCache,
@@ -430,6 +432,9 @@ export async function completeSetup(
           },
           tx,
         );
+        // A new install timestamps its seals from the start; the
+        // administrator can change or turn it off in Settings.
+        await storeDefaultTimestampServer(tx, { email, id: userId }, now);
 
         return { email, mode: "create" as const, userId };
       }
@@ -487,6 +492,7 @@ export async function completeSetup(
     }, database);
 
     invalidateSettingsCache();
+    invalidateIntegrationSettingsCache();
 
     return result;
   } catch (error) {
@@ -504,4 +510,9 @@ export async function completeSetup(
 
     throw error;
   }
+}
+
+/** Where the first administrator goes after setup: hosted installs have no onboarding. */
+export function firstRunDestination(env: EnvSource = process.env): string {
+  return isHostedMode(env) ? "/settings" : "/onboarding";
 }
