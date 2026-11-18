@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, type ComponentProps, type ReactNode } from "react";
 
 import { Brand } from "@/components/layout/brand";
+import { UserAvatar } from "@/components/layout/user-avatar";
 import {
   primaryNavItems,
   type ShellNavItem,
@@ -26,6 +27,8 @@ type AppShellProps = {
   showEmailSetupNotice?: boolean;
   user: {
     email: string;
+    /** The Google profile picture, when there is one. */
+    image?: string | null;
     name: string;
   };
 };
@@ -88,10 +91,10 @@ export function AppShell({
             <DropdownMenuTrigger asChild>
               <button
                 aria-label={`Account menu for ${user.name}`}
-                className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-[#ffd9c2] text-[0.8125rem] font-bold text-[#7a3412] transition hover:ring-4 hover:ring-[rgba(28,29,43,0.06)]"
+                className="inline-flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#ffd9c2] text-[0.8125rem] font-bold text-[#7a3412] transition hover:ring-4 hover:ring-[rgba(28,29,43,0.06)]"
                 type="button"
               >
-                {initials}
+                <UserAvatar fallback={initials} image={user.image} />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">

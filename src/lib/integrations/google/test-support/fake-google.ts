@@ -297,6 +297,7 @@ export async function startFakeGoogle(
         iss: FAKE_GOOGLE_ISSUER,
         name: `${user.givenName} ${user.familyName}`.trim(),
         ...(nonce ? { nonce } : {}),
+        ...(user.picture ? { picture: user.picture } : {}),
         sub: user.id,
       },
       signing.privateKey,
@@ -319,6 +320,7 @@ export async function startFakeGoogle(
         "iss",
         "name",
         "nonce",
+        "picture",
         "sub",
       ],
       code_challenge_methods_supported: ["plain", "S256"],
@@ -724,6 +726,7 @@ ${accounts}
       given_name: user.givenName,
       ...(user.hd ? { hd: user.hd } : {}),
       name: `${user.givenName} ${user.familyName}`.trim(),
+      ...(user.picture ? { picture: user.picture } : {}),
       sub: user.id,
     });
   }
