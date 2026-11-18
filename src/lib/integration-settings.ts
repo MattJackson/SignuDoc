@@ -28,6 +28,8 @@ import { resolveDatabaseUrl, type EnvSource } from "./utils/env.ts";
 // counts as not set, so the administrator is asked for it again.
 
 export const INTEGRATION_SETTINGS = {
+  "google.addonClientId": { secret: false },
+  "google.addonServiceAccount": { secret: false },
   "google.adminGroup": { secret: false },
   "google.adminSubject": { secret: false },
   "google.customerId": { secret: false },

@@ -6,6 +6,7 @@ import {
   type IntegrationSettingsActor,
 } from "../integration-settings.ts";
 import { getGoogleCredentials } from "../integrations/google/credentials.ts";
+import { readAddonConfig } from "../integrations/google/addon/config.ts";
 import { readDirectoryConfig } from "../integrations/google/directory.ts";
 import { resolveEmailDriver, resolveResendApiKey } from "../services/email.ts";
 import { getSettings, type ResolvedSettings } from "../settings.ts";
@@ -20,13 +21,15 @@ import { type EnvSource } from "../utils/env.ts";
 //
 // Other parts of the app add a step by adding it here (and its form to
 // components/onboarding/steps.tsx under the same id). A Google Drive step
-// belongs after "google-directory" when Drive features arrive.
+// belongs after "google-directory" when Drive features arrive, before the
+// add-on ("google-addon"), which ends the Google steps.
 
 export type OnboardingStepId =
   | "organization"
   | "email"
   | "google-sign-in"
   | "google-directory"
+  | "google-addon"
   | "storage"
   | "backups"
   | "retention";
@@ -186,6 +189,34 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "Suggest colleagues as recipients, and make a Google Group's members administrators.",
     title: "Workspace directory and admin group",
+  },
+  {
+    check: async ({ env, stored }) => {
+      const config = readAddonConfig(env, stored);
+
+      if (config.ready) {
+        return {
+          detail: "SignuDoc is in the Gmail and Drive side panel.",
+          status: "done",
+        };
+      }
+
+      return config.serviceAccountEmail || config.oauthClientId
+        ? {
+            detail:
+              "Paste both the add-on's service account and its OAuth client ID.",
+            status: "needs_attention",
+          }
+        : {
+            detail: "Optional: send for signature from Gmail and Drive.",
+            status: "not_started",
+          };
+    },
+    id: "google-addon",
+    settingsHref: "/settings#google-workspace-addon",
+    summary:
+      "Send attachments and Drive files for signature from the Gmail and Drive side panel.",
+    title: "Gmail and Drive add-on",
   },
   {
     check: async ({ env }) => {

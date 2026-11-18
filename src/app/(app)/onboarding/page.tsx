@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getAuthSession } from "@/lib/auth/server";
+import { getGoogleAddonView } from "@/lib/google-addon";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import {
   getOnboardingState,
@@ -39,9 +40,10 @@ export default async function OnboardingPage({
 
   const { step: rawStep } = await searchParams;
   const requested = Array.isArray(rawStep) ? rawStep[0] : rawStep;
-  const [steps, googleWorkspace, stored] = await Promise.all([
+  const [steps, googleWorkspace, googleAddon, stored] = await Promise.all([
     getOnboardingState(),
     getGoogleWorkspaceView(),
+    getGoogleAddonView(),
     readStoredSettings(),
   ]);
   // With no step named, the first one not done yet.
@@ -56,6 +58,7 @@ export default async function OnboardingPage({
     <OnboardingShell
       current={current}
       data={{
+        googleAddon,
         googleWorkspace,
         organization: toOrganizationSettingsView(resolveSettings(stored)),
         storage: describeStorageDriver(),

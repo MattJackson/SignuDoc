@@ -1,4 +1,5 @@
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
+import { GoogleAddonPanel } from "@/components/settings/google-addon-panel";
 import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
@@ -8,6 +9,7 @@ import { UpdatesPanel } from "@/components/settings/updates-panel";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getBackupSettingsView } from "@/lib/backup-config";
 import { getAuthSession } from "@/lib/auth/server";
+import { getGoogleAddonView } from "@/lib/google-addon";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import { getOnboardingState } from "@/lib/onboarding/steps";
 import { toOrganizationSettingsView } from "@/lib/organization-settings";
@@ -24,10 +26,14 @@ export default async function SettingsPage() {
   const isAdmin = session ? await isAdminUser(session.user.id) : false;
   const settings = await getSettings();
   const backupView = isAdmin ? await getBackupSettingsView() : null;
-  const [onboarding, googleWorkspace] =
+  const [onboarding, googleWorkspace, googleAddon] =
     isAdmin && !settings.hosted
-      ? await Promise.all([getOnboardingState(), getGoogleWorkspaceView()])
-      : [null, null];
+      ? await Promise.all([
+          getOnboardingState(),
+          getGoogleWorkspaceView(),
+          getGoogleAddonView(),
+        ])
+      : [null, null, null];
 
   return (
     <div className="space-y-8">
@@ -54,6 +60,7 @@ export default async function SettingsPage() {
       {googleWorkspace ? (
         <GoogleWorkspacePanel initialView={googleWorkspace} />
       ) : null}
+      {googleAddon ? <GoogleAddonPanel initialView={googleAddon} /> : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <TeamsPanel /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}

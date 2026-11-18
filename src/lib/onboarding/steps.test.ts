@@ -58,6 +58,7 @@ test("the steps come in the order onboarding walks them", () => {
       "email",
       "google-sign-in",
       "google-directory",
+      "google-addon",
       "storage",
       "backups",
       "retention",
@@ -137,9 +138,42 @@ test("the directory step waits until the directory is turned on", async () => {
   assert.equal(
     await check(
       "google-directory",
+      "google-addon",
       context({ stored: { "google.directory": "off" } }),
     ),
     "not_started",
+  );
+});
+
+test("the add-on step is done once both of Google's values are there", async () => {
+  assert.equal(await check("google-addon", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-addon",
+      context({
+        stored: {
+          "google.addonServiceAccount":
+            "service-12@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+        },
+      }),
+    ),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "google-addon",
+      context({
+        env: {
+          GOOGLE_ADDON_CLIENT_ID: "123456789012345678901",
+          RESEND_API_KEY: "re_environmentkey1",
+        },
+        stored: {
+          "google.addonServiceAccount":
+            "service-12@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+        },
+      }),
+    ),
+    "done",
   );
 });
 

@@ -4,11 +4,13 @@ import { useState, type ComponentType, type FormEvent } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
+import { GoogleAddonSection } from "@/components/settings/google-addon-panel";
 import {
   GoogleDirectorySection,
   GoogleSignInSection,
   useGoogleWorkspace,
 } from "@/components/settings/google-workspace-panel";
+import type { GoogleAddonView } from "@/lib/google-addon";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -19,6 +21,7 @@ import type { OrganizationSettingsView } from "@/lib/organization-settings";
 // drift apart.
 
 export type OnboardingData = {
+  googleAddon: GoogleAddonView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   storage: { driver: string | null; problem: string | null };
@@ -245,6 +248,10 @@ function GoogleDirectoryStep({ data }: StepFormProps) {
   return <GoogleDirectorySection workspace={workspace} />;
 }
 
+function GoogleAddonStep({ data }: StepFormProps) {
+  return <GoogleAddonSection initialView={data.googleAddon} />;
+}
+
 function StorageStep({ data }: StepFormProps) {
   const [result, setResult] = useState<Feedback>(null);
   const [checking, setChecking] = useState(false);
@@ -389,6 +396,7 @@ export const STEP_FORMS: Record<
 > = {
   backups: BackupsStep,
   email: EmailStep,
+  "google-addon": GoogleAddonStep,
   "google-directory": GoogleDirectoryStep,
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
