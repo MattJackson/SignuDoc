@@ -74,3 +74,48 @@ jobs:
           name: playwright-traces
           path: test-results/
           retention-days: 7
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: signudoc
+          POSTGRES_PASSWORD: signudoc
+          POSTGRES_DB: signudoc_docker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signudoc -d signudoc_docker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_docker
+    steps:
+      - uses: actions/checkout@v6
+      # The image Cloud Run runs (docs/google-cloud-run.md). Built, never
+      # pushed.
+      - run: docker build -t signudoc:ci .
+      # The migrations run from the image, as the Cloud Run migrate job does.
+      - run: docker run --rm --network host -e DATABASE_URL signudoc:ci node db/migrate.mjs
+      # The server starts as the image's own user and answers its health
+      # check and a page.
+      - run: |
+          docker run -d --name signudoc --network host \
+            -e DATABASE_URL \
+            -e APP_URL=http://localhost:8080 \
+            -e BETTER_AUTH_SECRET=ci-docker-secret-0123456789abcdef0123456789 \
+            -e EMAIL_DRIVER=capture \
+            signudoc:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/api/health
+          curl -fsS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/login
+          test "$(docker exec signudoc id -u)" != "0"
+      - if: always()
+        run: docker logs signudoc || true

@@ -3,6 +3,7 @@
 Everything about running your own SignuDoc: deploying it, setting it up, what it costs, keeping it up to date, and the settings you can change. For working on the code, see [Development](development.md).
 
 - [Deploy to Vercel](#deploy-to-vercel)
+- [Deploy on Google Cloud Run](google-cloud-run.md)
 - [Set the site up](#set-the-site-up)
 - [Your responsibilities](#your-responsibilities)
 - [Signed PDFs and the seal](#signed-pdfs-and-the-seal)
@@ -311,7 +312,7 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 
 ## Rate limits
 
-Sign-in, sign-up, password reset, the signing pages, uploads and sending are rate limited per visitor. The counts are kept in the `rate_limits` table in Postgres, so they hold across every instance of the app. On Vercel the visitor's address is read from the header Vercel sets itself, which a visitor cannot forge. If the database cannot be reached, each instance falls back to counting in its own memory.
+Sign-in, sign-up, password reset, the signing pages, uploads and sending are rate limited per visitor. The counts are kept in the `rate_limits` table in Postgres, so they hold across every instance of the app. On Vercel the visitor's address is read from the header Vercel sets itself, which a visitor cannot forge. Anywhere else it is the last entry of `X-Forwarded-For`, the one added by the proxy in front of the app, which is right on Cloud Run and behind a single reverse proxy; see [The visitor's address](#the-visitors-address) for other setups. If the database cannot be reached, each instance falls back to counting in its own memory.
 
 ## Bot protection
 
@@ -326,6 +327,8 @@ It is opt-in for now because it has not yet been proven against a live Vercel de
 `HOSTED_MODE=1` runs SignuDoc as a public service under its own name: the landing page at `/`, the built-in terms, privacy, contact and accessibility pages, and sign-up open to anyone. Leave it unset for an install that belongs to one organization.
 
 ## Self-hosting somewhere else
+
+On Google Cloud, [Deploy on Google Cloud Run](google-cloud-run.md) sets up everything with one script. The [`Dockerfile`](../Dockerfile) it uses builds an image that runs on any other container platform too.
 
 SignuDoc is a regular Next.js app and runs anywhere Node.js 24 and Postgres do:
 
@@ -350,3 +353,13 @@ Self-hosted operators are responsible for:
 - keeping the support address pointed at a mailbox someone reads, and verifying a sending domain for email;
 - configuring retention, consent, and compliance requirements for their own deployment; and
 - scheduling the [daily cleanup](#daily-cleanup) if they are not on Vercel, where it is scheduled for them.
+
+### The visitor's address
+
+Rate limits, sessions and the audit trail record each visitor's IP address. Away from Vercel it is read from `X-Forwarded-For`, counting from the right: every proxy appends the address it saw the request come from, so only the entries your own proxies add can be trusted, and anything to the left of them is whatever the visitor sent.
+
+- With one proxy in front of the app (Cloud Run's front end, or an nginx or Caddy that appends to the header), the default is right: the last entry.
+- With more than one, set `TRUSTED_PROXY_HOPS` to how many append an entry. Behind a Google Cloud external Application Load Balancer, which appends two, use `TRUSTED_PROXY_HOPS=2`. A request with fewer entries than that did not come through all of them, and gets no address.
+- Behind a proxy that writes the visitor's address into a header of its own and replaces any value the visitor sent, set `CLIENT_IP_HEADER` to that header, such as `cf-connecting-ip` behind Cloudflare or `x-real-ip` behind an nginx that sets it. Only that header is then read. Set it only when the app cannot be reached except through that proxy, since anyone who can reach the app directly can send the header.
+
+`cf-connecting-ip` and `x-real-ip` are never trusted unless `CLIENT_IP_HEADER` names them.

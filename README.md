@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FNYLLON-SOFTWARE%2FSignuDoc&project-name=signudoc&repository-name=signudoc&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22resend%22%2C%22productSlug%22%3A%22resend-email%22%2C%22protocol%22%3A%22messaging%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D&demo-title=SignuDoc&demo-description=Your%20own%20e-signature%20site.%20Upload%20a%20PDF%2C%20place%20fields%2C%20send%20signing%20links%2C%20and%20keep%20the%20signed%20copy%20with%20its%20audit%20certificate.&demo-url=https%3A%2F%2Fgithub.com%2FNYLLON-SOFTWARE%2FSignuDoc&demo-image=https%3A%2F%2Fraw.githubusercontent.com%2FNYLLON-SOFTWARE%2FSignuDoc%2Fmain%2Fdocs%2Fimages%2Fbanner.png"><img src="docs/images/deploy-to-vercel.svg" alt="Deploy to Vercel" height="32"></a><br>
-  <sub>or <a href="docs/deploy-with-an-agent.md">copy this to your LLM</a></sub>
+  <sub>or <a href="docs/deploy-with-an-agent.md">copy this to your LLM</a>, or <a href="docs/google-cloud-run.md">deploy on Google Cloud Run</a></sub>
 </p>
 
 <p align="center">
@@ -207,6 +207,17 @@ DocuSign's figures are its US list prices for annual plans in November 2026: $30
 
 There is nothing to type in Vercel and no terminal to open. Until step 5 is done, email reaches only the address on your Resend account, so you can try the whole product straight away by sending a document to yourself. The [self-hosting guide](docs/self-hosting.md) covers your own domain, locking down a new install, keeping it up to date, running in the EU, and every optional setting.
 
+### Deploy on Google Cloud Run
+
+To run SignuDoc in your own Google Cloud project instead, as one Docker image on Cloud Run with Cloud SQL for PostgreSQL and a private Cloud Storage bucket, run the setup script with your project ID:
+
+```bash
+PROJECT_ID=my-project REGION=us-central1 DOMAIN=sign.example.com \
+  ./deploy/google-cloud/setup.sh
+```
+
+It creates the database, the bucket, the secrets, the service, its migrate job and the daily jobs, then deploys. Open `https://<your domain>/setup` and follow the onboarding. [Deploy on Google Cloud Run](docs/google-cloud-run.md) is the full guide, with updates, costs and troubleshooting. The same image runs anywhere Docker does.
+
 ### Try it on your computer
 
 With Node.js 24 and Docker:
@@ -245,6 +256,7 @@ Your install carries your organization's name, and your organization is responsi
 ## Learn more
 
 - [Self-hosting guide](docs/self-hosting.md): deploying, first-run setup, what it costs, your own domain, updates, the EU, the seal, cleanup, rate limits, bot protection and every optional setting.
+- [Deploy on Google Cloud Run](docs/google-cloud-run.md): the Docker image, Cloud SQL, Cloud Storage, Secret Manager, Cloud Scheduler, updates by digest and alerting.
 - [Development](docs/development.md): running SignuDoc locally, storage, the database, email, tests and the code's layout.
 - [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
 
