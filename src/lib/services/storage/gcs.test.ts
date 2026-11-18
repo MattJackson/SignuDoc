@@ -637,9 +637,11 @@ test("an upload Cloud Storage stops taking fails instead of looping", async () =
     (error: unknown) =>
       error instanceof GcsRequestError && /upload/.test(error.message),
   );
+  // The first try and at most three more (MAX_STALLED_PIECES), then it
+  // gives up rather than sending the piece for ever.
   assert.equal(
     fake.calls.filter((call) => call.url.pathname === "/resumable").length,
-    1,
+    4,
   );
   assert.equal(fake.objects.has("stuck"), false);
 });
