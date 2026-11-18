@@ -245,7 +245,7 @@ test("an error inside a transaction aborts it, as on Postgres", async () => {
   }
 });
 
-test("a transaction holds the write lock from its first statement to its end", async () => {
+test("a transaction holds the write lock from its first write to its end", async () => {
   const events: string[] = [];
   const holder = await pool.connect();
 
@@ -302,6 +302,47 @@ test("reads outside a transaction see what is committed, without waiting", async
     ).rows[0]!.name,
     "After",
   );
+});
+
+test("a transaction that has only read holds nothing; a locking read takes the lock", async () => {
+  const holder = await pool.connect();
+  const order: string[] = [];
+
+  try {
+    await holder.query("BEGIN");
+    await holder.query(`select count(*) from "user"`);
+    // As in a Postgres READ COMMITTED transaction: a plain read locks nothing.
+    await pool.query(
+      `insert into rate_limits (key, count, expires_at) values ('read-only', 1, 1)`,
+    );
+    await holder.query(
+      `select * from rate_limits where key = 'read-only' for update`,
+    );
+
+    const rival = pool
+      .query(`update rate_limits set count = 2 where key = 'read-only'`)
+      .then(() => order.push("rival wrote"));
+
+    await sleep(30);
+    order.push("holder commits");
+    await holder.query("COMMIT");
+    await rival;
+  } finally {
+    holder.release();
+  }
+
+  assert.deepEqual(order, ["holder commits", "rival wrote"]);
+});
+
+test("a division by zero is an error, as on Postgres", async () => {
+  await assert.rejects(pool.query("select 1 / 0"), { code: "22012" });
+  assert.deepEqual((await pool.query("select 7 / 2 as i, 7.0 / 2 as r")).rows, [
+    { i: 3, r: 3.5 },
+  ]);
+});
+
+test("a pool looks like a pg pool to the code that asks", () => {
+  assert.ok("connect" in pool && "totalCount" in pool);
 });
 
 test("concurrent async transactions never interleave", async () => {

@@ -18,8 +18,18 @@ export class UnsupportedSqlError extends Error {
 /** How a result column computed by an expression is to be read back. */
 export type TypeHint = "bool" | "json" | "date";
 
+/**
+ * "locking-read" is a SELECT … FOR UPDATE/SHARE: inside a transaction it
+ * takes the write lock, as a write does; outside one it is a plain read.
+ */
 export type StatementKind =
-  "begin" | "commit" | "rollback" | "advisory" | "read" | "write";
+  | "begin"
+  | "commit"
+  | "rollback"
+  | "advisory"
+  | "read"
+  | "locking-read"
+  | "write";
 
 export type Rewritten = {
   kind: StatementKind;
@@ -732,6 +742,17 @@ function splitTopLevel(tokens: Token[]): Token[][] {
   }
 
   return parts;
+}
+
+/** Whether the statement locks rows anywhere: FOR UPDATE, FOR SHARE, … */
+function hasRowLock(tokens: Token[]): boolean {
+  return tokens.some(
+    (token, i) =>
+      isWord(token, "FOR") &&
+      (isWord(tokens[i + 1], "UPDATE", "SHARE") ||
+        (isWord(tokens[i + 1], "NO") && isWord(tokens[i + 2], "KEY")) ||
+        (isWord(tokens[i + 1], "KEY") && isWord(tokens[i + 2], "SHARE"))),
+  );
 }
 
 /** FOR UPDATE [OF a, b] [NOWAIT | SKIP LOCKED], FOR SHARE, … */
@@ -1564,6 +1585,31 @@ function rejectUnsupported(tokens: Token[], sql: string) {
   }
 }
 
+/** x / y: Postgres refuses a division by zero, SQLite gives NULL. */
+function rewriteDivision(tokens: Token[], sql: string): Token[] {
+  const out = [...tokens];
+
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i]!.type !== "op" || out[i]!.text !== "/") {
+      continue;
+    }
+
+    const sign = out[i + 1]?.text === "-" || out[i + 1]?.text === "+";
+    const start = i + 1;
+    const end = operandEnd(out, sign ? i + 2 : i + 1, sql);
+    const replacement = [
+      ident("pg_nonzero"),
+      punct("("),
+      ...out.slice(start, end + 1),
+      punct(")"),
+    ];
+
+    out.splice(start, end - start + 1, ...replacement);
+  }
+
+  return out;
+}
+
 /** a <@ b, a @> b (JSON containment, used by tests). */
 function rewriteContainment(tokens: Token[], sql: string): Token[] {
   const out = [...tokens];
@@ -2122,11 +2168,16 @@ export function rewriteSql(
   tokens = rewriteAnyAll(tokens, sql);
   tokens = rewriteArrays(tokens, sql);
   tokens = rewriteContainment(tokens, sql);
+  tokens = rewriteDivision(tokens, sql);
   tokens = rewriteNamesAndParams(tokens);
   tokens = addUpsertWhere(tokens);
   tokens = rewriteUpdateFromReturning(tokens);
 
-  return { hints, kind, sql: render(tokens) };
+  return {
+    hints,
+    kind: kind === "read" && hasRowLock(original) ? "locking-read" : kind,
+    sql: render(tokens),
+  };
 }
 
 /**

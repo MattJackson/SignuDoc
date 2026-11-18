@@ -312,6 +312,14 @@ test("statements are classified: reads go to the reader, the rest take the write
   );
   assert.equal(rewriteSql("UPDATE t SET a = 1").kind, "write");
   assert.equal(
+    rewriteSql("SELECT a FROM t WHERE id = $1 FOR UPDATE").kind,
+    "locking-read",
+  );
+  assert.equal(
+    rewriteSql("SELECT a / b FROM t").sql,
+    "SELECT a / pg_nonzero(b) FROM t",
+  );
+  assert.equal(
     rewriteSql("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").kind,
     "begin",
   );

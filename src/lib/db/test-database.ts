@@ -89,6 +89,32 @@ export function openAnotherPool(
   return new pg.Pool({ connectionString, ...options });
 }
 
+/**
+ * Writes made from inside another transaction's work, as another session
+ * would make them meanwhile. On Postgres each goes through at once. SQLite
+ * has one writer, so there it waits for the open transaction to end: it is
+ * started at once and awaited by `settled()`.
+ */
+export function besideOpenTransactions() {
+  const onSqlite = isSqliteUrl(process.env.E2E_DATABASE_URL ?? "");
+  const pending: Promise<unknown>[] = [];
+
+  return {
+    async run(write: () => Promise<unknown>) {
+      const written = write();
+
+      if (!onSqlite) {
+        await written;
+        return;
+      }
+
+      written.catch(() => undefined);
+      pending.push(written);
+    },
+    settled: () => Promise.all(pending),
+  };
+}
+
 type QueryFunction = (text: unknown, values?: unknown[]) => unknown;
 
 /**

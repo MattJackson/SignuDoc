@@ -273,13 +273,11 @@ class SqliteFile {
 
     for (const database of [this.writer, this.reader]) {
       registerFunctions(database, {
-        lockWaiters: (kind) =>
-          [...this.waitingHolders].filter(
-            (holder) =>
-              kind === "all" ||
-              holder.waiting?.kind === "advisory" ||
-              (holder.waiting?.kind === "mutex" && holder.waiting.advisory),
-          ).length,
+        // Every wait counts for both views: on SQLite the one write lock
+        // stands in for Postgres's row and advisory locks alike, so a
+        // transaction Postgres would hold up at an advisory lock is held up
+        // here at the write lock, one statement earlier.
+        lockWaiters: () => this.waitingHolders.size,
         now: () => this.currentNow ?? formatTimestamp(new Date()),
       });
       database.exec(CATALOG_VIEWS_SQL);
@@ -647,7 +645,10 @@ export class SqliteClient implements Holder {
     return this.state !== "idle";
   }
 
-  /** Takes the write lock and starts the transaction, on its first statement. */
+  /**
+   * Takes the write lock and starts the transaction, at its first write or
+   * locking read (SELECT … FOR UPDATE/SHARE).
+   */
   private async activate(forAdvisory = false) {
     if (this.state === "active") {
       return;
@@ -662,7 +663,7 @@ export class SqliteClient implements Holder {
       throw toDatabaseError(error);
     }
 
-    this.transactionNow = formatTimestamp(new Date());
+    this.transactionNow ??= formatTimestamp(new Date());
     this.state = "active";
   }
 
@@ -722,6 +723,8 @@ export class SqliteClient implements Holder {
       case "begin":
         if (this.state === "idle") {
           this.state = "pending";
+          // now() is the time the transaction began, as on Postgres.
+          this.transactionNow = formatTimestamp(new Date());
         }
 
         return emptyResult("BEGIN");
@@ -747,6 +750,25 @@ export class SqliteClient implements Holder {
         values,
         this.lockTimeoutMs,
       );
+    }
+
+    // Before its first write or locking read, a transaction has nothing of
+    // its own to see: a plain read sees what is committed, without taking
+    // the lock, exactly as a read in a Postgres READ COMMITTED transaction
+    // takes no row lock. So a transaction that has only read does not hold
+    // up writes made meanwhile through the pool.
+    if (this.state === "pending" && rewritten.kind === "read") {
+      try {
+        return this.file.run(
+          this.file.reader,
+          rewritten,
+          values,
+          this.transactionNow,
+        );
+      } catch (error) {
+        this.state = "failed";
+        throw error;
+      }
     }
 
     await this.activate();
@@ -811,7 +833,7 @@ async function runOutsideTransaction(
   const now = formatTimestamp(new Date());
 
   // Reads see everything committed, without waiting, as on Postgres.
-  if (rewritten.kind === "read") {
+  if (rewritten.kind === "read" || rewritten.kind === "locking-read") {
     return file.run(file.reader, rewritten, values, now);
   }
 
@@ -932,6 +954,20 @@ export class SqlitePool {
   /** Column types by table (backups). */
   get schema(): SchemaInfo {
     return this.file.schemaInfo();
+  }
+
+  // pg.Pool's counters. The app tells a pool from a client by them
+  // ("totalCount" in database), and opens a transaction for a pool.
+  get totalCount(): number {
+    return 1;
+  }
+
+  get idleCount(): number {
+    return this.file.lock.owner ? 0 : 1;
+  }
+
+  get waitingCount(): number {
+    return this.file.waitingHolders.size;
   }
 
   on(): this {

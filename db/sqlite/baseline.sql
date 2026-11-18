@@ -21,7 +21,7 @@ create table "user" (
   image text,
   "createdAt" timestamptz not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   "updatedAt" timestamptz not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  role text not null default 'user' check (role in ('user', 'admin')),
+  role text not null default 'user' constraint user_role_check check (role in ('user', 'admin')),
   identity_verified_at bigint,
   identity_verified_by text,
   identity_verification_note text,
@@ -29,7 +29,7 @@ create table "user" (
   signing_locked_at bigint,
   "twoFactorEnabled" boolean not null default 0,
   directory_blocked_at bigint,
-  directory_blocked_reason text check (
+  directory_blocked_reason text constraint user_directory_blocked_reason_check check (
     directory_blocked_reason is null
     or directory_blocked_reason in (
       'directory_suspended',
@@ -104,14 +104,14 @@ create table envelopes (
   user_id text not null references "user" (id) on delete cascade,
   title text not null,
   status text not null default 'draft'
-    check (status in ('draft', 'sent', 'completed', 'declined', 'voided')),
+    constraint envelopes_status_check check (status in ('draft', 'sent', 'completed', 'declined', 'voided')),
   source_pdf_key text not null,
   source_pdf_filename text not null,
-  source_pdf_size_bytes bigint not null check (source_pdf_size_bytes > 0),
-  page_count integer not null check (page_count > 0),
+  source_pdf_size_bytes bigint not null constraint envelopes_source_pdf_size_bytes_check check (source_pdf_size_bytes > 0),
+  page_count integer not null constraint envelopes_page_count_check check (page_count > 0),
   signed_pdf_key text,
   evidence_key text,
-  source_pdf_hash text not null check (length(source_pdf_hash) = 64),
+  source_pdf_hash text not null constraint envelopes_source_pdf_hash_check check (length(source_pdf_hash) = 64),
   sent_at bigint,
   completed_at bigint,
   declined_at bigint,
@@ -119,16 +119,16 @@ create table envelopes (
   created_at bigint not null default (cast(round(unixepoch('subsec')) as integer)),
   updated_at bigint not null default (cast(round(unixepoch('subsec')) as integer)),
   signed_pdf_sha256 text
-    check (signed_pdf_sha256 is null or length(signed_pdf_sha256) = 64),
+    constraint envelopes_signed_pdf_sha256_check check (signed_pdf_sha256 is null or length(signed_pdf_sha256) = 64),
   evidence_sha256 text
-    check (evidence_sha256 is null or length(evidence_sha256) = 64),
-  recipient_evidence_sha256 text check (
+    constraint envelopes_evidence_sha256_check check (evidence_sha256 is null or length(evidence_sha256) = 64),
+  recipient_evidence_sha256 text constraint envelopes_recipient_evidence_sha256_check check (
     recipient_evidence_sha256 is null or length(recipient_evidence_sha256) = 64
   ),
   retention_warned_at bigint,
   expires_at bigint,
   expiry_notified_at bigint,
-  reminder_interval_days smallint check (
+  reminder_interval_days smallint constraint envelopes_reminder_interval_days_check check (
     reminder_interval_days is null
     or (reminder_interval_days >= 1 and reminder_interval_days <= 30)
   ),
@@ -139,7 +139,7 @@ create table envelopes (
   revision_key text,
   revision_sha256 text,
   source_kind text
-    check (source_kind is null or source_kind in ('drive', 'gmail', 'upload')),
+    constraint envelopes_source_kind_check check (source_kind is null or source_kind in ('drive', 'gmail', 'upload')),
   source_ref text,
   constraint envelopes_signature_level_check check (
     signature_level in ('simple', 'advanced', 'qualified')
@@ -169,9 +169,9 @@ create index envelopes_source_ref_idx on envelopes (source_kind, source_ref)
 create table envelope_pages (
   id text not null primary key,
   envelope_id text not null references envelopes (id) on delete cascade,
-  page_number integer not null check (page_number > 0),
-  width_pt real not null check (width_pt > 0),
-  height_pt real not null check (height_pt > 0),
+  page_number integer not null constraint envelope_pages_page_number_check check (page_number > 0),
+  width_pt real not null constraint envelope_pages_width_pt_check check (width_pt > 0),
+  height_pt real not null constraint envelope_pages_height_pt_check check (height_pt > 0),
   constraint envelope_pages_envelope_id_page_number_key
     unique (envelope_id, page_number)
 );
@@ -181,9 +181,9 @@ create table signers (
   envelope_id text not null references envelopes (id) on delete cascade,
   name text not null,
   email text not null,
-  sign_order integer not null check (sign_order > 0),
+  sign_order integer not null constraint signers_sign_order_check check (sign_order > 0),
   status text not null default 'pending'
-    check (status in ('pending', 'notified', 'signed', 'declined')),
+    constraint signers_status_check check (status in ('pending', 'notified', 'signed', 'declined')),
   signing_token_hash text,
   signing_token_expires_at bigint,
   turn_started_at bigint,
@@ -203,11 +203,11 @@ create table signers (
   consented_at bigint,
   role text not null default 'signer',
   user_id text,
-  signature_meaning text check (
+  signature_meaning text constraint signers_signature_meaning_check check (
     signature_meaning is null
     or signature_meaning in ('approval', 'review', 'responsibility', 'authorship')
   ),
-  signing_step integer check (signing_step is null or signing_step > 0),
+  signing_step integer constraint signers_signing_step_check check (signing_step is null or signing_step > 0),
   require_google_sign_in boolean not null default 0,
   constraint signers_role_check check (role in ('signer', 'approver', 'cc')),
   constraint signers_copy_recipient_has_no_step check (
@@ -227,10 +227,10 @@ create unique index idx_signers_signing_token_hash on signers (signing_token_has
   where signing_token_hash is not null;
 
 create table recipient_download_tokens (
-  token_hash text not null primary key check (length(token_hash) = 64),
+  token_hash text not null primary key constraint recipient_download_tokens_token_hash_check check (length(token_hash) = 64),
   envelope_id text not null,
   signer_id text not null,
-  file_type text not null check (file_type in ('signed', 'evidence')),
+  file_type text not null constraint recipient_download_tokens_file_type_check check (file_type in ('signed', 'evidence')),
   expires_at bigint not null,
   created_at bigint not null default (cast(round(unixepoch('subsec')) as integer)),
   constraint recipient_download_tokens_signer_envelope_fk
@@ -239,7 +239,7 @@ create table recipient_download_tokens (
     on delete cascade,
   constraint recipient_download_tokens_signer_file_unique
     unique (envelope_id, signer_id, file_type),
-  check (expires_at >= created_at)
+  constraint recipient_download_tokens_check check (expires_at >= created_at)
 );
 
 create index idx_recipient_download_tokens_expires_at
@@ -249,7 +249,7 @@ create table fields (
   id text not null primary key,
   envelope_id text not null references envelopes (id) on delete cascade,
   signer_id text not null,
-  type text not null check (
+  type text not null constraint fields_type_check check (
     type in (
       'signature',
       'initials',
@@ -262,15 +262,15 @@ create table fields (
       'radio'
     )
   ),
-  page integer not null check (page > 0),
-  x real not null check (x >= 0 and x <= 1),
-  y real not null check (y >= 0 and y <= 1),
-  width real not null check (width > 0 and width <= 1),
-  height real not null check (height > 0 and height <= 1),
+  page integer not null constraint fields_page_check check (page > 0),
+  x real not null constraint fields_x_check check (x >= 0 and x <= 1),
+  y real not null constraint fields_y_check check (y >= 0 and y <= 1),
+  width real not null constraint fields_width_check check (width > 0 and width <= 1),
+  height real not null constraint fields_height_check check (height > 0 and height <= 1),
   required boolean not null default 1,
   label text,
   input_method text
-    check (input_method is null or input_method in ('typed', 'drawn', 'auto')),
+    constraint fields_input_method_check check (input_method is null or input_method in ('typed', 'drawn', 'auto')),
   value text,
   image_key text,
   checked boolean,
@@ -279,8 +279,8 @@ create table fields (
   updated_at bigint not null default (cast(round(unixepoch('subsec')) as integer)),
   options jsonb,
   group_id text,
-  check (x + width <= 1.000001),
-  check (y + height <= 1.000001),
+  constraint fields_check check (x + width <= 1.000001),
+  constraint fields_check1 check (y + height <= 1.000001),
   constraint fields_options_only_on_dropdowns check (
     options is null or (type = 'dropdown' and json_type(options) = 'array')
   ),
@@ -329,7 +329,7 @@ create table audit_events (
   id text not null primary key,
   envelope_id text not null references envelopes (id) on delete cascade,
   event text not null,
-  actor_type text not null check (actor_type in ('sender', 'signer', 'system')),
+  actor_type text not null constraint audit_events_actor_type_check check (actor_type in ('sender', 'signer', 'system')),
   actor_email text,
   ip_address text,
   user_agent text,
@@ -380,20 +380,20 @@ create table account_closure_requests (
   export_expires_at bigint not null,
   purge_after_at bigint not null,
   updated_at bigint not null,
-  check (export_expires_at >= requested_at),
-  check (purge_after_at >= export_expires_at)
+  constraint account_closure_requests_check check (export_expires_at >= requested_at),
+  constraint account_closure_requests_check1 check (purge_after_at >= export_expires_at)
 );
 
 create index idx_account_closure_requests_purge_after
   on account_closure_requests (purge_after_at, requested_at);
 
 create table app_settings (
-  id boolean primary key not null default 1 check (id),
+  id boolean primary key not null default 1 constraint app_settings_id_check check (id),
   organization_name text,
   sender_address text,
   support_address text,
   signup_mode text not null default 'closed'
-    check (signup_mode in ('closed', 'domains', 'open')),
+    constraint app_settings_signup_mode_check check (signup_mode in ('closed', 'domains', 'open')),
   allowed_email_domains text[] not null default '[]',
   terms_url text,
   privacy_url text,
@@ -401,8 +401,8 @@ create table app_settings (
   setup_completed_at bigint,
   created_at bigint not null,
   updated_at bigint not null,
-  retention_days integer check (retention_days is null or retention_days >= 30),
-  brand_color text check (
+  retention_days integer constraint app_settings_retention_days_check check (retention_days is null or retention_days >= 30),
+  brand_color text constraint app_settings_brand_color_check check (
     brand_color is null
     or brand_color glob '#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
   ),
@@ -411,11 +411,11 @@ create table app_settings (
   logo_hash text,
   part11_mode boolean not null default 0,
   require_two_factor boolean not null default 0,
-  session_idle_minutes integer check (
+  session_idle_minutes integer constraint app_settings_session_idle_minutes_check check (
     session_idle_minutes is null
     or (session_idle_minutes >= 5 and session_idle_minutes <= 1440)
   ),
-  session_max_hours integer check (
+  session_max_hours integer constraint app_settings_session_max_hours_check check (
     session_max_hours is null
     or (session_max_hours >= 1 and session_max_hours <= 168)
   ),
@@ -475,19 +475,19 @@ create table templates (
   id text not null primary key,
   user_id text not null references "user" (id) on delete cascade,
   name text not null
-    check (length(trim(name)) >= 1 and length(trim(name)) <= 160),
+    constraint templates_name_check check (length(trim(name)) >= 1 and length(trim(name)) <= 160),
   source_pdf_key text not null,
   source_pdf_filename text not null,
-  source_pdf_size_bytes bigint not null check (source_pdf_size_bytes > 0),
-  page_count integer not null check (page_count > 0),
-  roles jsonb not null check (
+  source_pdf_size_bytes bigint not null constraint templates_source_pdf_size_bytes_check check (source_pdf_size_bytes > 0),
+  page_count integer not null constraint templates_page_count_check check (page_count > 0),
+  roles jsonb not null constraint templates_roles_check check (
     case
       when json_type(roles) = 'array'
         then json_array_length(roles) >= 1 and json_array_length(roles) <= 100
       else 0
     end
   ),
-  fields jsonb not null check (json_type(fields) = 'array'),
+  fields jsonb not null constraint templates_fields_check check (json_type(fields) = 'array'),
   created_at bigint not null default (cast(round(unixepoch('subsec')) as integer)),
   updated_at bigint not null default (cast(round(unixepoch('subsec')) as integer))
 );
@@ -511,9 +511,9 @@ create table provider_signing_sessions (
   envelope_id text not null references envelopes (id) on delete cascade,
   signer_id text not null references signers (id) on delete cascade,
   provider text not null,
-  level text not null check (level in ('advanced', 'qualified')),
+  level text not null constraint provider_signing_sessions_level_check check (level in ('advanced', 'qualified')),
   state text not null default 'pending'
-    check (state in ('pending', 'signing', 'completed', 'failed')),
+    constraint provider_signing_sessions_state_check check (state in ('pending', 'signing', 'completed', 'failed')),
   base_sha256 text,
   revision_key text not null,
   content_digest text not null,
@@ -530,14 +530,14 @@ create index idx_provider_signing_sessions_signer
   on provider_signing_sessions (signer_id, state);
 
 create table backup_settings (
-  id boolean primary key not null default 1 check (id),
+  id boolean primary key not null default 1 constraint backup_settings_id_check check (id),
   destination text not null default 'none'
-    check (destination in ('none', 'gcs', 'blob')),
+    constraint backup_settings_destination_check check (destination in ('none', 'gcs', 'blob')),
   gcs_bucket text,
   gcs_prefix text not null default '',
   blob_token_encrypted text,
   keep_days integer not null default 30
-    check (keep_days >= 1 and keep_days <= 3650),
+    constraint backup_settings_keep_days_check check (keep_days >= 1 and keep_days <= 3650),
   enabled boolean not null default 1,
   updated_at bigint not null,
   updated_by text
@@ -548,8 +548,8 @@ create table backup_runs (
   started_at bigint not null,
   finished_at bigint,
   status text not null
-    check (status in ('running', 'succeeded', 'partial', 'failed')),
-  trigger text not null check (trigger in ('schedule', 'manual')),
+    constraint backup_runs_status_check check (status in ('running', 'succeeded', 'partial', 'failed')),
+  trigger text not null constraint backup_runs_trigger_check check (trigger in ('schedule', 'manual')),
   destination text not null,
   summary jsonb,
   error text
@@ -568,8 +568,8 @@ create table integration_settings (
 create table teams (
   id text not null primary key,
   name text not null
-    check (length(trim(name)) >= 1 and length(trim(name)) <= 80),
-  google_group_email text check (
+    constraint teams_name_check check (length(trim(name)) >= 1 and length(trim(name)) <= 80),
+  google_group_email text constraint teams_google_group_email_check check (
     google_group_email is null
     or (
       length(google_group_email) <= 254
@@ -610,7 +610,7 @@ create table drive_exports (
   envelope_id text not null primary key references envelopes (id) on delete cascade,
   drive_id text not null,
   status text not null default 'pending'
-    check (status in ('pending', 'exported', 'failed')),
+    constraint drive_exports_status_check check (status in ('pending', 'exported', 'failed')),
   attempts integer not null default 0,
   next_attempt_at bigint not null,
   locked_until bigint,
@@ -619,7 +619,7 @@ create table drive_exports (
   signed_pdf_file_id text,
   certificate_file_id text,
   label_status text
-    check (label_status is null or label_status in ('applied', 'failed', 'skipped')),
+    constraint drive_exports_label_status_check check (label_status is null or label_status in ('applied', 'failed', 'skipped')),
   label_error text,
   created_at bigint not null,
   updated_at bigint not null,
@@ -633,7 +633,7 @@ create index drive_exports_created_idx on drive_exports (created_at desc);
 create table notification_events (
   id text not null primary key,
   dedupe_key text not null unique,
-  source text not null check (source in ('audit', 'job')),
+  source text not null constraint notification_events_source_check check (source in ('audit', 'job')),
   event text not null,
   envelope_id text references envelopes (id) on delete cascade,
   payload jsonb not null default '{}',
@@ -650,11 +650,11 @@ create index notification_events_processed_idx on notification_events (processed
 create table notification_rules (
   id text not null primary key,
   channel text not null,
-  events text[] not null check (json_array_length(events) > 0),
+  events text[] not null constraint notification_rules_events_check check (json_array_length(events) > 0),
   team_id text references teams (id) on delete cascade,
   destination text not null
-    check (length(destination) >= 1 and length(destination) <= 200),
-  destination_name text check (length(destination_name) <= 200),
+    constraint notification_rules_destination_check check (length(destination) >= 1 and length(destination) <= 200),
+  destination_name text constraint notification_rules_destination_name_check check (length(destination_name) <= 200),
   enabled boolean not null default 1,
   created_at bigint not null,
   updated_at bigint not null,
@@ -668,15 +668,15 @@ create table notification_deliveries (
   id text not null primary key,
   event_id text not null references notification_events (id) on delete cascade,
   channel text not null,
-  target_kind text not null check (target_kind in ('user', 'channel')),
+  target_kind text not null constraint notification_deliveries_target_kind_check check (target_kind in ('user', 'channel')),
   target text not null,
   rule_id text references notification_rules (id) on delete set null,
   status text not null default 'pending'
-    check (status in ('pending', 'sending', 'sent', 'failed', 'skipped')),
-  attempts integer not null default 0 check (attempts >= 0),
+    constraint notification_deliveries_status_check check (status in ('pending', 'sending', 'sent', 'failed', 'skipped')),
+  attempts integer not null default 0 constraint notification_deliveries_attempts_check check (attempts >= 0),
   next_attempt_at bigint not null,
   locked_until bigint,
-  last_error text check (length(last_error) <= 200),
+  last_error text constraint notification_deliveries_last_error_check check (length(last_error) <= 200),
   created_at bigint not null,
   updated_at bigint not null,
   sent_at bigint,
@@ -692,7 +692,7 @@ create table notification_preferences (
   user_id text not null references "user" (id) on delete cascade,
   channel text not null,
   event text not null,
-  scope text not null check (scope in ('own', 'team')),
+  scope text not null constraint notification_preferences_scope_check check (scope in ('own', 'team')),
   enabled boolean not null,
   updated_at bigint not null,
   primary key (user_id, channel, event, scope)
