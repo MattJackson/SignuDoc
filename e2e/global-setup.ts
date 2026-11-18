@@ -2,12 +2,9 @@ import { rm } from "node:fs/promises";
 
 import pg from "pg";
 
+import { assertDisposableDatabase } from "../src/lib/db/disposable-database.ts";
 import { e2eDataDir, e2eDatabaseUrl } from "../playwright.config";
-import {
-  assertDisposableDatabase,
-  isSqliteUrl,
-  wipeSqliteDatabase,
-} from "./support/database";
+import { isSqliteUrl, wipeSqliteDatabase } from "./support/database";
 
 async function ensureDatabaseExists(connectionString: string) {
   const targetUrl = new URL(connectionString);

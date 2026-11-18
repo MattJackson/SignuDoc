@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { assertDisposableDatabase } from "../../e2e/support/database.ts";
+import { assertDisposableDatabase } from "./disposable-database.ts";
 
-// The end-to-end setup drops every table of the database it is pointed at,
-// so it first checks that the database is one meant for tests.
+// The test setups drop every table of the database they are pointed at, so
+// they first check that it is one meant for tests.
 
 test("a database with e2e in its own name may be wiped", () => {
   assert.doesNotThrow(() =>

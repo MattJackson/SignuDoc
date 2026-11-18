@@ -27,20 +27,6 @@ export function sqliteFile(connectionString: string): string {
   return path.resolve(decodeURIComponent(rest.split("?")[0] ?? ""));
 }
 
-/**
- * Stops the end-to-end setup from wiping a database that is not the test
- * one: its name must contain "e2e".
- */
-export function assertDisposableDatabase(connectionString: string) {
-  const databaseName = new URL(connectionString).pathname.replace(/^\//, "");
-
-  if (!databaseName.toLowerCase().includes("e2e")) {
-    throw new Error(
-      `Refusing to wipe database "${databaseName}". The end-to-end test database must have "e2e" in its name.`,
-    );
-  }
-}
-
 type Queryable = {
   query: (text: string, values?: unknown[]) => Promise<unknown>;
   end: () => Promise<void>;

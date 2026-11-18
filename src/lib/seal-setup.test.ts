@@ -201,7 +201,7 @@ test("keeping the uploaded certificate needs one to be there", () => {
 });
 
 test("saving without a new file keeps the uploaded certificate", () => {
-  const stored = planSealSettingsUpdate(
+  const update = planSealSettingsUpdate(
     {
       certificate: {
         file: makePkcs12(),
@@ -219,7 +219,11 @@ test("saving without a new file keeps the uploaded certificate", () => {
     planSealSettingsUpdate(
       { certificate: { source: "pkcs12" } },
       {},
-      stored,
+      {
+        "seal.certificate": update["seal.certificate"] ?? undefined,
+        "seal.p12": update["seal.p12"] ?? undefined,
+        "seal.p12Password": update["seal.p12Password"] ?? undefined,
+      },
       NOW,
     ),
     {},
