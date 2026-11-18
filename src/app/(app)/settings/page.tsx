@@ -1,5 +1,6 @@
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
+import { NotificationsLinkPanel } from "@/components/settings/notifications-link-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { SetupChecklist } from "@/components/settings/setup-checklist";
@@ -42,6 +43,7 @@ export default async function SettingsPage() {
         }}
       />
       {onboarding ? <SetupChecklist steps={onboarding} /> : null}
+      <NotificationsLinkPanel isAdmin={isAdmin} />
       {isAdmin ? (
         <OrganizationSettings
           // Read fresh, not from the short-lived cache, so the form never

@@ -61,6 +61,7 @@ test("the steps come in the order onboarding walks them", () => {
       "storage",
       "backups",
       "retention",
+      "notifications",
     ],
   );
 });
@@ -161,6 +162,31 @@ test("retention and backups can be confirmed as they are", async () => {
   assert.equal(await check("backups", context()), "not_started");
   assert.equal(
     await check("backups", context({ marks: { backups: "confirmed" } })),
+    "done",
+  );
+});
+
+test("notifications are done once a Slack token is set, or confirmed without", async () => {
+  assert.equal(await check("notifications", context()), "not_started");
+  assert.equal(
+    await check(
+      "notifications",
+      context({ marks: { notifications: "confirmed" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ stored: { "slack.botToken": "xoxb-stored-token-1234" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ env: { SLACK_BOT_TOKEN: "xoxb-environment-token-1234" } }),
+    ),
     "done",
   );
 });

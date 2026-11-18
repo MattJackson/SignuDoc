@@ -321,6 +321,27 @@ function BackupsStep() {
   );
 }
 
+function NotificationsStep() {
+  return (
+    <div className="space-y-3 text-sm leading-6 text-(--secondary)">
+      <p>
+        Slack can tell senders when their envelopes are signed, completed,
+        declined or stuck, post a team&apos;s envelopes to its channel, and tell
+        administrators when a backup fails. You create a small Slack app from a
+        manifest this site writes for you and paste its token. Google Chat,
+        Microsoft Teams and webhooks come later.
+      </p>
+      <p>
+        Notifications are optional. To go without them, choose &quot;Mark as
+        done&quot;.
+      </p>
+      <ShellButton href="/settings/notifications" variant="ghost">
+        Set up notifications
+      </ShellButton>
+    </div>
+  );
+}
+
 function RetentionStep({ data, onChanged }: StepFormProps) {
   const [days, setDays] = useState(data.organization.retentionDays);
   const [error, setError] = useState<string | undefined>();
@@ -391,6 +412,7 @@ export const STEP_FORMS: Record<
   email: EmailStep,
   "google-directory": GoogleDirectoryStep,
   "google-sign-in": GoogleSignInStep,
+  notifications: NotificationsStep,
   organization: OrganizationStep,
   retention: RetentionStep,
   storage: StorageStep,
