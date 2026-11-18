@@ -324,8 +324,8 @@ export function LandingShell() {
               </div>
 
               <p className="mt-7 text-sm text-white/75">
-                Free • no signer account required • up to 10 signers per
-                document
+                Free • no signer account required • signers in order or at the
+                same time
               </p>
             </div>
           </div>

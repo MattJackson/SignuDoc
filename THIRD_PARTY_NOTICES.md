@@ -51,6 +51,32 @@ replace the licenses for redistributed third-party files.
 - **License:** SIL Open Font License 1.1
 - **License text already bundled at:** `public/pdfjs/5.5.207/standard_fonts/LICENSE_LIBERATION`
 
+## Trademarks and brand marks
+
+`public/brands/` holds the marks of services SignuDoc can connect to. They
+are trademarks of their owners and are not covered by SignuDoc's license.
+They are shown only to name the service an integration connects to, at
+their own proportions and colors, and do not mean that any of these
+companies sponsors or endorses SignuDoc.
+
+| File               | Mark         | Owner            | Source                                                                                                     |
+| ------------------ | ------------ | ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| `google-g.svg`     | Google "G"   | Google LLC       | Google's sign-in branding assets (developers.google.com/identity/branding-guidelines), cropped to the mark |
+| `google-drive.svg` | Google Drive | Google LLC       | Google Drive product icon                                                                                  |
+| `gmail.svg`        | Gmail        | Google LLC       | Gmail product icon                                                                                         |
+| `google-cloud.svg` | Google Cloud | Google LLC       | Google Cloud logo, mark only                                                                               |
+| `slack.svg`        | Slack        | Salesforce, Inc. | Slack media kit mark                                                                                       |
+| `resend.svg`       | Resend       | Resend, Inc.     | resend.com/brand icon                                                                                      |
+| `vercel.svg`       | Vercel       | Vercel Inc.      | Vercel logomark                                                                                            |
+
+The "Continue with Google" button on the sign-in page follows Google's
+sign-in branding guidelines: the unmodified "G" on a white button with
+Google's border color and text.
+
+Google, Google Workspace, Google Drive, Gmail and Google Cloud are
+trademarks of Google LLC. Slack is a trademark of Salesforce, Inc. Resend
+is a trademark of Resend, Inc. Vercel is a trademark of Vercel Inc.
+
 ## Notes
 
 - Include this file and the referenced license texts in release archives and other redistributions of the repository contents.

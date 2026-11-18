@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FNYLLON-SOFTWARE%2FSignuDoc&project-name=signudoc&repository-name=signudoc&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22resend%22%2C%22productSlug%22%3A%22resend-email%22%2C%22protocol%22%3A%22messaging%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D&demo-title=SignuDoc&demo-description=Your%20own%20e-signature%20site.%20Upload%20a%20PDF%2C%20place%20fields%2C%20send%20signing%20links%2C%20and%20keep%20the%20signed%20copy%20with%20its%20audit%20certificate.&demo-url=https%3A%2F%2Fgithub.com%2FNYLLON-SOFTWARE%2FSignuDoc&demo-image=https%3A%2F%2Fraw.githubusercontent.com%2FNYLLON-SOFTWARE%2FSignuDoc%2Fmain%2Fdocs%2Fimages%2Fbanner.png"><img src="docs/images/deploy-to-vercel.svg" alt="Deploy to Vercel" height="32"></a><br>
-  <sub>or <a href="docs/deploy-with-an-agent.md">copy this to your LLM</a></sub>
+  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMattJackson%2FSignuDoc&project-name=signudoc&repository-name=signudoc&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22resend%22%2C%22productSlug%22%3A%22resend-email%22%2C%22protocol%22%3A%22messaging%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D&demo-title=SignuDoc&demo-description=Your%20own%20e-signature%20site.%20Upload%20a%20PDF%2C%20place%20fields%2C%20send%20signing%20links%2C%20and%20keep%20the%20signed%20copy%20with%20its%20audit%20certificate.&demo-url=https%3A%2F%2Fgithub.com%2FMattJackson%2FSignuDoc&demo-image=https%3A%2F%2Fraw.githubusercontent.com%2FMattJackson%2FSignuDoc%2Fmain%2Fdocs%2Fimages%2Fbanner.png"><img src="docs/images/deploy-to-vercel.svg" alt="Deploy to Vercel" height="32"></a><br>
+  <sub>or <a href="docs/deploy-with-an-agent.md">copy this to your LLM</a>, or <a href="docs/google-cloud-run.md">deploy on Google Cloud Run</a></sub>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 
 ### Prepare a document in minutes
 
-Upload a PDF, add up to 10 signers in the order they sign, and add people who only receive the finished copy. Then place fields where they belong: signature, initials, date, name, text, number, checkbox, dropdown and radio buttons, each required or optional and each tied to one signer.
+Upload a PDF, or start from Google Drive, add up to 25 signers (up to 100 if you raise the limit) who sign in order, at the same time, or in steps that mix both, approvers who approve or reject before the next step, and people who only receive the finished copy. Then place fields where they belong: signature, initials, date, name, text, number, checkbox, dropdown and radio buttons, each required or optional and each tied to one signer.
 
 ![Placing signature, date and dropdown fields for two signers on a master services agreement](docs/images/prepare.png)
 
@@ -82,9 +82,22 @@ Signers see your organization, not SignuDoc. Give the install your name, logo an
 
 ![The same signing page in the organization's own green, with its logo](docs/images/branding.png)
 
+### Made for Google Workspace
+
+Everything here is optional, and each part is set up in the app. See [Google Workspace](docs/google-workspace.md).
+
+- **Google sign-in held to your domain**, with directory suggestions when you add recipients, and an administrator group whose members are SignuDoc administrators.
+- **Managers and leavers.** Have the sender's manager approve first, ask employees to sign with their Google account, and hand a leaver's open envelopes to their manager.
+- **Google Drive.** Start an envelope from Drive or with Drive's "Open with", and keep a copy of every executed envelope in a Shared Drive, with a Drive label.
+- **The Gmail and Drive add-on.** Send an attachment or a Drive file for signature from the side panel, and see the contracts you have with a sender.
+
 ### Run by your administrators
 
-The first account is the administrator, and you can make more. Choose who may create an account: people at your email domains, nobody, or anyone. People who only sign never need one. Set how long finished documents are kept, and answer a signer who asks for their data with a built-in export or erasure tool.
+The first account is the administrator, and you can make more. After first-run setup, onboarding at `/onboarding` walks them through the rest one step at a time: email, Google, storage, the seal, backups, retention and notifications. Choose who may create an account: people at your email domains, nobody, or anyone. People who only sign never need one. Put people on teams to share envelopes with their teammates. Set how long finished documents are kept, and answer a signer who asks for their data with a built-in export or erasure tool.
+
+### Notifications in Slack
+
+Tell senders, their teammates and chosen channels in Slack when an envelope is signed, approved, completed, declined or stuck, and administrators when a backup fails. Each person chooses what they get. See [Notifications](docs/notifications.md).
 
 ### On your phone
 
@@ -108,22 +121,22 @@ DocuSign does more, and charges for it per user. SignuDoc does the everyday sign
 
 ### Price and ownership
 
-|                                  | SignuDoc                                                         | DocuSign eSignature                                                                      |
-| -------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Price**                        | Free and open source, on free plans from Vercel, Neon and Resend | $11 (Personal), $30 (Standard) or $45 (Business Pro) per user a month, on an annual plan |
-| **Envelopes**                    | No limit of its own. The free plans carry about 250 a month      | 5 a month on Personal, 100 per user a year on Standard and Business Pro                  |
-| **Where it runs**                | Your Vercel account, with your Neon database and Blob store      | DocuSign's cloud                                                                         |
-| **Where data is kept**           | The region you choose, the EU included                           | DocuSign's data centers, the EU included                                                 |
-| **Source code**                  | MIT license, on GitHub                                           | Closed                                                                                   |
-| **Your own domain and branding** | ✅ your domain, logo and color, in every install                 | Logo and colors from Standard                                                            |
+|                                  | SignuDoc                                                                                               | DocuSign eSignature                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| **Price**                        | Free and open source, on free plans from Vercel, Neon and Resend                                       | $11 (Personal), $30 (Standard) or $45 (Business Pro) per user a month, on an annual plan |
+| **Envelopes**                    | No limit of its own. The free plans carry about 250 a month                                            | 5 a month on Personal, 100 per user a year on Standard and Business Pro                  |
+| **Where it runs**                | Your Vercel account, with your Neon database and Blob store, or your Google Cloud project on Cloud Run | DocuSign's cloud                                                                         |
+| **Where data is kept**           | The region you choose, the EU included                                                                 | DocuSign's data centers, the EU included                                                 |
+| **Source code**                  | MIT license, on GitHub                                                                                 | Closed                                                                                   |
+| **Your own domain and branding** | ✅ your domain, logo and color, in every install                                                       | Logo and colors from Standard                                                            |
 
 ### The signing loop
 
 |                                              | SignuDoc                                                                                                                    | DocuSign eSignature                                                          |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | **Signing without an account**               | ✅                                                                                                                          | ✅                                                                           |
-| **Signing order**                            | ✅ in order, up to 10 signers                                                                                               | ✅ in order, at the same time, or mixed                                      |
-| **People who only get a copy**               | ✅                                                                                                                          | ✅ and more roles: approvers, editors, in-person signers                     |
+| **Signing order**                            | ✅ in order, at the same time, or mixed (up to 25, configurable to 100; Part 11 in order)                                   | ✅ in order, at the same time, or mixed                                      |
+| **People who only get a copy**               | ✅ and approvers                                                                                                            | ✅ and more roles: approvers, editors, in-person signers                     |
 | **Field types**                              | ✅ signature, initials, date, name, text, number, checkbox, dropdown, radio, each required or optional                      | ✅ more types; dropdown, radio and signer attachments need Business Pro      |
 | **Templates**                                | ✅                                                                                                                          | ✅ from Personal, shared from Standard                                       |
 | **Deadlines and automatic reminders**        | ✅                                                                                                                          | ✅                                                                           |
@@ -137,18 +150,17 @@ DocuSign does more, and charges for it per user. SignuDoc does the everyday sign
 
 ### Where DocuSign does more
 
-|                                                         | SignuDoc                                                          | DocuSign eSignature                                   |
-| ------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
-| **More than one document per envelope, and Word files** | — PDF only, one per envelope                                      | ✅                                                    |
-| **Signing at the same time**                            | — in order only                                                   | ✅                                                    |
-| **Bulk send, web forms, payments**                      | —                                                                 | ✅ on Business Pro                                    |
-| **API and webhooks**                                    | — not yet                                                         | ✅ API plans from $50 a month                         |
-| **Integrations**                                        | —                                                                 | ✅ 1,000+, including Salesforce, Microsoft and Google |
-| **Languages**                                           | — signing pages in English                                        | ✅ signing in 44 languages                            |
-| **Single sign-on**                                      | — email and password                                              | ✅ SAML SSO on Enhanced                               |
-| **Advanced and qualified signatures (eIDAS)**           | With a provider you add: eID Easy or a CSC remote signing service | ✅                                                    |
-| **HIPAA, 21 CFR Part 11, certifications**               | Part 11 mode; you validate                                        | ✅ on Enhanced or as add-ons                          |
-| **Support**                                             | GitHub issues                                                     | ✅ 24/7 on Enhanced                                   |
+|                                                         | SignuDoc                                                                       | DocuSign eSignature                                   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| **More than one document per envelope, and Word files** | — PDF only, one per envelope                                                   | ✅                                                    |
+| **Bulk send, web forms, payments**                      | —                                                                              | ✅ on Business Pro                                    |
+| **API and webhooks**                                    | — not yet                                                                      | ✅ API plans from $50 a month                         |
+| **Integrations**                                        | Google Workspace (sign-in, directory, Drive, Gmail and Drive add-on) and Slack | ✅ 1,000+, including Salesforce, Microsoft and Google |
+| **Languages**                                           | — signing pages in English                                                     | ✅ signing in 44 languages                            |
+| **Single sign-on**                                      | ✅ OIDC, including Google, Okta and Entra ID                                   | ✅ SAML SSO on Enhanced                               |
+| **Advanced and qualified signatures (eIDAS)**           | With a provider you add: eID Easy or a CSC remote signing service              | ✅                                                    |
+| **HIPAA, 21 CFR Part 11, certifications**               | Part 11 mode; you validate                                                     | ✅ on Enhanced or as add-ons                          |
+| **Support**                                             | GitHub issues                                                                  | ✅ 24/7 on Enhanced                                   |
 
 If your agreements run through Salesforce, need SMS checks or ID document checks, or go out by the thousand in bulk, DocuSign earns its price. If you want to send everyday agreements, keep the evidence, and own the whole thing, SignuDoc is built for you.
 
@@ -207,6 +219,17 @@ DocuSign's figures are its US list prices for annual plans in November 2026: $30
 
 There is nothing to type in Vercel and no terminal to open. Until step 5 is done, email reaches only the address on your Resend account, so you can try the whole product straight away by sending a document to yourself. The [self-hosting guide](docs/self-hosting.md) covers your own domain, locking down a new install, keeping it up to date, running in the EU, and every optional setting.
 
+### Deploy on Google Cloud Run
+
+To run SignuDoc in your own Google Cloud project instead, as one Docker image on Cloud Run with Cloud SQL for PostgreSQL and a private Cloud Storage bucket, run the setup script with your project ID:
+
+```bash
+PROJECT_ID=my-project REGION=us-central1 DOMAIN=sign.example.com \
+  ./deploy/google-cloud/setup.sh
+```
+
+It creates the database, the bucket, the secrets, the service, its migrate job and the daily jobs, then deploys. Open `https://<your domain>/setup` and follow the onboarding. [Deploy on Google Cloud Run](docs/google-cloud-run.md) is the full guide, with updates, costs and troubleshooting. The same image runs anywhere Docker does.
+
 ### Try it on your computer
 
 With Node.js 24 and Docker:
@@ -245,6 +268,7 @@ Your install carries your organization's name, and your organization is responsi
 ## Learn more
 
 - [Self-hosting guide](docs/self-hosting.md): deploying, first-run setup, what it costs, your own domain, updates, the EU, the seal, cleanup, rate limits, bot protection and every optional setting.
+- [Deploy on Google Cloud Run](docs/google-cloud-run.md): the Docker image, Cloud SQL, Cloud Storage, Secret Manager, Cloud Scheduler, updates by digest and alerting.
 - [Development](docs/development.md): running SignuDoc locally, storage, the database, email, tests and the code's layout.
 - [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
 
