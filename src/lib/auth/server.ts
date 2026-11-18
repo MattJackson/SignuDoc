@@ -43,6 +43,7 @@ import {
   type EnvSource,
 } from "../utils/env.ts";
 import { escapeHtml } from "../utils/html.ts";
+import { googleProfileFields, syncGoogleProfile } from "./google-profile.ts";
 import { isRunningSetup } from "./setup-context.ts";
 import { signInEvents } from "./sign-in-events.ts";
 import {
@@ -348,6 +349,9 @@ export function createAppAuth({
                   emailVerified:
                     profile.email_verified !== false &&
                     profile.email_verified !== "false",
+                  // Google's name and photo for a new account; later sign-ins
+                  // refresh them in validateUserInfo below.
+                  ...(sso.google ? googleProfileFields(profile) : {}),
                 }),
                 name: sso.name,
                 pkce: true,
@@ -627,6 +631,25 @@ export function createAppAuth({
             error: "directory_blocked",
             errorDescription: DIRECTORY_BLOCKED_MESSAGE,
           };
+        }
+
+        // An existing account takes its name and picture from Google at
+        // every Google sign-in (a new one gets them in mapProfileToUser).
+        // A failure here does not stop anyone signing in.
+        if (
+          sso?.google &&
+          source.method === "oauth" &&
+          source.oauth?.providerId === SSO_PROVIDER_ID &&
+          source.action !== "create-user" &&
+          typeof user.email === "string"
+        ) {
+          await syncGoogleProfile(
+            user.email,
+            source.oauth.profile,
+            database,
+          ).catch((error: unknown) => {
+            console.error("Could not update the Google profile:", error);
+          });
         }
 
         if (source.action !== "create-user") {

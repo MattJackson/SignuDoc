@@ -17,6 +17,7 @@ const stored: AppSettings = {
   organizationName: "Example Inc",
   part11Mode: false,
   privacyUrl: null,
+  productName: null,
   requireTwoFactor: false,
   retentionDays: null,
   senderAddress: "sign@example.com",
@@ -58,8 +59,11 @@ test("the steps come in the order onboarding walks them", () => {
   assert.deepEqual(
     ONBOARDING_STEPS.map((step) => step.id),
     [
+      "name",
+      "branding",
       "organization",
       "email",
+      "google-workspace",
       "google-sign-in",
       "google-directory",
       "people",
@@ -478,5 +482,74 @@ test("storage is not done while the driver cannot be used", async () => {
   assert.equal(
     await check("storage", context({ env: { STORAGE_DRIVER: "gcs" } })),
     "needs_attention",
+  );
+});
+
+test("the name step is done once the app has a name, or the organization's is kept", async () => {
+  assert.equal(await check("name", context()), "not_started");
+  assert.equal(
+    await check(
+      "name",
+      context({
+        settings: resolveSettings(
+          { ...stored, productName: "BusbarSigner" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("name", context({ marks: { name: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the branding step is done with a logo, or once it is skipped on purpose", async () => {
+  assert.equal(await check("branding", context()), "not_started");
+  assert.equal(
+    await check(
+      "branding",
+      context({
+        settings: resolveSettings(
+          { ...stored, logoVersion: "0123456789abcdef" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("branding", context({ marks: { branding: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the Google Workspace step wants sign-in, the customer ID and the Picker", async () => {
+  assert.equal(await check("google-workspace", context()), "not_started");
+
+  const signIn = {
+    "sso.clientId": "client.apps.googleusercontent.com",
+    "sso.clientSecret": "secret",
+    "sso.issuer": "https://accounts.google.com",
+  };
+
+  assert.equal(
+    await check("google-workspace", context({ stored: signIn })),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "google-workspace",
+      context({
+        stored: {
+          ...signIn,
+          "drive.appId": "123456789012",
+          "drive.pickerApiKey": "AIzaKey",
+          "google.customerId": "C01ab2cd3",
+        },
+      }),
+    ),
+    "done",
   );
 });

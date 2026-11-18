@@ -21,6 +21,7 @@ const SETTINGS_PAGES = [
   "/settings/teams",
   "/settings/managers",
   "/settings/integrations",
+  "/settings/google-setup",
   "/settings/integrations/google-sign-in",
   "/settings/integrations/google-directory",
   "/settings/integrations/google-drive",
@@ -34,8 +35,11 @@ const SETTINGS_PAGES = [
 ];
 
 const ONBOARDING_STEPS = [
+  "name",
+  "branding",
   "organization",
   "email",
+  "google-workspace",
   "google-sign-in",
   "google-directory",
   "people",

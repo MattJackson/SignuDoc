@@ -21,6 +21,11 @@ const CLOSURE_CONFIRMATION_PHRASE = "close my account";
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 type SettingsShellProps = {
+  /**
+   * Why this account cannot be closed (the last administrator, or the
+   * break-glass account), shown in place of the button. Null when it can.
+   */
+  closureBlockedReason?: string | null;
   /** Off where the page around it already has the Settings header. */
   header?: boolean;
   initialProfile?: ProfileValues;
@@ -164,6 +169,7 @@ function isNoOpEmailChangeMessage(message: string) {
 }
 
 export function SettingsShell({
+  closureBlockedReason = null,
   header = true,
   initialProfile = defaultProfileValues,
   twoFactor = { enabled: false, required: false },
@@ -678,14 +684,20 @@ export function SettingsShell({
               <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
                 {closureCopy}
               </p>
-              <ShellButton
-                className="w-fit border-[rgba(180,35,24,0.35)] text-(--danger) hover:border-(--danger) hover:bg-(--danger-soft) hover:text-(--danger)"
-                disabled={isBusy}
-                onClick={openClosureDialog}
-                variant="secondary"
-              >
-                Request account closure
-              </ShellButton>
+              {closureBlockedReason ? (
+                <p className="notice notice-warning max-w-2xl" role="status">
+                  {closureBlockedReason}
+                </p>
+              ) : (
+                <ShellButton
+                  className="w-fit border-[rgba(180,35,24,0.35)] text-(--danger) hover:border-(--danger) hover:bg-(--danger-soft) hover:text-(--danger)"
+                  disabled={isBusy}
+                  onClick={openClosureDialog}
+                  variant="secondary"
+                >
+                  Request account closure
+                </ShellButton>
+              )}
             </div>
           </div>
         </div>

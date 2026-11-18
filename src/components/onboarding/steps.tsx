@@ -4,8 +4,10 @@ import { useState, type ComponentType, type FormEvent } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
+import { BrandingPanel } from "@/components/settings/branding-panel";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
 import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
+import { GoogleWorkspaceSetup } from "@/components/settings/google-setup";
 import { GoogleAddonSection } from "@/components/settings/google-addon-panel";
 import {
   GoogleDirectorySection,
@@ -19,6 +21,7 @@ import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleAddonView } from "@/lib/google-addon";
 import { PeopleSettingsForm } from "@/components/settings/people-settings-panel";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
+import type { SetupTargetView } from "@/lib/google-workspace-setup";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
 import type { SealSettingsView } from "@/lib/seal-setup";
@@ -32,6 +35,7 @@ export type OnboardingData = {
   backups: BackupSettingsView;
   googleDrive: GoogleDriveView;
   googleAddon: GoogleAddonView;
+  googleSetup: SetupTargetView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   seal: SealSettingsView;
@@ -109,6 +113,153 @@ function Notice({ feedback }: { feedback: Feedback }) {
   );
 }
 
+const NAME_EXAMPLES = ["SignuDoc", "BusbarSigner", "Acme Sign"];
+
+function NameStep({ data, onChanged }: StepFormProps) {
+  const [name, setName] = useState(data.organization.productName);
+  const [error, setError] = useState<string | undefined>();
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setFeedback(null);
+
+    try {
+      const response = await fetch("/api/admin/settings", {
+        body: JSON.stringify({ productName: name }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        fieldErrors?: Record<string, string>;
+      } | null;
+
+      if (!response.ok) {
+        setError(payload?.fieldErrors?.productName);
+        setFeedback({
+          message: payload?.error ?? GENERIC_ERROR_MESSAGE,
+          tone: "error",
+        });
+        return;
+      }
+
+      setError(undefined);
+      setFeedback({ message: "Saved.", tone: "success" });
+      onChanged();
+    } catch {
+      setFeedback({ message: GENERIC_ERROR_MESSAGE, tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="space-y-5" noValidate onSubmit={submit}>
+      <p className="text-sm leading-6 text-(--secondary)">
+        Pick the name people will know this site by, such as{" "}
+        {NAME_EXAMPLES.join(", ")}. The next steps suggest it for the Google
+        consent screen, the OAuth client, the Picker key, the directory role,
+        the Drive app and the Slack app, so you only type it once.
+      </p>
+      <Notice feedback={feedback} />
+      <div className="max-w-md">
+        <FieldShell
+          disabled={saving}
+          error={error}
+          helper={`Up to 60 characters. Leave it empty to go by ${data.organization.organizationName || "the organization's name"}.`}
+          label="What do you want to call this app?"
+          name="product-name"
+          onChange={(event) => {
+            setName(event.target.value);
+            setError(undefined);
+            setFeedback(null);
+          }}
+          placeholder={data.organization.organizationName || "SignuDoc"}
+          readOnly={false}
+          value={name}
+        />
+      </div>
+      <ShellButton className="w-fit" loading={saving} type="submit">
+        {saving ? "Saving..." : "Save"}
+      </ShellButton>
+    </form>
+  );
+}
+
+function BrandingStep({ data, onChanged }: StepFormProps) {
+  const [view, setView] = useState(data.organization);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+
+    const result = await saveOrganization(view, {});
+
+    setSaving(false);
+    setErrors(result.fieldErrors);
+
+    if (result.settings) {
+      setView(result.settings);
+      setFeedback({ message: "Saved.", tone: "success" });
+      onChanged();
+    } else {
+      setFeedback({
+        message: result.message ?? GENERIC_ERROR_MESSAGE,
+        tone: "error",
+      });
+    }
+  }
+
+  return (
+    <form className="space-y-6" noValidate onSubmit={submit}>
+      <Notice feedback={feedback} />
+      <div className="max-w-md">
+        <FieldShell
+          disabled={saving}
+          error={errors.organizationName}
+          helper="Shown to signers and in every email this site sends."
+          label="Organization name"
+          name="organization-name"
+          onChange={(event) => {
+            setView((current) => ({
+              ...current,
+              organizationName: event.target.value,
+            }));
+            setErrors((current) => ({ ...current, organizationName: "" }));
+            setFeedback(null);
+          }}
+          readOnly={false}
+          value={view.organizationName}
+        />
+      </div>
+      <BrandingPanel
+        brandColor={view.brandColor}
+        brandColorError={errors.brandColor}
+        disabled={saving}
+        logoUrl={view.logoUrl}
+        onBrandColorChange={(brandColor) => {
+          setView((current) => ({ ...current, brandColor }));
+          setErrors((current) => ({ ...current, brandColor: "" }));
+          setFeedback(null);
+        }}
+        onLogoChange={(logoUrl) => {
+          setView((current) => ({ ...current, logoUrl }));
+          onChanged();
+        }}
+      />
+      <ShellButton className="w-fit" loading={saving} type="submit">
+        {saving ? "Saving..." : "Save name and color"}
+      </ShellButton>
+    </form>
+  );
+}
+
 function OrganizationStep({ data, onChanged }: StepFormProps) {
   const [view, setView] = useState(data.organization);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -138,7 +289,9 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
       onChanged();
     } else {
       setFeedback({
-        message: result.message ?? GENERIC_ERROR_MESSAGE,
+        message: result.fieldErrors.organizationName
+          ? "Name the organization first, in the Logo and organization step."
+          : (result.message ?? GENERIC_ERROR_MESSAGE),
         tone: "error",
       });
     }
@@ -148,16 +301,6 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
     <form className="space-y-6" noValidate onSubmit={submit}>
       <Notice feedback={feedback} />
       <div className="grid gap-4 sm:grid-cols-2">
-        <FieldShell
-          disabled={saving}
-          error={errors.organizationName}
-          helper="Shown in the header and in every email this site sends."
-          label="Organization name"
-          name="organization-name"
-          onChange={change("organizationName")}
-          readOnly={false}
-          value={view.organizationName}
-        />
         <FieldShell
           disabled={saving || view.supportAddressFromEnv}
           error={errors.supportAddress}
@@ -245,6 +388,18 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
 
 function EmailStep({ onChanged }: StepFormProps) {
   return <EmailSetupPanel onStatusChange={() => onChanged()} />;
+}
+
+function GoogleWorkspaceStep({ data, onChanged }: StepFormProps) {
+  return (
+    <GoogleWorkspaceSetup
+      drive={data.googleDrive}
+      onChanged={onChanged}
+      returnTo="/onboarding?step=google-workspace"
+      target={data.googleSetup}
+      workspace={data.googleWorkspace}
+    />
+  );
 }
 
 function GoogleSignInStep({ data }: StepFormProps) {
@@ -390,11 +545,14 @@ export const STEP_FORMS: Record<
   ComponentType<StepFormProps>
 > = {
   backups: BackupsStep,
+  branding: BrandingStep,
   email: EmailStep,
   "google-addon": GoogleAddonStep,
   "google-directory": GoogleDirectoryStep,
   "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
+  "google-workspace": GoogleWorkspaceStep,
+  name: NameStep,
   notifications: NotificationsStep,
   organization: OrganizationStep,
   people: PeopleStep,

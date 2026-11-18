@@ -7,6 +7,7 @@ import { describeSsoError } from "@/components/auth/sso-button";
 import { useBranding } from "@/components/layout/branding-provider";
 import {
   ActionRow,
+  AutomaticGoogleSetupNotice,
   CheckItem,
   CopyValue,
   EnvLockedNotice,
@@ -155,6 +156,7 @@ export function GoogleSignInPanel({
             : null
         }
       />
+      <AutomaticGoogleSetupNotice />
       <GoogleSignInSection workspace={workspace} />
     </IntegrationPanel>
   );
@@ -177,6 +179,7 @@ export function GoogleDirectoryPanel({
       name="Workspace directory"
       status={status}
     >
+      <AutomaticGoogleSetupNotice />
       <GoogleDirectorySection workspace={workspace} />
     </IntegrationPanel>
   );
@@ -371,7 +374,22 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
                 label="Redirect URI"
                 value={view.redirectUri}
               />
-            ) : (
+            ) : null}
+            {view.siteUrl ? (
+              <>
+                <CopyValue
+                  hint="Also under Authorized redirect URIs, for connecting Google Drive."
+                  label="Drive redirect URI"
+                  value={`${view.siteUrl}/api/google/drive/callback`}
+                />
+                <CopyValue
+                  hint="Also under Authorized redirect URIs, for the automatic setup."
+                  label="Setup redirect URI"
+                  value={`${view.siteUrl}/settings/google-setup`}
+                />
+              </>
+            ) : null}
+            {view.redirectUri ? null : (
               <Notice tone="warning">
                 This site does not know its own address yet. Set APP_URL (or
                 BETTER_AUTH_URL) where it runs; the redirect URI is that address

@@ -2,7 +2,12 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
-import { getDb, withTransaction, type DbPool } from "./db/connection.ts";
+import {
+  getDb,
+  withTransaction,
+  type DbExecutor,
+  type DbPool,
+} from "./db/connection.ts";
 import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import { emailSchema, nameSchema } from "./schemas/common.ts";
 import { storeDefaultTimestampServer } from "./seal-settings.ts";
@@ -435,6 +440,7 @@ export async function completeSetup(
         // A new install timestamps its seals from the start; the
         // administrator can change or turn it off in Settings.
         await storeDefaultTimestampServer(tx, { email, id: userId }, now);
+        await recordInstaller(tx, userId);
 
         return { email, mode: "create" as const, userId };
       }
@@ -483,6 +489,7 @@ export async function completeSetup(
         },
         tx,
       );
+      await recordInstaller(tx, sessionUser.id);
 
       return {
         email: sessionUser.email,
@@ -510,6 +517,17 @@ export async function completeSetup(
 
     throw error;
   }
+}
+
+/**
+ * Remembers the account setup made or promoted. It is the break-glass way
+ * in, so it cannot be closed from Settings (account.ts).
+ */
+async function recordInstaller(tx: DbExecutor, userId: string) {
+  await tx.query(
+    `update public.app_settings set installer_user_id = $1 where id`,
+    [userId],
+  );
 }
 
 /** Where the first administrator goes after setup: hosted installs have no onboarding. */

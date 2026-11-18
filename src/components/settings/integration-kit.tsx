@@ -600,3 +600,30 @@ export function EnvLockedNotice({
 export function ActionRow({ children }: { children: ReactNode }) {
   return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }
+
+/**
+ * Points at the automatic Google Workspace setup, which does the Google
+ * steps of several panels at once and can be run again at any time.
+ */
+export function AutomaticGoogleSetupNotice() {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl bg-(--accent-softer) px-5 py-4 text-sm leading-6 text-(--secondary) sm:flex-row sm:items-center sm:justify-between">
+      <p>
+        <span className="font-bold text-(--fg)">
+          Rather not click through Google?
+        </span>{" "}
+        The automatic setup does these steps with one super admin sign-in, and
+        can be run again to fix anything.
+      </p>
+      <Link
+        className={cn(
+          buttonVariants({ variant: "outline" }),
+          "min-h-10 w-fit shrink-0 px-4 text-sm",
+        )}
+        href="/settings/google-setup"
+      >
+        Run automatic setup
+      </Link>
+    </div>
+  );
+}

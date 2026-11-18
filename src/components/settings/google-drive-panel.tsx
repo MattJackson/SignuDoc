@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import {
+  AutomaticGoogleSetupNotice,
   CheckItem,
   CopyValue,
   ExternalLink,
@@ -131,6 +132,7 @@ export function GoogleDrivePanel({
       name="Google Drive"
       status={status}
     >
+      <AutomaticGoogleSetupNotice />
       <GoogleDriveSection initialView={initialView} />
     </IntegrationPanel>
   );

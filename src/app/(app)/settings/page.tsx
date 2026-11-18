@@ -1,4 +1,5 @@
 import { SettingsShell } from "@/components/settings/settings-shell";
+import { accountClosureBlock } from "@/lib/account";
 import { getAuthSession } from "@/lib/auth/server";
 import { getSettings } from "@/lib/settings";
 import { usesTwoFactor } from "@/lib/sign-in-security";
@@ -8,9 +9,13 @@ import { usesTwoFactor } from "@/lib/sign-in-security";
 export default async function SettingsPage() {
   const session = await getAuthSession();
   const settings = await getSettings();
+  const closureBlockedReason = session
+    ? await accountClosureBlock(session.user).catch(() => null)
+    : null;
 
   return (
     <SettingsShell
+      closureBlockedReason={closureBlockedReason}
       header={false}
       initialProfile={{
         email: session?.user.email ?? "",

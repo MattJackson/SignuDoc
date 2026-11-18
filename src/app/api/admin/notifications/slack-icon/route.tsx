@@ -77,10 +77,7 @@ async function iconContent(size: number) {
   }
 
   if (logo) {
-    const initial = (branding.organizationName ?? branding.productName)
-      .trim()
-      .charAt(0)
-      .toUpperCase();
+    const initial = branding.productName.trim().charAt(0).toUpperCase();
 
     return (
       <div

@@ -46,7 +46,11 @@ export type Branding = {
   /** The organization's name, when one has been set. */
   organizationName: string | null;
   privacyUrl: string | null;
-  /** The name shown in the header, in page titles and in emails. */
+  /**
+   * The name shown in the header, in page titles and in emails, and
+   * suggested wherever the app is named in Google or Slack: the app name
+   * chosen in onboarding, else the organization's name.
+   */
   productName: string;
   /** False when new accounts are not being accepted at all. */
   signupAvailable: boolean;
@@ -94,7 +98,8 @@ export function buildBranding(settings: ResolvedSettings): Branding {
         : buildBrandLogoPath(settings.logoVersion),
     organizationName,
     privacyUrl: settings.privacyUrl,
-    productName: organizationName ?? SIGNUDOC_NAME,
+    productName:
+      settings.productName?.trim() || organizationName || SIGNUDOC_NAME,
     signupAvailable,
     supportAddress: settings.supportAddress,
     termsUrl: settings.termsUrl,

@@ -24,6 +24,8 @@ export type FakeGoogleUser = {
   /** The manager's address, listed in the user's relations as "manager". */
   manager?: string | null;
   orgUnitPath?: string;
+  /** The profile picture's address, sent as the ID token's picture claim. */
+  picture?: string;
   suspended?: boolean;
   title?: string;
 };
@@ -53,6 +55,7 @@ export type StoredUser = {
   isAdmin: boolean;
   manager: string | null;
   orgUnitPath: string;
+  picture: string | null;
   suspended: boolean;
   title: string | null;
 };
@@ -209,6 +212,7 @@ export function storeUser(state: FakeGoogleState, user: FakeGoogleUser) {
     isAdmin: user.isAdmin ?? false,
     manager: user.manager?.trim().toLowerCase() || null,
     orgUnitPath: user.orgUnitPath ?? "/",
+    picture: user.picture ?? null,
     suspended: user.suspended ?? false,
     title: user.title ?? null,
   };

@@ -45,6 +45,12 @@ const STATUS_PILLS: Record<OnboardingStepStatus, string> = {
   skipped: "pill-neutral",
 };
 
+const CONFIRM_LABELS: Partial<Record<OnboardingStepId, string>> = {
+  branding: "Continue without a logo",
+  name: "Keep the organization's name",
+  retention: "Keep as it is",
+};
+
 type OnboardingShellProps = {
   current: OnboardingStepId | "done";
   data: OnboardingData;
@@ -56,6 +62,10 @@ function stepBrand(
   step: OnboardingStepState,
   storageDriver: string | null,
 ): BrandId | null {
+  if (step.id === "google-workspace") {
+    return "google";
+  }
+
   if (step.id === "storage") {
     return storageDriver === "gcs"
       ? "google-cloud"
@@ -343,9 +353,7 @@ export function OnboardingShell({
                       onClick={() => void mark("confirmed", true)}
                       variant="secondary"
                     >
-                      {step.id === "retention"
-                        ? "Keep as it is"
-                        : "Mark as done"}
+                      {CONFIRM_LABELS[step.id] ?? "Mark as done"}
                     </ShellButton>
                   ) : null}
                   <ShellButton href={nextHref}>

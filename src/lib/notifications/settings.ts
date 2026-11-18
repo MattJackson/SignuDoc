@@ -197,7 +197,7 @@ export type NotificationsAdminView = {
 };
 
 /**
- * The organization's name and logo for messages. `absoluteLogo`: the logo
+ * The app's name and logo for messages. `absoluteLogo`: the logo
  * as an https address Slack can fetch, else none; otherwise the path on
  * this site, for a preview in the browser.
  */
@@ -216,7 +216,7 @@ async function messageBrand(
   return {
     brandColor: branding.brandColor,
     logoUrl,
-    name: branding.organizationName ?? branding.productName,
+    name: branding.productName,
   };
 }
 

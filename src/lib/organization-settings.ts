@@ -18,6 +18,7 @@ export type OrganizationSettingsField =
   | "brandColor"
   | "organizationName"
   | "privacyUrl"
+  | "productName"
   | "retentionDays"
   | "senderAddress"
   | "signupMode"
@@ -46,6 +47,8 @@ export type OrganizationSettingsView = {
   logoUrl: string | null;
   organizationName: string;
   privacyUrl: string;
+  /** The app's own name, or empty to go by the organization's. */
+  productName: string;
   /** Everyone must use two-step sign-in. Changed in the security panel. */
   requireTwoFactor: boolean;
   /** Minutes without use before a session ends, or null for no limit. */
@@ -76,6 +79,7 @@ export function toOrganizationSettingsView(
     organizationName: settings.organizationName ?? "",
     part11Mode: settings.part11Mode,
     privacyUrl: settings.privacyUrl ?? "",
+    productName: settings.productName ?? "",
     requireTwoFactor: settings.requireTwoFactor,
     sessionIdleMinutes: settings.sessionIdleMinutes,
     sessionMaxHours: settings.sessionMaxHours,
@@ -133,11 +137,37 @@ const optionalBrandColor = z.preprocess(
     .nullable(),
 );
 
+/** The app name, as it is stored. Empty goes by the organization's name. */
+export const MAX_PRODUCT_NAME_LENGTH = 60;
+
+const optionalProductName = z.preprocess(
+  blankToNull,
+  z
+    .string()
+    .trim()
+    .max(MAX_PRODUCT_NAME_LENGTH)
+    .transform((value) => value.replace(/\s+/g, " "))
+    .nullable(),
+);
+
+/** Checks an app name on its own, for the first onboarding step. */
+export function parseProductName(
+  value: unknown,
+): { ok: true; value: string | null } | { message: string; ok: false } {
+  const parsed = optionalProductName.safeParse(value);
+
+  return parsed.success
+    ? { ok: true, value: parsed.data }
+    : { message: FIELD_MESSAGES.productName, ok: false };
+}
+
 const organizationSettingsSchema = z.object({
   allowedEmailDomains: z.string().max(4000).default(""),
   brandColor: optionalBrandColor.default(null),
   organizationName: z.string().trim().min(1).max(120),
   privacyUrl: optionalWebUrl.default(null),
+  // Left out, the stored name is kept: older forms do not send it.
+  productName: optionalProductName.optional(),
   retentionDays: z
     .preprocess((value) => {
       const blank = blankToNull(value);
@@ -156,6 +186,7 @@ const FIELD_MESSAGES: Record<OrganizationSettingsField, string> = {
   brandColor: "Enter a color as six letters and digits, such as #1a73e8",
   organizationName: "Enter the name of your organization",
   privacyUrl: "Enter a full web address starting with https://",
+  productName: "Keep the app name to 60 characters or fewer",
   retentionDays: "Enter a number of days, 30 or more, or leave this empty",
   senderAddress: "Enter a valid email address, or leave this empty",
   signupMode: "Choose who can create an account",
@@ -260,6 +291,9 @@ export async function updateOrganizationSettings(
     {
       ...(domainRule ? { allowedEmailDomains: domains } : {}),
       organizationName: input.organizationName,
+      ...(input.productName === undefined
+        ? {}
+        : { productName: input.productName }),
       retentionDays: input.retentionDays,
       signupMode: input.signupMode,
       ...(current.hosted
@@ -285,6 +319,7 @@ const AUDITED_SETTINGS = [
   "brandColor",
   "organizationName",
   "privacyUrl",
+  "productName",
   "retentionDays",
   "senderAddress",
   "signupMode",

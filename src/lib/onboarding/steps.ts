@@ -42,8 +42,11 @@ import { type EnvSource } from "../utils/env.ts";
 // ("google-addon") ends the Google steps.
 
 export type OnboardingStepId =
+  | "name"
+  | "branding"
   | "organization"
   | "email"
+  | "google-workspace"
   | "google-sign-in"
   | "google-directory"
   | "people"
@@ -92,6 +95,50 @@ export type OnboardingMark = "confirmed" | "skipped";
 export type OnboardingMarks = Partial<Record<OnboardingStepId, OnboardingMark>>;
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
+  {
+    check: async ({ marks, settings }) => {
+      if (settings.productName) {
+        return { detail: `Called ${settings.productName}.`, status: "done" };
+      }
+
+      const fallback = settings.organizationName ?? "SignuDoc";
+
+      return marks.name === "confirmed"
+        ? { detail: `Goes by ${fallback}.`, status: "done" }
+        : {
+            detail: `Goes by ${fallback} until it has a name of its own.`,
+            status: "not_started",
+          };
+    },
+    confirmable: true,
+    id: "name",
+    settingsHref: "/settings/organization",
+    summary:
+      "What do you want to call this app? The name is used in the header, in emails, and for everything set up in Google and Slack.",
+    title: "App name",
+  },
+  {
+    check: async ({ marks, settings }) => {
+      const name = settings.organizationName ?? "The organization";
+
+      if (settings.logoVersion !== null) {
+        return { detail: `${name}, with its logo.`, status: "done" };
+      }
+
+      return marks.branding === "confirmed"
+        ? { detail: `${name}, without a logo.`, status: "done" }
+        : {
+            detail: "No logo yet. The header shows the name.",
+            status: "not_started",
+          };
+    },
+    confirmable: true,
+    id: "branding",
+    settingsHref: "/settings/organization",
+    summary:
+      "Your organization's name and logo, taken from your website or uploaded, and its color.",
+    title: "Logo and organization",
+  },
   {
     check: async ({ settings }) => {
       if (!settings.organizationName || !settings.supportAddress) {
@@ -157,6 +204,40 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "Connect Resend, verify the sending domain, and send yourself a test email.",
     title: "Email",
+  },
+  {
+    check: async ({ env, stored }) => {
+      const sso = readSsoConfig(env, stored);
+
+      if (!sso?.google) {
+        return {
+          detail: "Not set up yet: choose Automatic or Manual.",
+          status: "not_started",
+        };
+      }
+
+      const missing = [
+        readDirectoryConfig(env, stored).customer === "my_customer"
+          ? "the customer ID"
+          : null,
+        readPickerConfig(env, stored).ready ? null : "the Picker key",
+      ].filter(Boolean);
+
+      return missing.length === 0
+        ? {
+            detail: "Sign-in, the directory and the Drive Picker are set up.",
+            status: "done",
+          }
+        : {
+            detail: `Google sign-in works; still missing ${missing.join(" and ")}. Run the automatic setup, or finish the manual steps.`,
+            status: "needs_attention",
+          };
+    },
+    id: "google-workspace",
+    settingsHref: "/settings/google-setup",
+    summary:
+      "Set up Google sign-in, the Workspace directory, the Drive Picker and a Shared Drive, automatically with one super admin sign-in, or step by step.",
+    title: "Google Workspace",
   },
   {
     check: async ({ env, stored }) => {

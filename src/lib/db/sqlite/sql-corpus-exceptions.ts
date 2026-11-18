@@ -31,9 +31,9 @@ export const STAND_INS: Record<string, string | (() => string)> = {
   // settings.ts: settingsColumnsAfter(n) lists the settings columns the
   // first n later migrations had added; the newest shape is the widest.
   "settingsColumnsAfter(laterMigrations)":
-    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours",
+    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name",
   "settingsColumnsAfter(LATER_SETTINGS_COLUMNS.length)":
-    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours",
+    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name",
 };
 
 export const POSTGRES_ONLY: {

@@ -87,6 +87,8 @@ function buildContentSecurityPolicy(pathname: string) {
         "'self'",
         "data:",
         "blob:",
+        // People's Google profile photos, in the account menu.
+        "https://lh3.googleusercontent.com",
         preview && "https://vercel.live https://vercel.com",
       ],
     ],

@@ -153,6 +153,7 @@ export function OrganizationSettings({
           brandColor: values.brandColor,
           organizationName: values.organizationName,
           privacyUrl: values.privacyUrl,
+          ...(values.hosted ? {} : { productName: values.productName }),
           retentionDays: values.retentionDays,
           senderAddress: values.senderAddress,
           signupMode: values.signupMode,
@@ -230,6 +231,19 @@ export function OrganizationSettings({
                 readOnly={false}
                 value={values.organizationName}
               />
+              {!values.hosted ? (
+                <FieldShell
+                  disabled={isSaving}
+                  error={errors.productName}
+                  helper="What people see in the header, in emails and in Google and Slack. Empty uses the organization name."
+                  label="App name"
+                  name="product-name"
+                  onChange={handleChange("productName")}
+                  placeholder={values.organizationName || "SignuDoc"}
+                  readOnly={false}
+                  value={values.productName}
+                />
+              ) : null}
             </div>
 
             {/* The hosted service runs under its own name, mark and color. */}
