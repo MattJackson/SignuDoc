@@ -11,7 +11,8 @@
 // Stop the app that writes to --from first, so nothing changes during the
 // copy.
 
-import { gzipSync } from "node:zlib";
+import { Readable } from "node:stream";
+import { createGzip } from "node:zlib";
 
 import pg from "pg";
 
@@ -89,16 +90,21 @@ async function main() {
   try {
     console.log("Reading the source…");
 
-    let text = "";
+    // Compressed as it is read, so the export is never one big string.
+    const chunks: Buffer[] = [];
 
-    for await (const line of exportDatabaseLines(source, new Date())) {
-      text += line;
+    for await (const chunk of Readable.from(
+      exportDatabaseLines(source, new Date()),
+    ).pipe(createGzip())) {
+      chunks.push(chunk as Buffer);
     }
 
     const store = memoryStore();
     const path = "database/transfer.ndjson.gz";
 
-    await store.put(path, gzipSync(text), { contentType: "application/gzip" });
+    await store.put(path, Buffer.concat(chunks), {
+      contentType: "application/gzip",
+    });
 
     console.log("Writing the target…");
 
