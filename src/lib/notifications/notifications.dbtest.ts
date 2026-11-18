@@ -29,6 +29,7 @@ import {
   type OutboxDeps,
   purgeOldNotifications,
 } from "./outbox.ts";
+import { runNotificationJob } from "./job.ts";
 import { savePreferenceChoices } from "./preferences.ts";
 import { SLACK_TOKEN_SETTING } from "./slack/channel.ts";
 import { saveNotificationSettings } from "./settings.ts";
@@ -503,11 +504,34 @@ test("failed sends are retried with backoff, paused for rate limits, and given u
     outcome: "rate_limited",
     retryAfterSeconds: 120,
   });
+  const sentBeforeLimit = fake.sent.length;
+
   await deliverDueDeliveries(database, depsFor(fake.channel, now + 400));
   [legal] = await channelRows();
   assert.equal(legal?.status, "pending");
   assert.equal(legal?.attempts, 1);
   assert.ok(legal && legal.nextAttemptAt >= now + 400 + 120);
+
+  // Whichever channel delivery was claimed first took the rate limit; the
+  // other must have been held back too, not sent. Both share a due time, so
+  // the claim order is arbitrary and both have to be checked.
+  const bothChannelRows = (await deliveriesFor(envelopeId)).filter((row) =>
+    ["C0EVERY1", "C0LEGAL1"].includes(row.target),
+  );
+
+  assert.equal(bothChannelRows.length, 2);
+
+  for (const row of bothChannelRows) {
+    assert.equal(row.status, "pending", row.target);
+    assert.equal(row.attempts, 1, row.target);
+    assert.ok(row.nextAttemptAt >= now + 400 + 120, row.target);
+  }
+
+  assert.equal(
+    fake.sent.length - sentBeforeLimit,
+    1,
+    "only the delivery that hit the limit was tried",
+  );
 
   // After the last attempt, it fails for good.
   await database.query(
@@ -1021,6 +1045,76 @@ test("a new Slack token wipes the old workspace's memory even when the cached to
   }
 });
 
+test("saving the same Slack token again keeps the remembered people and threads", async () => {
+  const replaced = replaceDbPoolForTests(database);
+  const actor = { email: admin.email, id: admin.id };
+
+  try {
+    await database.query(
+      `delete from public.integration_settings where key = $1`,
+      [SLACK_TOKEN_SETTING],
+    );
+    invalidateIntegrationSettingsCache();
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    const envelopeId = await seedSlackMemory();
+
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    assert.deepEqual(await slackMemoryCounts(envelopeId), {
+      identities: 1,
+      threads: 1,
+    });
+  } finally {
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
+});
+
+test("removing the Slack token wipes the remembered people and threads", async () => {
+  const replaced = replaceDbPoolForTests(database);
+  const actor = { email: admin.email, id: admin.id };
+
+  try {
+    await database.query(
+      `delete from public.integration_settings where key = $1`,
+      [SLACK_TOKEN_SETTING],
+    );
+    invalidateIntegrationSettingsCache();
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    const envelopeId = await seedSlackMemory();
+
+    await saveNotificationSettings(
+      { removeSlackBotToken: true },
+      actor,
+      settingsEnv,
+    );
+
+    assert.deepEqual(await slackMemoryCounts(envelopeId), {
+      identities: 0,
+      threads: 0,
+    });
+  } finally {
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
+});
+
 test("a failed wipe leaves the old Slack token in place", async () => {
   const replaced = replaceDbPoolForTests(database);
   const actor = { email: admin.email, id: admin.id };
@@ -1074,6 +1168,7 @@ test("a failed wipe leaves the old Slack token in place", async () => {
 
     await assert.rejects(
       saveNotificationSettings({ slackBotToken: TOKEN_B }, actor, settingsEnv),
+      /the delete failed/,
     );
 
     replaceDbPoolForTests(database);
@@ -1405,4 +1500,141 @@ test("purging keeps what is still needed and deletes the rest", async () => {
     "T0FRESH",
     "T0LEASED",
   ]);
+});
+
+/** A chat tool that counts as set up only when the token is in the environment. */
+function envOnlyChannel() {
+  const fake = fakeChannel();
+
+  fake.channel.status = (context) => ({
+    configured: Boolean(context.env.SLACK_BOT_TOKEN),
+    directMessages: true,
+    source: "env",
+  });
+
+  return fake;
+}
+
+async function queuedEventCount(envelopeId: string, processed: boolean) {
+  const result = await database.query(
+    `
+      select 1 from notification_events
+      where envelope_id = $1 and source = 'audit'
+        and (processed_at is not null) = $2
+    `,
+    [envelopeId, processed],
+  );
+
+  return result.rows.length;
+}
+
+test("a notification run with a chat tool set up in the environment expands and sends", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = envOnlyChannel();
+
+  await clearOutbox();
+
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+
+  const summary = await runNotificationJob({
+    channels: [fake.channel],
+    database,
+    deadline: Date.now() + 10_000,
+    detectConditions: false,
+    env: { ...settingsEnv, SLACK_BOT_TOKEN: TOKEN_A },
+    now: () => now,
+  });
+
+  assert.equal(summary.status, "ran");
+  assert.ok(summary.status === "ran" && summary.eventsProcessed >= 1);
+  assert.ok(summary.status === "ran" && summary.deliveriesCreated >= 1);
+  assert.ok((await deliveriesFor(envelopeId)).length >= 1);
+  assert.ok(fake.sent.length >= 1, "the queued event was delivered");
+});
+
+test("a notification run with no chat tool set up discards what was queued", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = envOnlyChannel();
+  const env: Record<string, string | undefined> = { ...settingsEnv };
+
+  delete env.SLACK_BOT_TOKEN;
+  await clearOutbox();
+
+  const first = await createEnvelope(owner.id, { sentAt: now });
+  const second = await createEnvelope(owner.id, { sentAt: now });
+
+  for (const envelopeId of [first, second]) {
+    await recordAuditEvent(
+      { actorType: "system", envelopeId, event: "completed" },
+      database,
+    );
+  }
+
+  const summary = await runNotificationJob({
+    channels: [fake.channel],
+    database,
+    deadline: Date.now() + 10_000,
+    env,
+    now: () => now,
+  });
+
+  assert.deepEqual(summary, { discarded: 2, status: "not_configured" });
+  assert.equal(await queuedEventCount(first, false), 0);
+  assert.equal(await queuedEventCount(second, false), 0);
+  assert.equal((await deliveriesFor(first)).length, 0);
+  assert.equal(fake.sent.length, 0);
+});
+
+test("only a scheduled notification run clears out old events", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = envOnlyChannel();
+  const env = { ...settingsEnv, SLACK_BOT_TOKEN: TOKEN_A };
+
+  await clearOutbox();
+
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+  await runNotificationJob({
+    channels: [fake.channel],
+    database,
+    deadline: Date.now() + 10_000,
+    detectConditions: false,
+    env,
+    now: () => now,
+  });
+  assert.equal(await queuedEventCount(envelopeId, true), 1);
+
+  // A month and a day later, a run that notices nothing new leaves it.
+  const later = now + 31 * DAY;
+  const kicked = await runNotificationJob({
+    channels: [fake.channel],
+    database,
+    deadline: Date.now() + 10_000,
+    detectConditions: false,
+    env,
+    now: () => later,
+  });
+
+  assert.ok(kicked.status === "ran" && kicked.purged === 0);
+  assert.equal(await queuedEventCount(envelopeId, true), 1);
+
+  const scheduled = await runNotificationJob({
+    channels: [fake.channel],
+    database,
+    deadline: Date.now() + 10_000,
+    env,
+    now: () => later,
+  });
+
+  assert.ok(scheduled.status === "ran" && scheduled.purged >= 1);
+  assert.equal(await queuedEventCount(envelopeId, true), 0);
 });

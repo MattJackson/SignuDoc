@@ -521,8 +521,34 @@ test("a dotted bucket name can be longer than 63 characters", () => {
     long,
   );
 
-  // A part over 63 characters, or an undotted name over 63, is refused.
-  for (const bucket of [`${"a".repeat(64)}.${part}`, "a".repeat(64)]) {
+  // Three full parts and a last one: 222 characters is the longest allowed.
+  const dotted = (last: number) =>
+    [..."abc"]
+      .map(() => "a".repeat(63))
+      .concat("a".repeat(last))
+      .join(".");
+
+  assert.equal(dotted(30).length, 222);
+  assert.equal(
+    (
+      parseBackupConfigInput({
+        destination: { bucket: dotted(30), kind: "gcs" },
+        keepDays: 30,
+      }).destination as { bucket: string }
+    ).bucket,
+    dotted(30),
+  );
+
+  // A part over 63 characters, or an undotted name over 63, is refused. So
+  // is a dotted name over 222 characters, one with an empty part, and one
+  // ending in a dot.
+  for (const bucket of [
+    `${"a".repeat(64)}.${part}`,
+    "a".repeat(64),
+    dotted(31),
+    `${part}..${part}`,
+    `${part}.${part}.`,
+  ]) {
     assert.throws(
       () =>
         parseBackupConfigInput({
