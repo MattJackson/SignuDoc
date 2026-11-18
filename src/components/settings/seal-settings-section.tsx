@@ -114,10 +114,19 @@ export function SealSettingsSection({
     }
 
     setErrors((current) => ({ ...current, file: "" }));
-    setFile({
-      base64: toBase64(await chosen.arrayBuffer()),
-      name: chosen.name,
-    });
+
+    try {
+      setFile({
+        base64: toBase64(await chosen.arrayBuffer()),
+        name: chosen.name,
+      });
+    } catch {
+      setFile(null);
+      setErrors((current) => ({
+        ...current,
+        file: "That file could not be read. Choose it again.",
+      }));
+    }
   }
 
   async function save() {
