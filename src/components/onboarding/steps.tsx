@@ -6,6 +6,7 @@ import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
 import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
+import { GoogleAddonSection } from "@/components/settings/google-addon-panel";
 import {
   GoogleDirectorySection,
   GoogleSignInSection,
@@ -14,6 +15,7 @@ import {
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
 import type { BackupSettingsView } from "@/lib/backup-config";
 import type { GoogleDriveView } from "@/lib/google-drive";
+import type { GoogleAddonView } from "@/lib/google-addon";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -27,6 +29,7 @@ import type { SealSettingsView } from "@/lib/seal-setup";
 export type OnboardingData = {
   backups: BackupSettingsView;
   googleDrive: GoogleDriveView;
+  googleAddon: GoogleAddonView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   seal: SealSettingsView;
@@ -258,6 +261,10 @@ function GoogleDriveStep({ data }: StepFormProps) {
   return <GoogleDriveSection initialView={data.googleDrive} />;
 }
 
+function GoogleAddonStep({ data }: StepFormProps) {
+  return <GoogleAddonSection initialView={data.googleAddon} />;
+}
+
 function StorageStep({ data }: StepFormProps) {
   const [result, setResult] = useState<Feedback>(null);
   const [checking, setChecking] = useState(false);
@@ -403,6 +410,7 @@ export const STEP_FORMS: Record<
 > = {
   backups: BackupsStep,
   email: EmailStep,
+  "google-addon": GoogleAddonStep,
   "google-directory": GoogleDirectoryStep,
   "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,

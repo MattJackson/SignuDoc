@@ -37,6 +37,8 @@ export const INTEGRATION_SETTINGS = {
   "drive.labelId": { secret: false },
   "drive.labelsSubject": { secret: false },
   "drive.pickerApiKey": { secret: false },
+  "google.addonClientId": { secret: false },
+  "google.addonServiceAccount": { secret: false },
   "google.adminGroup": { secret: false },
   "google.adminSubject": { secret: false },
   "google.customerId": { secret: false },

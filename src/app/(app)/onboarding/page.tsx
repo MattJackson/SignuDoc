@@ -6,6 +6,7 @@ import { isAdminUser } from "@/lib/auth/admin";
 import { getAuthSession } from "@/lib/auth/server";
 import { getBackupSettingsView } from "@/lib/backup-config";
 import { getGoogleDriveView } from "@/lib/google-drive";
+import { getGoogleAddonView } from "@/lib/google-addon";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import {
   getOnboardingState,
@@ -42,15 +43,23 @@ export default async function OnboardingPage({
 
   const { step: rawStep } = await searchParams;
   const requested = Array.isArray(rawStep) ? rawStep[0] : rawStep;
-  const [steps, googleWorkspace, googleDrive, stored, backups, seal] =
-    await Promise.all([
-      getOnboardingState(),
-      getGoogleWorkspaceView(),
-      getGoogleDriveView(),
-      readStoredSettings(),
-      getBackupSettingsView(),
-      getSealSettingsView(),
-    ]);
+  const [
+    steps,
+    googleWorkspace,
+    googleDrive,
+    googleAddon,
+    stored,
+    backups,
+    seal,
+  ] = await Promise.all([
+    getOnboardingState(),
+    getGoogleWorkspaceView(),
+    getGoogleDriveView(),
+    getGoogleAddonView(),
+    readStoredSettings(),
+    getBackupSettingsView(),
+    getSealSettingsView(),
+  ]);
   // With no step named, the first one not done yet.
   const current: OnboardingStepId | "done" =
     requested === "done"
@@ -65,6 +74,7 @@ export default async function OnboardingPage({
       data={{
         backups,
         googleDrive,
+        googleAddon,
         googleWorkspace,
         organization: toOrganizationSettingsView(resolveSettings(stored)),
         seal,

@@ -4,12 +4,13 @@ SignuDoc works with any organization's Google Workspace. Once it is set up, anyo
 
 Everything here is set in the app, in Settings, Google Workspace, and in the same steps of onboarding (`/onboarding`, where first-run setup ends). Each part is a checklist with live checks and this site's own values to paste into Google's consoles. Every setting also has an environment variable; one that is set wins, and the app shows the setting as fixed.
 
-There are four parts. Only the first is needed for sign-in.
+There are five parts. Only the first is needed for sign-in.
 
 1. [Google sign-in](#1-google-sign-in)
 2. [The Workspace directory](#2-the-workspace-directory): suggest colleagues as recipients
 3. [An administrator group](#3-an-administrator-group)
 4. [Google Drive](#4-google-drive): start envelopes from Drive, and keep executed copies in a Shared Drive
+5. [The Gmail and Drive add-on](#5-the-gmail-and-drive-add-on): send for signature from the side panel
 
 ## 1. Google sign-in
 
@@ -186,6 +187,65 @@ The label is put on the sealed PDF after the upload, with the Drive Labels API (
 
 A label's permissions are given to people and groups in your Workspace, which a service account is not part of. If **Load labels** finds nothing, give the service account domain-wide delegation for exactly those two scopes, and set "Apply labels as" (`GOOGLE_DRIVE_LABELS_SUBJECT`) to a user who may apply the label and is a member of the Shared Drive. With the environment, `GOOGLE_DRIVE_LABEL_ID` and `GOOGLE_DRIVE_LABEL_FIELDS` (JSON, such as `{"fieldId":"title","otherFieldId":"counterparty"}`) set the label.
 
+## 5. The Gmail and Drive add-on
+
+Optional. Puts SignuDoc in the side panel of Gmail and Google Drive:
+
+- **In Gmail**, beside an open email: every PDF or Word attachment, each with **Send for signature**. That makes a draft in SignuDoc from the document (a Word file is converted to PDF), with the email's sender as the first signer, and links to the page where the fields are placed and the envelope is sent. Below it, **Contracts with** the sender: the envelopes you can see that involve their address, yours and your teams' sent ones, with their status, and **Nudge** on your own that are waiting on a signer. A nudge is the same reminder as the button on the envelope page, with the same wait between reminders.
+- **In Drive**, for a selected PDF, Word file or Google Doc: **Send for signature**, and the envelopes already made from that file.
+
+It is a Google Workspace add-on on Google's HTTP runtime: Google calls this site for every card, so there is no Apps Script project to keep, and the add-on is always the same version as the site. It works the same on Vercel, Cloud Run or anywhere else with a public HTTPS address.
+
+### What it can read
+
+The add-on asks for the fewest scopes that do this, and nothing reads more than the person using it can:
+
+- `gmail.addons.execute` and `gmail.addons.current.message.readonly`: the **open email only**, with a token Google gives for that one message. Never the rest of the mailbox.
+- `drive.addons.metadata.readonly` and `drive.file`: the names and types of the files selected, and the contents of a file **only after the person gives it to the add-on**. Drive asks the first time ("Allow access to this file"), for that one file.
+- `openid` and `userinfo.email`: who is using it.
+
+Everything is read as the person using the add-on, with the tokens Google puts in each request. The site's own service account is not used.
+
+### How requests are trusted
+
+Every request is checked before anything is read or answered:
+
+1. **That Google sent it, for this add-on.** The deployment asks for `SYSTEM_ID_TOKEN`: Google sends an ID token for the add-on's own service account in the `Authorization` header. Its signature is checked against Google's published keys (cached as long as Google says), its issuer must be Google, its audience the URL that was called, and its email the add-on's service account, verified. This is Google's own recipe in [Validate requests from Google](https://developers.google.com/workspace/add-ons/guides/alternate-runtimes).
+2. **Who is using it.** The user ID token in the request must be Google's, for the add-on's OAuth client, with a verified address. Its `hd` claim must be one of your Workspace domains (the same ones Google sign-in is held to). The account is the SignuDoc account with that address; someone with none is shown a card to sign in to SignuDoc once.
+
+Until both values below are saved, the add-on's URLs answer 404. Requests are limited per person, and requests that fail the checks are limited per address.
+
+### Deploy it
+
+In Settings, Google Workspace add-on (and the onboarding step of the same name):
+
+1. **The deployment JSON**, with this site's URLs, to copy or download as `signudoc-addon.json`. It is built from `APP_URL` (or `BETTER_AUTH_URL`). The site's URLs are `https://<your site>/api/google/addon/homepage`, `/gmail-message`, `/drive-items` and `/action`.
+2. **The commands**, in a terminal signed in to the Google Cloud project that will own the add-on (the one the site runs in is a good choice):
+
+   ```bash
+   gcloud services enable gsuiteaddons.googleapis.com gmail.googleapis.com drive.googleapis.com
+   gcloud workspace-add-ons deployments create signudoc --deployment-file=signudoc-addon.json
+   gcloud workspace-add-ons get-authorization
+   gcloud workspace-add-ons deployments install signudoc
+   ```
+
+   After the site's address changes, download the JSON again and run `gcloud workspace-add-ons deployments replace signudoc --deployment-file=signudoc-addon.json`.
+
+3. **Paste what Google printed.** `get-authorization` prints the add-on's `serviceAccountEmail` (like `service-123456789@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`) and its `oauthClientId`. Paste both and save, or set `GOOGLE_ADDON_SERVICE_ACCOUNT` and `GOOGLE_ADDON_CLIENT_ID`.
+
+`deployments install` installs it for you alone, to try it.
+
+### Install it for your organization
+
+To give it to everyone, privately, without publishing it to the public Marketplace:
+
+1. In the same Google Cloud project, enable the **Google Workspace Marketplace SDK**. Under **App configuration**, set the visibility to **Private**, choose **Google Workspace add-on**, pick **Deploy using an alternate runtime** and enter the deployment ID, `signudoc`. Fill in the store listing and publish. A private app is listed only in your own domain and is not reviewed by Google.
+2. A Workspace administrator opens the Admin console, **Apps**, **Google Workspace Marketplace apps**, finds it under the apps for your domain, and installs it for everyone or for chosen organizational units. With an administrator install, people are not asked to allow it themselves.
+
+### Behind a proxy
+
+The system ID token's audience is the URL Google calls, which is built from this site's own address. If Google calls a different address (a proxy in front of the site), add it to `GOOGLE_ADDON_AUDIENCE` (comma-separated, `https://` only).
+
 ## Environment variables
 
 | Variable                                              | Same as                                                  |
@@ -204,6 +264,9 @@ A label's permissions are given to people and groups in your Workspace, which a 
 | `GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`                  | Folder layout                                            |
 | `GOOGLE_DRIVE_LABEL_ID`, `GOOGLE_DRIVE_LABEL_FIELDS`  | Label on executed copies, and what fills its fields      |
 | `GOOGLE_DRIVE_LABELS_SUBJECT`                         | Apply labels as (domain-wide delegation only)            |
+| `GOOGLE_ADDON_SERVICE_ACCOUNT`                        | The add-on's service account                             |
+| `GOOGLE_ADDON_CLIENT_ID`                              | The add-on's OAuth client ID                             |
+| `GOOGLE_ADDON_AUDIENCE`                               | Extra URLs accepted as the system ID token's audience    |
 
 ## Troubleshooting
 
@@ -213,4 +276,5 @@ A label's permissions are given to people and groups in your Workspace, which a 
 - **"Connect Google Drive" ends with redirect_uri_mismatch**: the OAuth client is missing the second redirect URI, `/api/google/drive/callback`.
 - **"That Google account is not the one you sign in to this site with"**: the account chosen at Google, or the one that opened the file in Drive, is not the person's own Workspace account.
 - **Executed copies wait with 403 or 404**: the service account is not a Content manager of the Shared Drive, or the Drive API is not enabled in the project.
+- **The add-on says "Unauthorized" or shows nothing**: the service account or client ID saved in Settings is not the one `gcloud workspace-add-ons get-authorization` prints, or the deployment's URLs are not this site's address (download the JSON again and run `deployments replace`). The reason is in the site's logs as `google_addon_rejected`.
 - **Test directory access says 403**: the role is not assigned to the service account (it can take a few minutes to apply), the Admin SDK API is not enabled in the project, or, with delegation, a scope is missing.

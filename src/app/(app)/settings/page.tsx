@@ -1,4 +1,5 @@
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
+import { GoogleAddonPanel } from "@/components/settings/google-addon-panel";
 import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
@@ -10,6 +11,7 @@ import { isAdminUser } from "@/lib/auth/admin";
 import { getBackupSettingsView } from "@/lib/backup-config";
 import { getAuthSession } from "@/lib/auth/server";
 import { getGoogleDriveView } from "@/lib/google-drive";
+import { getGoogleAddonView } from "@/lib/google-addon";
 import { getGoogleWorkspaceView } from "@/lib/google-workspace";
 import { getOnboardingState } from "@/lib/onboarding/steps";
 import { toOrganizationSettingsView } from "@/lib/organization-settings";
@@ -30,14 +32,15 @@ export default async function SettingsPage() {
   // The hosted service seals with its operator's certificate.
   const sealView =
     isAdmin && !settings.hosted ? await getSealSettingsView() : null;
-  const [onboarding, googleWorkspace, googleDrive] =
+  const [onboarding, googleWorkspace, googleDrive, googleAddon] =
     isAdmin && !settings.hosted
       ? await Promise.all([
           getOnboardingState(),
           getGoogleWorkspaceView(),
           getGoogleDriveView(),
+          getGoogleAddonView(),
         ])
-      : [null, null, null];
+      : [null, null, null, null];
 
   return (
     <div className="space-y-8">
@@ -67,6 +70,7 @@ export default async function SettingsPage() {
           initialView={googleWorkspace}
         />
       ) : null}
+      {googleAddon ? <GoogleAddonPanel initialView={googleAddon} /> : null}
       {sealView ? <SealSettingsSection initialView={sealView} /> : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <TeamsPanel /> : null}
