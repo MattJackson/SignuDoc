@@ -34,7 +34,9 @@ let database: pg.Pool;
 let replaced: pg.Pool | null = null;
 const createdUsers: string[] = [];
 let administratorsBefore: string[] = [];
-let clock = 2_000_000_000;
+// Starts somewhere different on each run, so a database that still holds the
+// audit rows of an earlier run of this file does not answer for this one.
+let clock = 2_000_000_000 + Math.floor(Math.random() * 100_000_000) * 100;
 
 before(async () => {
   database = await openTestDatabase();

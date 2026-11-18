@@ -12,6 +12,7 @@ import { afterStatement, openTestDatabase } from "./db/test-database.ts";
 import { ELECTRONIC_RECORDS_DISCLOSURE_VERSION } from "./electronic-records-disclosure.ts";
 import {
   EnvelopeMutationError,
+  getReviewEnvelopeDataForUser,
   replaceDraftEnvelopeFields,
   replaceDraftEnvelopeSigners,
   sendDraftEnvelope,
@@ -770,8 +771,21 @@ test("an envelope of approvers only, or with approvers in Part 11 mode or with a
       { senderEmail: "sam@example.test", senderName: "Sam Sender" },
       { database },
     ),
-    (error: unknown) => error instanceof EnvelopeMutationError,
+    (error: unknown) =>
+      error instanceof EnvelopeMutationError &&
+      /place fields/.test(error.message),
   );
+
+  // The sender is told why on the review page, which is where the rule
+  // about someone having to sign is the explanation they see.
+  const review = await getReviewEnvelopeDataForUser(
+    onlyApprovers.userId,
+    onlyApprovers.envelopeId,
+    database,
+  );
+
+  assert.equal(review?.canSend, false);
+  assert.match(review?.disabledReason ?? "", /Add at least one signer/);
 
   const provider = await createDraft();
 

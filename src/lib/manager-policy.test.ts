@@ -61,7 +61,9 @@ function directoryOf(
 }
 
 const directory = directoryOf({
+  "archived-boss@example.com": { archived: true },
   "boss@example.com": { name: "Bea Boss" },
+  "ex@example.com": { managerEmail: "archived-boss@example.com" },
   "gone-boss@example.com": { suspended: true },
   "loner@example.com": {},
   "pat@example.com": { managerEmail: "boss@example.com" },
@@ -316,6 +318,7 @@ test("require mode blocks with the reason when the manager cannot be found", asy
   for (const [who, pattern] of [
     [{ email: "loner@example.com", id: "u1" }, /names no manager/],
     [{ email: "sam@example.com", id: "u2" }, /suspended or no longer exists/],
+    [{ email: "ex@example.com", id: "u3" }, /suspended or no longer exists/],
   ] as const) {
     const result = await checkManagerPolicy(who, customerOnly, {
       database: noDatabase,

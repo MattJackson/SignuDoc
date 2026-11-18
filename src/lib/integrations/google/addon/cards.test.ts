@@ -242,6 +242,65 @@ test("a new draft links to its prepare page and names the suggested signer", () 
   assert.ok(json.includes("Pat Client (pat@client.example)"));
 });
 
+/** The text of every paragraph on a card, which Google reads as HTML. */
+function paragraphsOf(card: Card): string[] {
+  const found: string[] = [];
+
+  function walk(value: unknown) {
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+
+    if (typeof value !== "object" || value === null) {
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+
+    if (typeof record.textParagraph === "object" && record.textParagraph) {
+      found.push(String((record.textParagraph as { text?: unknown }).text));
+    }
+
+    Object.values(record).forEach(walk);
+  }
+
+  walk(card);
+
+  return found;
+}
+
+test("a Drive file name cannot add markup to a card", () => {
+  const name = '<a href="https://x">x</a>';
+  const unsupported = paragraphsOf(
+    driveItemsCard(
+      [
+        {
+          contracts: [],
+          hasFileScope: true,
+          id: "f-1",
+          kind: null,
+          title: name,
+        },
+      ],
+      links,
+    ),
+  ).join("\n");
+  const drafted = paragraphsOf(
+    draftCreatedCard({
+      envelopeId: "env-9",
+      fileName: name,
+      siteUrl: links.siteUrl,
+      suggestedSigner: null,
+    }),
+  ).join("\n");
+
+  for (const shown of [unsupported, drafted]) {
+    assert.ok(shown.includes("&lt;a "));
+    assert.ok(!shown.includes("<a "));
+  }
+});
+
 test("the deployment names this site's URLs, its scopes and the system ID token", () => {
   const deployment = buildAddonDeployment({
     name: "Example Inc SignuDoc",

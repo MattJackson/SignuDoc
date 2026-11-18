@@ -50,6 +50,18 @@ test("a template needs a name, and its signers need different names", () => {
   );
 });
 
+test("a template can have as many roles as the ceiling allows", () => {
+  assert.equal(
+    templateRolesSchema.safeParse(
+      Array.from({ length: MAX_SIGNERS_CEILING }, (_, index) => ({
+        id: String(index),
+        name: `Signer ${String(index)}`,
+      })),
+    ).success,
+    true,
+  );
+});
+
 test("using a template takes a title and one person for each signer", () => {
   const parsed = useTemplateSchema.parse({
     // Anything else about a signer is set on the draft afterwards.

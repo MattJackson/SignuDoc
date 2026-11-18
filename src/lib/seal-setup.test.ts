@@ -200,6 +200,54 @@ test("keeping the uploaded certificate needs one to be there", () => {
   );
 });
 
+test("saving without a new file keeps the uploaded certificate", () => {
+  const update = planSealSettingsUpdate(
+    {
+      certificate: {
+        file: makePkcs12(),
+        password: "correct horse",
+        source: "pkcs12",
+      },
+    },
+    {},
+    {},
+    NOW,
+  );
+
+  // Nothing is written, so the certificate and its password stay as stored.
+  assert.deepEqual(
+    planSealSettingsUpdate(
+      { certificate: { source: "pkcs12" } },
+      {},
+      {
+        "seal.certificate": update["seal.certificate"] ?? undefined,
+        "seal.p12": update["seal.p12"] ?? undefined,
+        "seal.p12Password": update["seal.p12Password"] ?? undefined,
+      },
+      NOW,
+    ),
+    {},
+  );
+});
+
+test("an uploaded certificate with an empty password stores no password", () => {
+  const update = planSealSettingsUpdate(
+    {
+      certificate: {
+        file: makePkcs12({ password: "" }),
+        password: "",
+        source: "pkcs12",
+      },
+    },
+    {},
+    {},
+    NOW,
+  );
+
+  assert.equal(update["seal.p12Password"], null);
+  assert.ok(update["seal.p12"]);
+});
+
 test("a Cloud KMS key cannot be chosen yet", () => {
   fieldError(
     () =>

@@ -35,7 +35,10 @@ function json(body: unknown, status = 200) {
 }
 
 /** A Shared Drive holding `existing` files, found by their appProperties. */
-function fakeSharedDrive(existing: Record<string, string>) {
+function fakeSharedDrive(
+  existing: Record<string, string>,
+  trashed: ReadonlySet<string> = new Set(),
+) {
   const calls: Call[] = [];
   let uploads = 0;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -48,8 +51,12 @@ function fakeSharedDrive(existing: Record<string, string>) {
       const q = new URL(url).searchParams.get("q") ?? "";
 
       if (q.includes("signudocSha256")) {
-        const match = Object.entries(existing).find(([digest]) =>
-          q.includes(digest),
+        // A file in the trash is only found by a query that does not ask
+        // for "trashed = false", as in Drive.
+        const match = Object.entries(existing).find(
+          ([digest, id]) =>
+            q.includes(digest) &&
+            !(q.includes("trashed = false") && trashed.has(id)),
         );
 
         return json({ files: match ? [{ id: match[1] }] : [] });
@@ -208,6 +215,25 @@ test("a retry after half an upload sends only the missing file", async () => {
   assert.equal(result.certificateFileId, "uploaded-1");
   // With no folders, the file goes in the Shared Drive's root.
   assert.equal(result.folderId, "drive-1");
+});
+
+test("a copy in the trash is not reused", async () => {
+  const drive = fakeSharedDrive(
+    { [sha(signed)]: "trashed-signed" },
+    new Set(["trashed-signed"]),
+  );
+  const result = await uploadExecutedCopies({
+    accessToken: "sa-token",
+    driveId: "drive-1",
+    envelopeId: "env-1",
+    fetchImpl: drive.fetchImpl,
+    files,
+    folders: [],
+  });
+
+  assert.equal(drive.uploads(), 2);
+  assert.equal(result.reused, 0);
+  assert.equal(result.signedPdfFileId, "uploaded-1");
 });
 
 test("the folder layout: folders, then the file name, with the date in UTC", () => {

@@ -323,7 +323,7 @@ test("a rule limited to chosen teams covers only their members", async () => {
   );
 });
 
-test("the review page says why a send is blocked", async () => {
+test("with no rule the review page says nothing about the manager", async () => {
   const draft = await createDraft([
     { email: `client-${randomUUID()}@example.test`, role: "signer", step: 1 },
   ]);
@@ -571,4 +571,74 @@ test("correcting a sent approver asks the directory before any row is locked", a
 
   assert.ok(asked > 0);
   assert.equal(askedWhileLocked, 0);
+});
+
+/** Stores the manager rule as an administrator's saved setting. */
+async function storeManagerPolicy(mode: "require" | "suggest") {
+  await database.query(
+    `
+      insert into public.integration_settings (key, value, secret, updated_at)
+      values ('people.managerPolicy', $1, false, $2)
+      on conflict (key) do update set value = excluded.value
+    `,
+    [mode, Math.floor(Date.now() / 1000)],
+  );
+}
+
+async function clearManagerPolicy() {
+  await database.query(
+    `delete from public.integration_settings where key = 'people.managerPolicy'`,
+  );
+}
+
+test("in require mode the review page says why the send is blocked", async () => {
+  const draft = await createDraft([
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 1 },
+  ]);
+
+  await storeManagerPolicy("require");
+
+  try {
+    // No directory is turned on in the test environment, so the manager
+    // cannot be found, and in require mode that blocks the send.
+    const review = await getReviewEnvelopeDataForUser(
+      draft.userId,
+      draft.envelopeId,
+      database,
+    );
+
+    assert.ok(review);
+    assert.equal(review.canSend, false);
+    assert.match(
+      review.disabledReason ?? "",
+      /requires your manager to approve first/,
+    );
+    assert.match(review.disabledReason ?? "", /directory is not turned on/);
+    assert.equal(review.managerSuggestion, null);
+  } finally {
+    await clearManagerPolicy();
+  }
+});
+
+test("in suggest mode the review page offers the manager without blocking the send", async () => {
+  const draft = await createDraft([
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 1 },
+  ]);
+
+  await storeManagerPolicy("suggest");
+
+  try {
+    const review = await getReviewEnvelopeDataForUser(
+      draft.userId,
+      draft.envelopeId,
+      database,
+    );
+
+    assert.ok(review);
+    assert.equal(review.canSend, true);
+    assert.equal(review.disabledReason, null);
+    assert.match(review.managerSuggestion ?? "", /directory is not turned on/);
+  } finally {
+    await clearManagerPolicy();
+  }
 });
