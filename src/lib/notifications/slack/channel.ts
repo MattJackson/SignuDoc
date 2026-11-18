@@ -2,21 +2,28 @@ import { z } from "zod";
 
 import type { IntegrationSettings } from "../../integration-settings.ts";
 import { readEnv, type EnvSource } from "../../utils/env.ts";
-import type {
-  ChannelContext,
-  ChannelStatus,
-  LookupResult,
-  NotificationChannel,
-  SendResult,
+import {
+  STANDALONE,
+  type ChannelContext,
+  type ChannelStatus,
+  type LookupResult,
+  type NotificationChannel,
+  type SendOptions,
+  type SendResult,
+  type ThreadRef,
 } from "../channel.ts";
 import type { NotificationMessage } from "../message.ts";
 import {
   classifySlackError,
   createSlackClient,
-  type SlackBlock,
+  SLACK_MESSAGE_GONE_ERRORS,
+  type SlackApiError,
   type SlackClient,
   type SlackFetch,
 } from "./client.ts";
+import { buildSlackMessage, escapeSlackText } from "./layout.ts";
+
+export { escapeSlackText };
 
 // Slack as a notification channel. The administrator creates a Slack app
 // from the manifest on the setup page (manifest.ts), installs it in their
@@ -24,6 +31,13 @@ import {
 // Direct messages go to the person whose Slack account has the same email
 // address as their account here; rules post to channels the app was
 // invited to.
+//
+// One message per envelope per place (see SendOptions in ../channel.ts):
+// in a channel, the first message starts a thread, and each later event
+// edits it (chat.update) to show where the envelope stands and replies in
+// its thread; in direct messages, progress edits one message and outcomes
+// post a new one. A remembered message that was deleted is replaced by a
+// new one.
 
 export const SLACK_TOKEN_SETTING = "slack.botToken";
 export const SLACK_DIRECT_MESSAGES_SETTING =
@@ -59,55 +73,120 @@ export function resolveSlackToken(
   return saved ? { source: "settings", token: saved } : null;
 }
 
-/** Keeps Slack from reading a title or a name as a link or a mention. */
-export function escapeSlackText(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function isGone(error: SlackApiError): boolean {
+  return SLACK_MESSAGE_GONE_ERRORS.has(error.error);
 }
 
-/** The Block Kit layout of a message: headline, facts, a button. */
-export function buildSlackBlocks(message: NotificationMessage): SlackBlock[] {
-  const blocks: SlackBlock[] = [
-    {
-      text: { text: `*${escapeSlackText(message.headline)}*`, type: "mrkdwn" },
-      type: "section",
-    },
-  ];
+/**
+ * Sends one notification to Slack, placed as `options` says. Returns the
+ * message to remember for this envelope and place from now on.
+ */
+export async function sendSlackNotification(
+  slack: SlackClient,
+  destination: string,
+  message: NotificationMessage,
+  { placement, thread, updateThread }: SendOptions,
+): Promise<SendResult> {
+  const content = buildSlackMessage(message, "message");
 
-  if (message.fields.length > 0) {
-    blocks.push({
-      elements: [
-        {
-          text: message.fields
-            .map(
-              (field) =>
-                `*${escapeSlackText(field.label)}:* ${escapeSlackText(field.value)}`,
-            )
-            .join("   "),
-          type: "mrkdwn",
-        },
-      ],
-      type: "context",
+  async function post(): Promise<
+    { ok: true; ref: ThreadRef } | { failure: SlackApiError; ok: false }
+  > {
+    const result = await slack.postMessage({
+      ...content,
+      channel: destination,
     });
+
+    return result.ok
+      ? { ok: true, ref: { conversation: result.channel, ts: result.ts } }
+      : { failure: result, ok: false };
   }
 
-  if (message.link) {
-    blocks.push({
-      elements: [
-        {
-          action_id: "open",
-          text: { text: message.link.label, type: "plain_text" },
-          type: "button",
-          url: message.link.url,
-        },
-      ],
-      type: "actions",
+  /** Edits the remembered message. "gone": it no longer exists. */
+  async function edit(
+    ref: ThreadRef,
+  ): Promise<"edited" | "gone" | SlackApiError> {
+    const result = await slack.updateMessage({
+      ...content,
+      channel: ref.conversation,
+      ts: ref.ts,
     });
+
+    if (result.ok) {
+      return "edited";
+    }
+
+    return isGone(result) ? "gone" : result;
   }
 
-  return blocks;
+  switch (placement) {
+    case "standalone": {
+      const posted = await post();
+
+      return posted.ok
+        ? { outcome: "sent", thread: null }
+        : classifySlackError(posted.failure);
+    }
+
+    case "in_place":
+    case "channel_thread": {
+      if (thread) {
+        // The first message is edited before the reply is posted: a retry
+        // after a failed reply edits it again (harmless) rather than
+        // posting the reply twice.
+        const edited = updateThread ? await edit(thread) : "edited";
+
+        if (edited === "edited") {
+          if (placement === "in_place") {
+            return { outcome: "sent", thread };
+          }
+
+          const reply = await slack.postMessage({
+            ...buildSlackMessage(message, "reply"),
+            channel: thread.conversation,
+            threadTs: thread.ts,
+          });
+
+          if (reply.ok) {
+            return { outcome: "sent", thread };
+          }
+
+          if (!isGone(reply)) {
+            return classifySlackError(reply);
+          }
+        } else if (edited !== "gone") {
+          return classifySlackError(edited);
+        }
+      }
+
+      // No message yet, or it was deleted: this one becomes it.
+      const posted = await post();
+
+      return posted.ok
+        ? { outcome: "sent", thread: posted.ref }
+        : classifySlackError(posted.failure);
+    }
+
+    case "new_message": {
+      let kept = thread;
+
+      if (thread && updateThread) {
+        const edited = await edit(thread);
+
+        if (edited === "gone") {
+          kept = null;
+        } else if (edited !== "edited") {
+          return classifySlackError(edited);
+        }
+      }
+
+      const posted = await post();
+
+      return posted.ok
+        ? { outcome: "sent", thread: kept }
+        : classifySlackError(posted.failure);
+    }
+  }
 }
 
 export function createSlackChannel({
@@ -127,7 +206,6 @@ export function createSlackChannel({
     client,
     destinationSchema: slackChannelIdSchema,
     id: "slack",
-
     async lookupUser(email, context): Promise<LookupResult> {
       const slack = client(context);
 
@@ -147,25 +225,21 @@ export function createSlackChannel({
 
       return classifySlackError(result);
     },
-
     name: "Slack",
-
-    async send(destination, message, context): Promise<SendResult> {
+    async send(
+      destination,
+      message,
+      context,
+      options = STANDALONE,
+    ): Promise<SendResult> {
       const slack = client(context);
 
       if (!slack) {
         return { error: "not_configured", outcome: "failed" };
       }
 
-      const result = await slack.postMessage({
-        blocks: buildSlackBlocks(message),
-        channel: destination,
-        text: escapeSlackText(message.text),
-      });
-
-      return result.ok ? { outcome: "sent" } : classifySlackError(result);
+      return sendSlackNotification(slack, destination, message, options);
     },
-
     status(context): ChannelStatus {
       const resolved = resolveSlackToken(context.env, context.stored);
 

@@ -3,8 +3,12 @@ import { NOTIFICATION_EVENTS, type NotificationEventKind } from "./events.ts";
 // What a notification says, before any one chat tool lays it out. It names
 // the envelope by its title, says what happened and who did it, where the
 // envelope stands, and links to it in this app. Nothing from the document
-// itself and no decline reason is ever in it: whoever can read the channel
-// is sent to the app, which checks who they are, for anything more.
+// itself and no decline or rejection reason is ever in it: whoever can read
+// the channel is sent to the app, which checks who they are, for anything
+// more.
+//
+// Copy is short and plain: "Alex Chen signed Acme MSA — 2 of 3 signed". No
+// exclamation marks.
 
 export type NotificationEnvelope = {
   expiresAt: number | null;
@@ -27,13 +31,40 @@ export type NotificationPayload = {
   status?: string;
 };
 
+/** How a message is coloured and marked: what kind of news it is. */
+export type NotificationTone =
+  "danger" | "neutral" | "progress" | "success" | "warning";
+
+/** Part of a headline. `strong` parts (the envelope's title) are bold. */
+export type HeadlinePart = { strong?: boolean; text: string };
+
+export type NotificationAction = {
+  id: "certificate" | "open" | "remind" | "settings";
+  label: string;
+  primary?: boolean;
+  url: string;
+};
+
+/** Who the message is for and what it is called. */
+export type NotificationBrand = {
+  /** The logo as an absolute https address, or null. */
+  logoUrl: string | null;
+  name: string;
+};
+
 export type NotificationMessage = {
-  /** Short facts shown under the headline. */
-  fields: { label: string; value: string }[];
+  actions: NotificationAction[];
+  brand: NotificationBrand;
+  /** Short facts shown under the headline, in order. Plain text. */
+  details: string[];
   /** One sentence: what happened. Plain text, unescaped. */
-  headline: string;
+  headline: HeadlinePart[];
   kind: NotificationEventKind;
-  link: { label: string; url: string } | null;
+  /** When it happened, seconds since the epoch, or null. */
+  occurredAt: number | null;
+  /** "2 of 3 signed", or null when there is no one to sign. */
+  progress: string | null;
+  tone: NotificationTone;
   /** Everything in one line, for notifications and tools without layout. */
   text: string;
 };
@@ -42,144 +73,246 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "Completed",
   declined: "Declined",
   draft: "Draft",
+  expired: "Expired",
+  rejected: "Rejected",
   sent: "Out for signature",
   voided: "Voided",
 };
 
-function person(name: string | undefined, email: string | undefined): string {
-  const trimmedName = name?.trim();
-  const trimmedEmail = email?.trim();
+export const NOTIFICATION_TONES: Record<
+  NotificationEventKind,
+  NotificationTone
+> = {
+  backup_failed: "danger",
+  envelope_approved: "progress",
+  envelope_completed: "success",
+  envelope_declined: "danger",
+  envelope_expired: "danger",
+  envelope_expiring_soon: "warning",
+  envelope_rejected: "danger",
+  envelope_sent: "progress",
+  envelope_signed: "progress",
+  envelope_stuck: "warning",
+  envelope_viewed: "progress",
+  envelope_voided: "neutral",
+};
 
-  if (trimmedName && trimmedEmail) {
-    return `${trimmedName} (${trimmedEmail})`;
-  }
-
-  return trimmedName || trimmedEmail || "A signer";
+function personName(
+  name: string | undefined,
+  email: string | undefined,
+  fallback: string,
+): string {
+  return name?.trim() || email?.trim() || fallback;
 }
 
-function formatDate(unixSeconds: number): string {
+export function formatNotificationDate(unixSeconds: number): string {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeZone: "UTC",
   }).format(new Date(unixSeconds * 1000));
 }
 
-function quoted(title: string): string {
-  return `"${title}"`;
+function progressOf(envelope: NotificationEnvelope | null): string | null {
+  if (!envelope || envelope.signerCount <= 0) {
+    return null;
+  }
+
+  return `${String(envelope.signedCount)} of ${String(envelope.signerCount)} signed`;
 }
 
 function headlineFor(
   kind: NotificationEventKind,
   envelope: NotificationEnvelope | null,
   payload: NotificationPayload,
-): string {
-  const title = envelope ? quoted(envelope.title) : "An envelope";
-  const signer = person(payload.signerName, payload.signerEmail);
-  const approver =
-    payload.signerName?.trim() || payload.signerEmail?.trim()
-      ? signer
-      : "An approver";
+  progress: string | null,
+): HeadlinePart[] {
+  const title: HeadlinePart = envelope
+    ? { strong: true, text: envelope.title }
+    : { text: "An envelope" };
+  const signer = personName(
+    payload.signerName,
+    payload.signerEmail,
+    "A signer",
+  );
+  const approver = personName(
+    payload.signerName,
+    payload.signerEmail,
+    "An approver",
+  );
+  const sender = envelope?.ownerName || envelope?.ownerEmail || "Someone";
+  const withProgress = (parts: HeadlinePart[]) =>
+    progress ? [...parts, { text: ` — ${progress}` }] : parts;
 
   switch (kind) {
     case "envelope_sent":
-      return `${envelope?.ownerName || envelope?.ownerEmail || "Someone"} sent ${title} for signature`;
+      return [{ text: `${sender} sent ` }, title, { text: " for signature" }];
     case "envelope_viewed":
-      return `${signer} opened ${title}`;
+      return [{ text: `${signer} opened ` }, title];
     case "envelope_signed":
-      return `${signer} signed ${title}`;
+      return withProgress([{ text: `${signer} signed ` }, title]);
     case "envelope_approved":
-      return `${approver} approved ${title}`;
+      return [{ text: `${approver} approved ` }, title];
     case "envelope_rejected":
-      return `${approver} rejected ${title}`;
+      return [{ text: `${approver} rejected ` }, title];
     case "envelope_completed":
-      return `${title} is complete: everyone has signed`;
+      return [title, { text: " is complete — everyone has signed" }];
     case "envelope_declined":
-      return `${signer} declined to sign ${title}`;
+      return [{ text: `${signer} declined to sign ` }, title];
     case "envelope_voided":
-      return `${title} was voided`;
+      return [title, { text: " was voided" }];
     case "envelope_expired":
-      return `${title} expired before everyone signed`;
+      return withProgress([title, { text: " expired before everyone signed" }]);
     case "envelope_expiring_soon": {
       const at = payload.expiresAt ?? envelope?.expiresAt ?? null;
 
-      return at === null
-        ? `${title} expires soon`
-        : `${title} expires on ${formatDate(at)}`;
+      return withProgress([
+        title,
+        {
+          text:
+            at === null
+              ? " expires soon"
+              : ` expires on ${formatNotificationDate(at)}`,
+        },
+      ]);
     }
     case "envelope_stuck":
-      return payload.idleDays
-        ? `${title} has had no activity for ${String(payload.idleDays)} days`
-        : `${title} has had no activity for a while`;
+      return [
+        title,
+        {
+          text: payload.idleDays
+            ? ` has had no activity for ${String(payload.idleDays)} days`
+            : " has had no activity for a while",
+        },
+      ];
     case "backup_failed":
-      return payload.status === "partial"
-        ? "The backup finished, but some files could not be copied"
-        : "The backup failed";
+      return [
+        {
+          text:
+            payload.status === "partial"
+              ? "The backup finished, but some files could not be copied"
+              : "The backup failed",
+        },
+      ];
   }
 }
 
+/** The headline as one plain line. */
+export function headlineText(headline: HeadlinePart[]): string {
+  return headline.map((part) => part.text).join("");
+}
+
+/** Whether the progress is already said in the headline. */
+function progressInHeadline(kind: NotificationEventKind): boolean {
+  return (
+    kind === "envelope_signed" ||
+    kind === "envelope_expired" ||
+    kind === "envelope_expiring_soon"
+  );
+}
+
+export const DEFAULT_NOTIFICATION_BRAND: NotificationBrand = {
+  logoUrl: null,
+  name: "SignuDoc",
+};
+
 /**
  * The message for one event. `envelope` is null for the install's own
- * events. `appUrl` is this site's address, without which there is no link.
+ * events. `appUrl` is this site's address, without which there are no
+ * buttons. `forSender` is true when it goes to the envelope's sender
+ * themselves, who alone gets "Send reminder".
  */
 export function buildNotificationMessage({
   appUrl,
+  brand = DEFAULT_NOTIFICATION_BRAND,
   envelope,
+  forSender = false,
   kind,
+  occurredAt = null,
   payload,
 }: {
   appUrl: string | null;
+  brand?: NotificationBrand;
   envelope: NotificationEnvelope | null;
+  forSender?: boolean;
   kind: NotificationEventKind;
+  occurredAt?: number | null;
   payload: NotificationPayload;
 }): NotificationMessage {
-  const headline = headlineFor(kind, envelope, payload);
+  const progress = progressOf(envelope);
+  const headline = headlineFor(kind, envelope, payload, progress);
   const base = appUrl?.replace(/\/+$/, "") ?? null;
-  const fields: NotificationMessage["fields"] = [];
-  let link: NotificationMessage["link"] = null;
+  const details: string[] = [];
+  const actions: NotificationAction[] = [];
 
   if (envelope) {
-    fields.push({
-      label: "Status",
-      value: STATUS_LABELS[envelope.status] ?? envelope.status,
-    });
+    details.push(STATUS_LABELS[envelope.status] ?? envelope.status);
 
-    if (envelope.signerCount > 0) {
-      fields.push({
-        label: "Signed",
-        value: `${String(envelope.signedCount)} of ${String(envelope.signerCount)}`,
-      });
+    if (progress && !progressInHeadline(kind)) {
+      details.push(progress);
     }
 
-    fields.push({
-      label: "Sender",
-      value: envelope.ownerName
-        ? `${envelope.ownerName} (${envelope.ownerEmail})`
-        : envelope.ownerEmail,
-    });
+    if (kind !== "envelope_sent") {
+      details.push(
+        `Sent by ${envelope.ownerName || envelope.ownerEmail || "someone"}`,
+      );
+    }
 
-    if (envelope.expiresAt !== null && envelope.status === "sent") {
-      fields.push({ label: "Deadline", value: formatDate(envelope.expiresAt) });
+    if (
+      envelope.expiresAt !== null &&
+      envelope.status === "sent" &&
+      kind !== "envelope_expiring_soon"
+    ) {
+      details.push(`Due ${formatNotificationDate(envelope.expiresAt)}`);
     }
 
     if (base) {
-      link = {
-        label: "Open envelope",
-        url: `${base}/envelopes/${encodeURIComponent(envelope.id)}`,
-      };
+      const envelopeUrl = `${base}/envelopes/${encodeURIComponent(envelope.id)}`;
+
+      if (kind === "envelope_completed") {
+        actions.push({
+          id: "certificate",
+          label: "View certificate",
+          primary: true,
+          url: `${base}/api/envelopes/${encodeURIComponent(envelope.id)}/download?type=evidence`,
+        });
+      }
+
+      if (
+        forSender &&
+        envelope.status === "sent" &&
+        (kind === "envelope_stuck" || kind === "envelope_expiring_soon")
+      ) {
+        actions.push({
+          id: "remind",
+          label: "Send reminder",
+          primary: true,
+          url: envelopeUrl,
+        });
+      }
+
+      actions.push({ id: "open", label: "Open envelope", url: envelopeUrl });
     }
   } else if (base && NOTIFICATION_EVENTS[kind].audience === "admin") {
-    link = { label: "Open Settings", url: `${base}/settings` };
+    actions.push({
+      id: "settings",
+      label: "Open Settings",
+      url: `${base}/settings`,
+    });
   }
 
-  const text = [
-    headline,
-    ...fields.map((field) => `${field.label}: ${field.value}`),
-    link?.url,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const text = [headlineText(headline), ...details].join(" · ");
 
-  return { fields, headline, kind, link, text };
+  return {
+    actions,
+    brand,
+    details,
+    headline,
+    kind,
+    occurredAt,
+    progress,
+    text,
+    tone: NOTIFICATION_TONES[kind],
+  };
 }
 
 /** Reads a queued event's payload, keeping only the fields it may hold. */

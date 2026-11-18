@@ -18,6 +18,13 @@ import { SLACK_TOKEN_SETTING } from "./slack/channel.ts";
 // went away) is made up for by the next request or the scheduled run.
 
 const RUN_BUDGET_MS = 15_000;
+/** How many times a run waits for a delivery that is due soon. */
+const MAX_WAITS = 3;
+const WAIT_MARGIN_MS = 1_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 type KickState = { again: boolean; registered: boolean; running: boolean };
 
@@ -61,12 +68,31 @@ async function runUntilCaughtUp() {
   current.running = true;
 
   try {
+    let waits = 0;
+
     do {
       current.again = false;
-      await runNotificationJob({
+
+      const summary = await runNotificationJob({
         deadline: Date.now() + RUN_BUDGET_MS,
         detectConditions: false,
       });
+
+      // A signature waits a minute in case more follow (burst collapse).
+      // Wait for it here, a few times at most, rather than leave it to the
+      // next scheduled run; whatever is still waiting goes out then.
+      if (
+        !current.again &&
+        summary.status === "ran" &&
+        summary.nextDueAt !== null &&
+        waits < MAX_WAITS
+      ) {
+        waits += 1;
+        await sleep(
+          Math.max(summary.nextDueAt * 1000 - Date.now(), 0) + WAIT_MARGIN_MS,
+        );
+        current.again = true;
+      }
     } while (current.again);
   } catch (error) {
     console.warn(

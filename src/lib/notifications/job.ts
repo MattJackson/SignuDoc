@@ -1,13 +1,19 @@
 import { type DbPool, getDb } from "../db/connection.ts";
 import { readIntegrationSettings } from "../integration-settings.ts";
+import { getBranding } from "../settings.ts";
 import { resolveAppUrl, type EnvSource } from "../utils/env.ts";
 import type { NotificationChannel } from "./channel.ts";
 import { queueConditionEvents, type ConditionSummary } from "./conditions.ts";
+import {
+  DEFAULT_NOTIFICATION_BRAND,
+  type NotificationBrand,
+} from "./message.ts";
 import {
   channelAvailability,
   deliverDueDeliveries,
   discardQueuedEvents,
   expandQueuedEvents,
+  nextDeliveryDueAt,
   purgeOldNotifications,
   type DeliverySummary,
   type OutboxDeps,
@@ -26,6 +32,8 @@ import { readNotificationThresholds } from "./settings.ts";
 
 const EXPAND_BATCH = 100;
 const MAX_EXPAND_ROUNDS = 20;
+/** How far ahead a run looks for a delivery worth waiting for (kick.ts). */
+export const NEXT_DUE_WINDOW_SECONDS = 90;
 
 export type NotificationJobSummary =
   | { discarded: number; status: "not_configured" }
@@ -34,6 +42,8 @@ export type NotificationJobSummary =
       delivered: DeliverySummary;
       deliveriesCreated: number;
       eventsProcessed: number;
+      /** The soonest a waiting delivery is due in the next minute and a half. */
+      nextDueAt: number | null;
       purged: number;
       status: "ran";
       stoppedEarly: boolean;
@@ -44,6 +54,30 @@ function safeAppUrl(env: EnvSource): string | null {
     return resolveAppUrl(env) ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The organization's name and logo, for the top of every message. The logo
+ * goes only to an https site: Slack fetches it from there.
+ */
+async function notificationBrand(
+  env: EnvSource,
+  appUrl: string | null,
+): Promise<NotificationBrand> {
+  try {
+    const branding = await getBranding(env);
+    const base = appUrl?.replace(/\/+$/, "") ?? null;
+
+    return {
+      logoUrl:
+        branding.logoUrl && base?.startsWith("https://")
+          ? `${base}${branding.logoUrl}`
+          : null,
+      name: branding.organizationName ?? branding.productName,
+    };
+  } catch {
+    return DEFAULT_NOTIFICATION_BRAND;
   }
 }
 
@@ -77,8 +111,10 @@ export async function runNotificationJob({
   }
 
   const outOfTime = () => Date.now() >= deadline;
+  const appUrl = safeAppUrl(env);
   const deps: OutboxDeps = {
-    appUrl: safeAppUrl(env),
+    appUrl,
+    brand: await notificationBrand(env, appUrl),
     channels,
     context,
     now,
@@ -118,6 +154,11 @@ export async function runNotificationJob({
     delivered,
     deliveriesCreated,
     eventsProcessed,
+    nextDueAt: await nextDeliveryDueAt(
+      database,
+      now(),
+      NEXT_DUE_WINDOW_SECONDS,
+    ),
     purged,
     status: "ran",
     stoppedEarly: outOfTime(),

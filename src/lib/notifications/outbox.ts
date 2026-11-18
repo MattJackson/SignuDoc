@@ -7,17 +7,30 @@ import {
   queryOne,
   withTransaction,
 } from "../db/connection.ts";
-import type {
-  ChannelContext,
-  ChannelFailure,
-  NotificationChannel,
-  SendResult,
+import {
+  STANDALONE,
+  type ChannelContext,
+  type ChannelFailure,
+  type MessagePlacement,
+  type NotificationChannel,
+  type SendOptions,
+  type SendResult,
+  type ThreadRef,
 } from "./channel.ts";
-import { notificationKindFor, NOTIFICATION_EVENTS } from "./events.ts";
+import {
+  BURST_HOLD_SECONDS,
+  BURST_KINDS,
+  IN_PLACE_KINDS,
+  notificationKindFor,
+  NOTIFICATION_EVENTS,
+  type NotificationEventKind,
+} from "./events.ts";
 import {
   buildNotificationMessage,
   readNotificationPayload,
+  type NotificationBrand,
   type NotificationEnvelope,
+  type NotificationPayload,
 } from "./message.ts";
 import { listPreferencesForUsers } from "./preferences.ts";
 import {
@@ -46,11 +59,25 @@ import {
 // Delivery is at least once. A run cut off between Slack accepting a
 // message and the row being marked sent sends it again once the lease runs
 // out; Slack has no way to drop a repeat.
+//
+// Less noise:
+//
+// * One message per envelope per place. notification_threads remembers
+//   it; a delivery takes that row's short lease before posting or editing,
+//   so only one delivery at a time (in any run) can start the thread. One
+//   that cannot take it is put back a few seconds, not counted as a try.
+// * Bursts: a signature, an approval or an opening waits a minute
+//   (BURST_HOLD_SECONDS). When it is due, it is skipped as "superseded" if
+//   a newer delivery for the same envelope and place is waiting or went
+//   out: messages always show the envelope as it is now, so the newest
+//   says everything the older ones would have.
 
 const DAY = 24 * 60 * 60;
 
 export const MAX_DELIVERY_ATTEMPTS = 8;
 export const DELIVERY_LEASE_SECONDS = 120;
+/** How long a delivery waits when another holds its envelope's thread. */
+export const THREAD_BUSY_RETRY_SECONDS = 5;
 /** Queued events older than this are dropped rather than announced late. */
 export const STALE_EVENT_SECONDS = 3 * DAY;
 /** How long "nobody with this address" is believed before asking again. */
@@ -59,6 +86,8 @@ const MAX_RETRY_DELAY_SECONDS = 6 * 60 * 60;
 
 export type OutboxDeps = {
   appUrl: string | null;
+  /** The organization's name and logo, at the top of every message. */
+  brand?: NotificationBrand;
   channels: NotificationChannel[];
   context: ChannelContext;
   /** Seconds since the epoch. */
@@ -98,6 +127,7 @@ type QueuedEventRow = {
   envelopeId: string | null;
   event: string;
   id: string;
+  payload: unknown;
   queuedAt: number;
   source: "audit" | "job";
 };
@@ -119,6 +149,7 @@ async function gatherTargetInput(
   database: DbExecutor,
   kind: TargetInput["kind"],
   envelopeId: string | null,
+  payload: NotificationPayload,
   shared: {
     adminIds: () => Promise<string[]>;
     channels: ChannelAvailability[];
@@ -174,8 +205,16 @@ async function gatherTargetInput(
         )
       : [];
   const teammateIds = teammates.map((teammate) => teammate.userId);
+  const people = await queryMany<{ email: string; id: string }>(
+    database,
+    `SELECT id, email FROM public."user" WHERE id = ANY($1)`,
+    [[envelope.ownerId, ...teammateIds]],
+  );
 
   return {
+    actorEmails: [payload.actorEmail, payload.signerEmail].filter(
+      (email): email is string => Boolean(email),
+    ),
     adminIds: [],
     channels: shared.channels,
     envelope: {
@@ -190,6 +229,9 @@ async function gatherTargetInput(
     ),
     rules: shared.rules,
     teammateIds,
+    userEmails: Object.fromEntries(
+      people.map((person) => [person.id, person.email]),
+    ),
   };
 }
 
@@ -206,7 +248,7 @@ export async function expandQueuedEvents(
     const events = await queryMany<QueuedEventRow>(
       tx,
       `
-        SELECT id, source, event, envelope_id AS "envelopeId",
+        SELECT id, source, event, envelope_id AS "envelopeId", payload,
           queued_at AS "queuedAt"
         FROM notification_events
         WHERE processed_at IS NULL
@@ -251,11 +293,20 @@ export async function expandQueuedEvents(
         continue;
       }
 
-      const input = await gatherTargetInput(tx, kind, event.envelopeId, shared);
+      const input = await gatherTargetInput(
+        tx,
+        kind,
+        event.envelopeId,
+        readNotificationPayload(event.payload),
+        shared,
+      );
 
       if (!input) {
         continue;
       }
+
+      // A burst event waits for the next one; see deliverDueDeliveries.
+      const dueAt = BURST_KINDS.has(kind) ? now + BURST_HOLD_SECONDS : now;
 
       for (const target of matchNotificationTargets(input)) {
         const inserted = await tx.query(
@@ -263,7 +314,7 @@ export async function expandQueuedEvents(
             INSERT INTO notification_deliveries (
               id, event_id, channel, target_kind, target, rule_id,
               next_attempt_at, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
             ON CONFLICT ON CONSTRAINT notification_deliveries_once DO NOTHING
           `,
           [
@@ -273,6 +324,7 @@ export async function expandQueuedEvents(
             target.targetKind,
             target.target,
             target.ruleId,
+            dueAt,
             now,
           ],
         );
@@ -298,8 +350,11 @@ type ClaimedDelivery = {
   envelopeStatus: string | null;
   envelopeTitle: string | null;
   event: string;
+  eventCreatedAt: number;
+  eventId: string;
   id: string;
   ownerEmail: string | null;
+  ownerId: string | null;
   ownerName: string | null;
   payload: unknown;
   signedCount: number;
@@ -353,7 +408,10 @@ async function claimDueDeliveries(
         d.attempts,
         e.source,
         e.event,
+        e.id AS "eventId",
+        e.created_at AS "eventCreatedAt",
         e.payload,
+        env.user_id AS "ownerId",
         e.envelope_id AS "envelopeId",
         env.title AS "envelopeTitle",
         env.status AS "envelopeStatus",
@@ -552,6 +610,200 @@ async function resolveUserAddress(
     : { outcome: "not_found" };
 }
 
+/**
+ * Whether a newer delivery for the same envelope and place is waiting or
+ * went out, so this one has nothing to add. An opening never stands in for
+ * anything else: "Riley opened it" says less than "Alex signed it".
+ */
+async function isSuperseded(
+  database: DbExecutor,
+  delivery: ClaimedDelivery,
+): Promise<boolean> {
+  if (!delivery.envelopeId) {
+    return false;
+  }
+
+  const newer = await queryOne<{ one: number }>(
+    database,
+    `
+      SELECT 1 AS one
+      FROM notification_deliveries d
+      JOIN notification_events e ON e.id = d.event_id
+      WHERE e.envelope_id = $1
+        AND d.channel = $2 AND d.target_kind = $3 AND d.target = $4
+        AND d.id <> $5
+        AND d.status IN ('pending', 'sending', 'sent')
+        AND (e.created_at, e.id) > ($6::bigint, $7::text)
+        AND NOT (e.source = 'audit' AND e.event = 'viewed')
+      LIMIT 1
+    `,
+    [
+      delivery.envelopeId,
+      delivery.channel,
+      delivery.targetKind,
+      delivery.target,
+      delivery.id,
+      delivery.eventCreatedAt,
+      delivery.eventId,
+    ],
+  );
+
+  return newer !== null;
+}
+
+/** How a delivery's message is placed; see SendOptions in channel.ts. */
+export function placementFor(
+  kind: NotificationEventKind,
+  targetKind: "channel" | "user",
+  hasEnvelope: boolean,
+): MessagePlacement {
+  if (!hasEnvelope || NOTIFICATION_EVENTS[kind].audience === "admin") {
+    return "standalone";
+  }
+
+  if (targetKind === "channel") {
+    return "channel_thread";
+  }
+
+  return IN_PLACE_KINDS.has(kind) ? "in_place" : "new_message";
+}
+
+type ThreadKey = {
+  channel: string;
+  envelopeId: string;
+  target: string;
+  targetKind: "channel" | "user";
+};
+
+/**
+ * Takes the lease on an envelope's message in one place, in one statement:
+ * the row is made if there is none, or taken if its lease is free, ran
+ * out, or is already this delivery's. Null: another delivery holds it.
+ */
+async function takeThread(
+  database: DbExecutor,
+  key: ThreadKey,
+  owner: string,
+  now: number,
+): Promise<{ parentEventAt: number | null; thread: ThreadRef | null } | null> {
+  const row = await queryOne<{
+    conversation: string | null;
+    messageTs: string | null;
+    parentEventAt: number | null;
+  }>(
+    database,
+    `
+      INSERT INTO notification_threads (
+        envelope_id, channel, target_kind, target, lease_owner, lease_until,
+        created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+      ON CONFLICT (envelope_id, channel, target_kind, target) DO UPDATE SET
+        lease_owner = excluded.lease_owner,
+        lease_until = excluded.lease_until,
+        updated_at = excluded.updated_at
+      WHERE notification_threads.lease_until IS NULL
+        OR notification_threads.lease_until <= $7
+        OR notification_threads.lease_owner = excluded.lease_owner
+      RETURNING conversation, message_ts AS "messageTs",
+        parent_event_at AS "parentEventAt"
+    `,
+    [
+      key.envelopeId,
+      key.channel,
+      key.targetKind,
+      key.target,
+      owner,
+      now + DELIVERY_LEASE_SECONDS,
+      now,
+    ],
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    parentEventAt: row.parentEventAt,
+    thread:
+      row.conversation && row.messageTs
+        ? { conversation: row.conversation, ts: row.messageTs }
+        : null,
+  };
+}
+
+/**
+ * Lets go of the lease, remembering the message from now on when the send
+ * went out (`sent`), or leaving the row as it was when it did not.
+ */
+async function releaseThread(
+  database: DbExecutor,
+  key: ThreadKey,
+  owner: string,
+  now: number,
+  sent: { eventAt: number; thread: ThreadRef | null } | null,
+): Promise<void> {
+  if (!sent) {
+    await database.query(
+      `
+        UPDATE notification_threads SET
+          lease_owner = NULL, lease_until = NULL, updated_at = $6
+        WHERE envelope_id = $1 AND channel = $2 AND target_kind = $3
+          AND target = $4 AND lease_owner = $5
+      `,
+      [key.envelopeId, key.channel, key.targetKind, key.target, owner, now],
+    );
+    return;
+  }
+
+  await database.query(
+    `
+      UPDATE notification_threads SET
+        conversation = $7,
+        message_ts = $8,
+        parent_event_at = CASE
+          WHEN $8::text IS NULL THEN NULL
+          ELSE GREATEST(COALESCE(parent_event_at, $9), $9)
+        END,
+        lease_owner = NULL,
+        lease_until = NULL,
+        updated_at = $6
+      WHERE envelope_id = $1 AND channel = $2 AND target_kind = $3
+        AND target = $4 AND lease_owner = $5
+    `,
+    [
+      key.envelopeId,
+      key.channel,
+      key.targetKind,
+      key.target,
+      owner,
+      now,
+      sent.thread?.conversation ?? null,
+      sent.thread?.ts ?? null,
+      sent.eventAt,
+    ],
+  );
+}
+
+/** The soonest a waiting delivery is due within `withinSeconds`, or null. */
+export async function nextDeliveryDueAt(
+  database: DbExecutor,
+  now: number,
+  withinSeconds: number,
+): Promise<number | null> {
+  const row = await queryOne<{ dueAt: number | null }>(
+    database,
+    `
+      SELECT min(next_attempt_at) AS "dueAt"
+      FROM notification_deliveries
+      WHERE status = 'pending' AND next_attempt_at > $1
+        AND next_attempt_at <= $2
+    `,
+    [now, now + withinSeconds],
+  );
+
+  return row?.dueAt ?? null;
+}
+
 function envelopeFor(delivery: ClaimedDelivery): NotificationEnvelope | null {
   if (!delivery.envelopeId || delivery.envelopeTitle === null) {
     return null;
@@ -647,6 +899,11 @@ export async function deliverDueDeliveries(
         continue;
       }
 
+      if (BURST_KINDS.has(kind) && (await isSuperseded(database, delivery))) {
+        await apply(delivery, { error: "superseded", status: "skipped" });
+        continue;
+      }
+
       const block = blocked.get(channel.id);
 
       if (block) {
@@ -701,22 +958,79 @@ export async function deliverDueDeliveries(
         address = resolved.address;
       }
 
+      const envelope = envelopeFor(delivery);
       const message = buildNotificationMessage({
         appUrl: deps.appUrl,
-        envelope: envelopeFor(delivery),
+        brand: deps.brand,
+        envelope,
+        forSender:
+          delivery.targetKind === "user" &&
+          delivery.target === delivery.ownerId,
         kind,
+        occurredAt: delivery.eventCreatedAt,
         payload: readNotificationPayload(delivery.payload),
       });
+      const placement = placementFor(
+        kind,
+        delivery.targetKind,
+        envelope !== null,
+      );
+      const threadKey: ThreadKey | null =
+        placement === "standalone" || !envelope
+          ? null
+          : {
+              channel: delivery.channel,
+              envelopeId: envelope.id,
+              target: delivery.target,
+              targetKind: delivery.targetKind,
+            };
+      let options: SendOptions = STANDALONE;
+
+      if (threadKey) {
+        const taken = await takeThread(database, threadKey, delivery.id, now);
+
+        if (!taken) {
+          // Another delivery is posting about this envelope here right now.
+          await apply(delivery, {
+            countAttempt: false,
+            error: null,
+            nextAttemptAt: now + THREAD_BUSY_RETRY_SECONDS,
+            status: "pending",
+          });
+          continue;
+        }
+
+        options = {
+          placement,
+          thread: taken.thread,
+          updateThread:
+            taken.parentEventAt === null ||
+            delivery.eventCreatedAt >= taken.parentEventAt,
+        };
+      }
+
       let result: SendResult;
 
       try {
-        result = await channel.send(address, message, deps.context);
+        result = await channel.send(address, message, deps.context, options);
       } catch {
         result = {
           error: "send_threw",
           outcome: "retry" as const,
           retryAfterSeconds: null,
         };
+      }
+
+      if (threadKey) {
+        await releaseThread(
+          database,
+          threadKey,
+          delivery.id,
+          deps.now(),
+          result.outcome === "sent"
+            ? { eventAt: delivery.eventCreatedAt, thread: result.thread }
+            : null,
+        );
       }
 
       if (result.outcome === "sent") {
@@ -782,6 +1096,17 @@ export async function purgeOldNotifications(
         )
     `,
     [now - 30 * DAY],
+  );
+
+  // A thread nobody has touched for 90 days is for an envelope long done;
+  // a later event about it starts a new one.
+  await database.query(
+    `
+      DELETE FROM notification_threads
+      WHERE updated_at < $1
+        AND (lease_until IS NULL OR lease_until <= $2)
+    `,
+    [now - 90 * DAY, now],
   );
 
   return result.rowCount ?? 0;
