@@ -11,6 +11,8 @@ Nothing is sent until an administrator sets a channel up, and email works as bef
 | Sent               | An envelope was sent for signature.                                 | No                        |
 | Opened             | A signer opened it for the first time.                              | No                        |
 | Signed             | A signer signed (one message per signer).                           | Yes                       |
+| Approved           | An approver approved (one message per approver).                    | Yes                       |
+| Rejected           | An approver rejected it, which ends the envelope.                   | Yes                       |
 | Completed          | Everyone has signed and the signed PDF is ready.                    | Yes                       |
 | Declined           | A signer declined.                                                  | Yes                       |
 | Voided             | The sender withdrew it.                                             | No                        |

@@ -7,7 +7,7 @@
 // notifications job: a deadline coming up, an envelope nobody has touched
 // for a while, a backup that failed.
 //
-// To announce a new kind of audit event (an approver approving, say), add
+// To announce a new kind of audit event, add
 // it to notificationEventKinds and NOTIFICATION_EVENTS with its
 // `auditEvent`, and a headline in message.ts. Nothing else changes: rules,
 // preferences and the pages list whatever is here.
@@ -16,6 +16,8 @@ export const notificationEventKinds = [
   "envelope_sent",
   "envelope_viewed",
   "envelope_signed",
+  "envelope_approved",
+  "envelope_rejected",
   "envelope_completed",
   "envelope_declined",
   "envelope_voided",
@@ -49,6 +51,23 @@ export const NOTIFICATION_EVENTS: Record<
   NotificationEventKind,
   NotificationEventDefinition
 > = {
+  envelope_approved: {
+    audience: "envelope",
+    auditEvent: "approved",
+    description:
+      "An approver approved the document (one message per approver).",
+    kind: "envelope_approved",
+    label: "Approved",
+    onByDefault: true,
+  },
+  envelope_rejected: {
+    audience: "envelope",
+    auditEvent: "rejected",
+    description: "An approver rejected the document, which ends the envelope.",
+    kind: "envelope_rejected",
+    label: "Rejected",
+    onByDefault: true,
+  },
   backup_failed: {
     audience: "admin",
     auditEvent: null,

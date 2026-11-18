@@ -40,6 +40,8 @@ test("audit events map to notification kinds, and the rest are dropped", () => {
   assert.equal(notificationKindFor("audit", "signed"), "envelope_signed");
   assert.equal(notificationKindFor("audit", "completed"), "envelope_completed");
   assert.equal(notificationKindFor("audit", "declined"), "envelope_declined");
+  assert.equal(notificationKindFor("audit", "approved"), "envelope_approved");
+  assert.equal(notificationKindFor("audit", "rejected"), "envelope_rejected");
   assert.equal(notificationKindFor("audit", "voided"), "envelope_voided");
   assert.equal(notificationKindFor("audit", "expired"), "envelope_expired");
   assert.equal(notificationKindFor("audit", "email_sent"), null);

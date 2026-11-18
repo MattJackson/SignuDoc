@@ -75,6 +75,10 @@ function headlineFor(
 ): string {
   const title = envelope ? quoted(envelope.title) : "An envelope";
   const signer = person(payload.signerName, payload.signerEmail);
+  const approver =
+    payload.signerName?.trim() || payload.signerEmail?.trim()
+      ? signer
+      : "An approver";
 
   switch (kind) {
     case "envelope_sent":
@@ -83,6 +87,10 @@ function headlineFor(
       return `${signer} opened ${title}`;
     case "envelope_signed":
       return `${signer} signed ${title}`;
+    case "envelope_approved":
+      return `${approver} approved ${title}`;
+    case "envelope_rejected":
+      return `${approver} rejected ${title}`;
     case "envelope_completed":
       return `${title} is complete: everyone has signed`;
     case "envelope_declined":
