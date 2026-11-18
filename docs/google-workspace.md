@@ -4,11 +4,12 @@ SignuDoc works with any organization's Google Workspace. Once it is set up, anyo
 
 Everything here is set in the app, in Settings, Google Workspace, and in the same steps of onboarding (`/onboarding`, where first-run setup ends). Each part is a checklist with live checks and this site's own values to paste into Google's consoles. Every setting also has an environment variable; one that is set wins, and the app shows the setting as fixed.
 
-There are three parts. Only the first is needed for sign-in.
+There are four parts. Only the first is needed for sign-in.
 
 1. [Google sign-in](#1-google-sign-in)
 2. [The Workspace directory](#2-the-workspace-directory): suggest colleagues as recipients
 3. [An administrator group](#3-an-administrator-group)
+4. [Offboarding](#4-offboarding): block people who leave, and hand their open work to their manager
 
 ## 1. Google sign-in
 
@@ -101,6 +102,64 @@ Optional, and needs the directory to be readable. Name a Google Group (for examp
 
 Every change is recorded in the site audit trail as a role change, naming the group. **Test group lookup** checks whether you are in the group before you save it: if you are not, adding yourself first keeps you an administrator when you next sign in with Google.
 
+## 4. Offboarding
+
+Optional, and needs the directory to be readable (part 2). The service account's role needs **Users, Read**, which part 2 already asks for. A job checks the accounts on this site against your Workspace directory. For someone the directory says is **suspended**, **archived**, or **no longer there**:
+
+- Their sign-in is blocked, with Google and with a password alike, and they are signed out everywhere. The sign-in page tells them their account was suspended or removed in Google Workspace. A blocked account shows **Sign-in blocked by Google Workspace** in Settings, People.
+- Their envelopes that are still out for signature, and their drafts, go to their **manager**: the person in the "manager" field of their directory entry (Admin console, the user's **User information**, or whatever your HR sync writes there). The manager has to have an account here that can still be used: not blocked, not being closed, and active in the directory. Otherwise they go to an administrator (the one who has been here longest and can still sign in). An envelope that came to them from a closed account goes to an administrator, never to the manager.
+- Signing goes on as before. Signers keep their links; the envelope's new owner sees it on their dashboard, can remind, correct or void it, and gets the finished document. Each moved envelope's audit trail says who it was handed over from and to.
+
+When the directory later says the person is active again, the block is lifted. Their envelopes stay with whoever has them now.
+
+What it does not touch:
+
+- **Finished envelopes** (completed, declined, voided) stay on the account. If the account is closed, they go to an administrator as usual.
+- **Accounts outside your Workspace domains** (the same domains Google sign-in is held to, part 1). With no domains set, nobody is checked.
+- **The last administrator** who can still sign in, whatever the directory says, so a mistake cannot lock everyone out of Settings.
+- **Break-glass addresses** (part 1), whether or not password sign-in is off right now.
+- **Anyone the directory could not be asked about.** A lookup that fails is never read as "gone". If more than half of a run's lookups fail, the run stops and changes nothing.
+
+At most 10 people are offboarded per run (`DIRECTORY_SYNC_MAX_PER_RUN`, from 1 to 500). The rest are reported as deferred and done on the next run, so a directory that suddenly answered "no such user" for everyone could not block the whole organization at once. Each run asks about up to 1,000 accounts, those checked longest ago first; a larger site is gone through over several runs.
+
+Every block, lifted block and hand-over is in the site audit trail (Settings, Security), and so is each run that found something to do, or was a dry run.
+
+### Turn it on
+
+1. Set a job secret, `RETENTION_JOB_SECRET` (or `CRON_SECRET`, the same secret as the daily cleanup's). The offboarding route never runs without one: it decides who can sign in.
+2. Turn it on in Settings, Google Workspace, or with `DIRECTORY_SYNC=on`. `DIRECTORY_SYNC=off` keeps it off whatever the app says.
+3. Try a dry run first. It reports exactly what a real run would do, person by person and envelope by envelope, and changes nothing:
+
+   ```bash
+   curl -X POST "https://<your site>/api/internal/directory-sync?dryRun=1" \
+     -H "Authorization: Bearer $RETENTION_JOB_SECRET"
+   ```
+
+   `&limit=3` lowers the per-run cap for one run. The same can be sent as a JSON body, `{ "dryRun": true, "limit": 3 }`.
+
+4. Schedule the real run.
+
+### Schedule it with Google Cloud Scheduler
+
+Create an HTTP job that calls the route every hour:
+
+```bash
+gcloud scheduler jobs create http signudoc-directory-sync \
+  --location=<region> \
+  --schedule="0 * * * *" \
+  --time-zone="Etc/UTC" \
+  --http-method=POST \
+  --uri="https://<your site>/api/internal/directory-sync" \
+  --headers="Authorization=Bearer <RETENTION_JOB_SECRET>" \
+  --attempt-deadline=300s
+```
+
+In the console it is the same: **Cloud Scheduler**, **Create job**, frequency `0 * * * *`, target type **HTTP**, method **POST**, the URL above, and a header `Authorization` with the value `Bearer <RETENTION_JOB_SECRET>`. Anyone who can read the job can read the secret, so keep access to the project's scheduler to the people who may already see it.
+
+A run answers with what it did, as JSON. It answers 502 when it stopped because the directory could not be asked, so the job shows as failed in Cloud Scheduler; 503 when no job secret is set; and 401 when the secret is wrong. Any other scheduler works the same way: a `GET` or `POST` with the header.
+
+With an hourly run, someone who has left loses access here within the hour of being suspended in Google. Their sessions here end when the run blocks them: the app checks each request's session in the database. Only Better Auth's own session cookie can still vouch for itself on the sign-in endpoints for up to five minutes, which gives no access to documents.
+
 ## Environment variables
 
 | Variable                                              | Same as                                                  |
@@ -114,6 +173,8 @@ Every change is recorded in the site audit trail as a role change, naming the gr
 | `GOOGLE_WORKSPACE_ADMIN_SUBJECT`                      | Act as administrator (domain-wide delegation only)       |
 | `GOOGLE_WORKSPACE_CUSTOMER_ID`                        | Customer ID                                              |
 | `GOOGLE_ADMIN_GROUP`                                  | Administrator group                                      |
+| `DIRECTORY_SYNC`                                      | `on` or `off`: offboarding from the directory            |
+| `DIRECTORY_SYNC_MAX_PER_RUN`                          | Most people offboarded per run, 1 to 500 (default 10)    |
 
 ## Troubleshooting
 
@@ -121,3 +182,5 @@ Every change is recorded in the site audit trail as a role change, naming the gr
 - **"This Google account belongs to a different organization's Workspace"**: its `hd` claim is not one of your Workspace domains. Add the domain if it is yours (a second Workspace).
 - **redirect_uri_mismatch** from Google: the redirect URI in the OAuth client is not exactly the one Settings shows. Check `APP_URL`.
 - **Test directory access says 403**: the role is not assigned to the service account (it can take a few minutes to apply), the Admin SDK API is not enabled in the project, or, with delegation, a scope is missing.
+- **The offboarding run answers `not_configured`**: it is not turned on, or the directory is not (part 2). **`no_domains`**: no Workspace domains are set (part 1). **502 with `stoppedEarly`**: most lookups failed; the failed ones are listed with Google's status, usually the 403 above.
+- **"This account was suspended or removed in your organization's Google Workspace"** at sign-in: the offboarding job blocked the account. Make the account active in Google again and the next run lifts the block.

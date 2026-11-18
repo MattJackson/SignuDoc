@@ -503,6 +503,7 @@ async function handOverFinishedEnvelopes(
           FROM "user" u
           WHERE u.id = $1
             AND u.role = 'admin'
+            AND u.directory_blocked_at IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
             )

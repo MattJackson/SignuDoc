@@ -11,6 +11,11 @@ import { cache } from "react";
 import { type Branding } from "../branding.ts";
 import { getDb } from "../db/connection.ts";
 import {
+  DIRECTORY_BLOCKED_CODE,
+  DIRECTORY_BLOCKED_MESSAGE,
+  isSignInBlockedByDirectory,
+} from "../directory-block.ts";
+import {
   createEmailService,
   type EmailService,
   type TransactionalEmailMessage,
@@ -502,6 +507,19 @@ export function createAppAuth({
           });
         }
 
+        // Someone the Workspace directory says has left (directory-sync.ts)
+        // keeps no way in through a password either, break-glass or not:
+        // the sync never blocks a break-glass address in the first place.
+        if (
+          ctx.path === "/sign-in/email" &&
+          (await isSignInBlockedByDirectory(email, database))
+        ) {
+          throw new APIError("FORBIDDEN", {
+            code: DIRECTORY_BLOCKED_CODE,
+            message: DIRECTORY_BLOCKED_MESSAGE,
+          });
+        }
+
         if (ctx.path !== "/sign-up/email") {
           return;
         }
@@ -591,6 +609,22 @@ export function createAppAuth({
               errorDescription: decision.message,
             };
           }
+        }
+
+        // Every single sign-on sign-in, not only Google's: the identity
+        // provider may still let in someone the Workspace directory says
+        // has left, for the minutes or hours until its own offboarding has
+        // caught up, or forever with a provider other than Google.
+        if (
+          source.method === "oauth" &&
+          typeof user.email === "string" &&
+          (await isSignInBlockedByDirectory(user.email, database))
+        ) {
+          return {
+            // The sign-in page's message for it: describeSsoError.
+            error: "directory_blocked",
+            errorDescription: DIRECTORY_BLOCKED_MESSAGE,
+          };
         }
 
         if (source.action !== "create-user") {

@@ -148,6 +148,7 @@ A deployment made with the button needs no environment variables. These are ther
 | `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`                                                                                               | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. Can also be set in the app. See [Single sign-on](#single-sign-on). |
 | `RESEND_API_KEY`                                                                                                                                 | The Resend key email is sent with. The Resend integration on Vercel sets it; elsewhere it can be pasted into the app instead. See [Email](#email).                                                            |
 | `GOOGLE_WORKSPACE_DOMAINS`, `GOOGLE_ADMIN_GROUP`, `GOOGLE_WORKSPACE_DIRECTORY`, `GOOGLE_WORKSPACE_ADMIN_SUBJECT`, `GOOGLE_WORKSPACE_CUSTOMER_ID` | Google Workspace sign-in, directory suggestions and the administrator group, fixed from the environment instead of in Settings. See [Google Workspace](google-workspace.md).                                  |
+| `DIRECTORY_SYNC`, `DIRECTORY_SYNC_MAX_PER_RUN`                                                                                                   | `on` blocks sign-in for people your Google Workspace directory says have left, and hands their open envelopes on. Needs a job secret and a scheduler. See [Offboarding](google-workspace.md#4-offboarding).   |
 | `MAX_SIGNERS_PER_ENVELOPE`                                                                                                                       | The most signers one envelope can have, from 1 to 100. 25 when not set. See [Teams and signing order](teams-and-signing-order.md).                                                                            |
 
 ## Set the site up
@@ -338,6 +339,8 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 
 - `CRON_SECRET` is the one to use on Vercel, because Vercel sends it on its own cron calls.
 - `RETENTION_JOB_SECRET` does the same for a scheduler of your own. On Vercel, a deployment that sets only this one turns Vercel's cron call away, so store the secret as `CRON_SECRET` there instead.
+
+The same secrets guard the offboarding job, `/api/internal/directory-sync` (see [Offboarding](google-workspace.md#4-offboarding)). Unlike the cleanup, that route never runs without one, because it decides who can sign in.
 
 ## Rate limits
 

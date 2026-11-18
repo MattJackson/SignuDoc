@@ -15,8 +15,12 @@ import { recordSystemAuditEvent } from "./services/system-audit.ts";
 // administrator cannot be removed, and neither can the last one whose
 // account is not on its way to being closed.
 
-/** Serializes role changes, so two removals cannot both leave "one more". */
-const ROLE_CHANGE_LOCK_ID = 746108324;
+/**
+ * Serializes role changes, so two removals cannot both leave "one more".
+ * Blocking an administrator's sign-in from the directory takes it too
+ * (directory-sync.ts): that also leaves one fewer administrator.
+ */
+export const ROLE_CHANGE_LOCK_ID = 746108324;
 const MAX_LISTED_PEOPLE = 500;
 const MAX_SEARCH_LENGTH = 100;
 
@@ -26,6 +30,11 @@ export type Person = {
   /** The account has asked to be closed and is waiting out its notice. */
   closing: boolean;
   createdAt: string;
+  /**
+   * When the Google Workspace directory's answer blocked the account's
+   * sign-in (directory-sync.ts), or null.
+   */
+  directoryBlockedAt: number | null;
   email: string;
   emailVerified: boolean;
   id: string;
@@ -68,6 +77,7 @@ type PersonRow = {
   closing: boolean;
   hasOpenPart11Signing: boolean;
   createdAt: Date;
+  directoryBlockedAt: number | null;
   email: string;
   emailVerified: boolean;
   id: string;
@@ -89,6 +99,7 @@ const PERSON_COLUMNS = `
   u.identity_verified_at AS "identityVerifiedAt",
   u.identity_verification_note AS "identityVerificationNote",
   u.signing_locked_at AS "signingLockedAt",
+  u.directory_blocked_at AS "directoryBlockedAt",
   u."twoFactorEnabled" AS "twoFactorEnabled",
   EXISTS (
     SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
@@ -108,6 +119,7 @@ function mapPerson(row: PersonRow): Person {
   return {
     closing: row.closing,
     createdAt: row.createdAt.toISOString(),
+    directoryBlockedAt: row.directoryBlockedAt ?? null,
     email: row.email,
     emailVerified: row.emailVerified,
     hasOpenPart11Signing: row.hasOpenPart11Signing,
@@ -170,28 +182,34 @@ export async function listPeople(
 
 /**
  * The administrator who keeps the organization's records: the one who has
- * been here longest and whose own account is not on its way to being
- * closed. `exceptUserId` is the account that is giving the records up.
- * Returns null when there is no such administrator.
+ * been here longest, whose own account is not on its way to being closed,
+ * and who can still sign in (the Workspace directory has not blocked them,
+ * directory-sync.ts). `exceptUserId` is the account that is giving the
+ * records up; a dry run of the directory sync also passes the accounts it
+ * would block before this one. Returns null when there is no such
+ * administrator.
  */
 export async function findRecordKeeper(
-  exceptUserId: string,
+  exceptUserId: string | readonly string[],
   database: DbExecutor,
 ): Promise<string | null> {
+  const excluded =
+    typeof exceptUserId === "string" ? [exceptUserId] : [...exceptUserId];
   const keeper = await queryOne<{ id: string }>(
     database,
     `
       SELECT u.id
       FROM "user" u
-      WHERE u.id <> $1
+      WHERE u.id <> ALL($1::text[])
         AND u.role = 'admin'
+        AND u.directory_blocked_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
         )
       ORDER BY u."createdAt" ASC, u.id ASC
       LIMIT 1
     `,
-    [exceptUserId],
+    [excluded],
   );
 
   return keeper?.id ?? null;
