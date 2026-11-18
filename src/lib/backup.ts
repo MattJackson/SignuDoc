@@ -5,15 +5,18 @@ import { createGunzip, createGzip } from "node:zlib";
 import { del, get, list, put } from "@vercel/blob";
 
 import { type DbPool, getDb } from "./db/connection.ts";
+import { normalizeGcsPrefix, readGcsLocation } from "./services/storage/gcs.ts";
 import { readEnv, type EnvSource } from "./utils/env.ts";
 
-// A daily copy of the install to a second Vercel Blob store, kept by the
-// deployer apart from the first (another Vercel team, ideally), so that a
-// deleted project, store or database, or a bug that deletes rows, is not the
-// end of the records.
+// A daily copy of the install to a place kept by the deployer apart from
+// it, so that a deleted project, store or database, or a bug that deletes
+// rows, is not the end of the records. The place is a second Vercel Blob
+// store (another Vercel team, ideally) or a Google Cloud Storage bucket
+// (another project, ideally), whatever the install keeps its own files in.
 //
-// It is off unless BACKUP_BLOB_READ_WRITE_TOKEN is set: a read-write token
-// for that second store, which must be a private store. Each run
+// It is off until a target is chosen, in Settings (backup-config.ts) or in
+// the environment: BACKUP_GCS_BUCKET, or BACKUP_BLOB_READ_WRITE_TOKEN, a
+// read-write token for a private Blob store. Each run
 //
 // - writes the whole database, read in one consistent snapshot, as one
 //   gzipped NDJSON file under database/, and keeps BACKUP_KEEP_DAYS days of
@@ -31,7 +34,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const DATABASE_PREFIX = "database/";
 export const FILES_PREFIX = "files/";
 const MANIFEST_PATH = "manifest.json";
-const DEFAULT_KEEP_DAYS = 30;
+export const DEFAULT_KEEP_DAYS = 30;
 const MIN_DATABASE_COPIES = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -111,27 +114,76 @@ export function createVercelBlobStore(token?: string): BackupStore {
   };
 }
 
-export type BackupSettings = { keepDays: number; token: string };
+/**
+ * Where backups go: a second Vercel Blob store (by its read-write token),
+ * or a Google Cloud Storage bucket, optionally under a folder in it.
+ */
+export type BackupTarget =
+  | { kind: "blob"; token: string }
+  | { bucket: string; kind: "gcs"; prefix: string };
 
-/** The backup settings, or null when backups are not set up. */
+export type BackupSettings = { keepDays: number; target: BackupTarget };
+
+export const MIN_KEEP_DAYS = 1;
+export const MAX_KEEP_DAYS = 3650;
+
+/** A number of days to keep copies for, or null when it is not one. */
+export function parseKeepDays(value: unknown): number | null {
+  const days =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\s*\d+\s*$/.test(value)
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  return Number.isInteger(days) &&
+    days >= MIN_KEEP_DAYS &&
+    days <= MAX_KEEP_DAYS
+    ? days
+    : null;
+}
+
+/**
+ * The backup target set in the environment, or null when none is. The
+ * environment wins over what an administrator chose in Settings.
+ * BACKUP_GCS_BUCKET takes precedence over BACKUP_BLOB_READ_WRITE_TOKEN.
+ */
+export function readBackupTargetFromEnv(
+  env: EnvSource = process.env,
+): BackupTarget | null {
+  const bucket = readEnv(env, "BACKUP_GCS_BUCKET");
+
+  if (bucket) {
+    return {
+      bucket: bucket.replace(/^gs:\/\//, "").replace(/\/+$/, ""),
+      kind: "gcs",
+      prefix: normalizeGcsPrefix(readEnv(env, "BACKUP_GCS_PREFIX")),
+    };
+  }
+
+  const token = readEnv(env, "BACKUP_BLOB_READ_WRITE_TOKEN");
+
+  return token ? { kind: "blob", token } : null;
+}
+
+/** BACKUP_KEEP_DAYS, or null when it is not set (or not a number of days). */
+export function readKeepDaysFromEnv(
+  env: EnvSource = process.env,
+): number | null {
+  return parseKeepDays(readEnv(env, "BACKUP_KEEP_DAYS"));
+}
+
+/** The backup settings from the environment, or null when they set none. */
 export function readBackupSettings(
   env: EnvSource = process.env,
 ): BackupSettings | null {
-  const token = readEnv(env, "BACKUP_BLOB_READ_WRITE_TOKEN");
+  const target = readBackupTargetFromEnv(env);
 
-  if (!token) {
+  if (!target) {
     return null;
   }
 
-  const keepDays = Number.parseInt(readEnv(env, "BACKUP_KEEP_DAYS") ?? "", 10);
-
-  return {
-    keepDays:
-      Number.isFinite(keepDays) && keepDays >= 1 && keepDays <= 3650
-        ? keepDays
-        : DEFAULT_KEEP_DAYS,
-    token,
-  };
+  return { keepDays: readKeepDaysFromEnv(env) ?? DEFAULT_KEEP_DAYS, target };
 }
 
 /** The store id inside a Blob read-write token, when it has one. */
@@ -140,14 +192,26 @@ function storeIdFromToken(token: string | undefined): string | null {
 }
 
 /**
- * True when the backup token is for the app's own store. A backup there
+ * True when the backup target is the app's own store. A backup there
  * would not survive what it is for, and would copy itself every night.
+ * A bucket is refused whole: a folder of the app's own bucket goes when the
+ * bucket does.
  */
 export function isBackupStoreTheAppStore(
-  settings: BackupSettings,
+  settings: Pick<BackupSettings, "target">,
   env: EnvSource = process.env,
 ): boolean {
-  const backupStore = storeIdFromToken(settings.token)?.toLowerCase();
+  const { target } = settings;
+
+  if (target.kind === "gcs") {
+    const appBucket = readGcsLocation(env)?.bucket;
+
+    return Boolean(
+      appBucket && appBucket.toLowerCase() === target.bucket.toLowerCase(),
+    );
+  }
+
+  const backupStore = storeIdFromToken(target.token)?.toLowerCase();
   const appStores = [
     storeIdFromToken(readEnv(env, "BLOB_READ_WRITE_TOKEN")),
     readEnv(env, "BLOB_STORE_ID")?.replace(/^store_/, "") ?? null,

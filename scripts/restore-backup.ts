@@ -1,9 +1,22 @@
 // Restores a SignuDoc install from the daily backup (src/lib/backup.ts) into
-// a new, empty database and Blob store. See docs/backup-and-restore.md.
+// a new, empty database and file store. See docs/backup-and-restore.md.
 //
 //   DATABASE_URL=postgres://...            the new, empty database
+//
+//   Where the backup is, one of:
+//   BACKUP_GCS_BUCKET=...                  a Cloud Storage bucket
+//     (BACKUP_GCS_PREFIX=...                 and the folder in it, if any)
+//   BACKUP_BLOB_READ_WRITE_TOKEN=...       a Vercel Blob store
+//
+//   Where the files go, one of:
 //   BLOB_READ_WRITE_TOKEN=vercel_blob_rw_  the new install's Blob store
-//   BACKUP_BLOB_READ_WRITE_TOKEN=...       the backup store
+//   STORAGE_DRIVER=gcs GCS_BUCKET=...      the new install's bucket
+//     (GCS_PREFIX=...                        and its folder, if any)
+//   STORAGE_DRIVER=local                   this machine's disk
+//
+//   Google credentials, for a bucket: GOOGLE_ACCESS_TOKEN (for example
+//   from `gcloud auth print-access-token`), GOOGLE_SERVICE_ACCOUNT_KEY, or
+//   the metadata server when run on Google Cloud (a Cloud Run job).
 //
 //   npm run restore-backup -- --list            list the database backups
 //   npm run restore-backup                      restore the newest one, and the files
@@ -21,10 +34,30 @@ import {
   createVercelBlobStore,
   DATABASE_PREFIX,
   findLatestDatabaseBackup,
+  readBackupTargetFromEnv,
   restoreDatabase,
   restoreFiles,
 } from "../src/lib/backup.ts";
+import {
+  createAppFilesStore,
+  createBackupTargetStore,
+} from "../src/lib/backup-stores.ts";
+import { getGoogleCredentials } from "../src/lib/integrations/google/credentials.ts";
+import { type GcsTokenSource } from "../src/lib/services/storage/gcs.ts";
 import { runMigrations } from "../db/migrate.mjs";
+
+// A token from gcloud, so a restore from a laptop needs no service account
+// key. It lasts an hour, which is enough for most restores; for a larger
+// one, run this as a Cloud Run job or use a key.
+function resolveGoogleCredentials(): GcsTokenSource | null {
+  const token = process.env.GOOGLE_ACCESS_TOKEN?.trim();
+
+  if (token) {
+    return { getAccessToken: async () => token };
+  }
+
+  return getGoogleCredentials();
+}
 
 function readArgument(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -44,9 +77,17 @@ function requireVariable(name: string): string {
 }
 
 async function main() {
-  const backupStore = createVercelBlobStore(
-    requireVariable("BACKUP_BLOB_READ_WRITE_TOKEN"),
-  );
+  const backupTarget = readBackupTargetFromEnv(process.env);
+
+  if (!backupTarget) {
+    console.error(
+      "Set BACKUP_GCS_BUCKET or BACKUP_BLOB_READ_WRITE_TOKEN first. See docs/backup-and-restore.md.",
+    );
+    process.exit(1);
+  }
+
+  const credentials = resolveGoogleCredentials();
+  const backupStore = createBackupTargetStore(backupTarget, credentials);
 
   if (process.argv.includes("--list")) {
     let cursor: string | undefined;
@@ -74,9 +115,12 @@ async function main() {
     process.exit(1);
   }
 
+  // Without STORAGE_DRIVER the files go to a Blob store, as they always did.
   const appStore = skipFiles
     ? null
-    : createVercelBlobStore(requireVariable("BLOB_READ_WRITE_TOKEN"));
+    : process.env.STORAGE_DRIVER?.trim()
+      ? createAppFilesStore({ credentials, env: process.env })
+      : createVercelBlobStore(requireVariable("BLOB_READ_WRITE_TOKEN"));
 
   if (!filesOnly) {
     const connectionString = requireVariable("DATABASE_URL");

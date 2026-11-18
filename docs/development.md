@@ -80,9 +80,10 @@ A document you send often can be kept as a template: open any envelope, sent or 
 Documents, signed PDFs, audit certificates, drawn signature images, and the small first-page pictures shown on the dashboard are stored in one of two places:
 
 - **Vercel Blob**, in a private store. This is used whenever a Blob store is connected to the project (Vercel sets `BLOB_READ_WRITE_TOKEN`, or `BLOB_STORE_ID` for a store that signs in with the project's OIDC token), and always on Vercel. Nothing in the store has a public URL; every download goes through the app, which checks who is asking first.
+- **Google Cloud Storage**, in a bucket named by `GCS_BUCKET` (and optionally a folder in it, `GCS_PREFIX`), through the JSON API with the app's shared Google credentials (`src/lib/integrations/google/credentials.ts`). Only chosen with `STORAGE_DRIVER=gcs`. See [Files in Google Cloud Storage](self-hosting.md#files-in-google-cloud-storage).
 - **Local disk**, under `.data/storage` (change it with `STORAGE_LOCAL_DIR`). This is the default everywhere else, including local development.
 
-`STORAGE_DRIVER=blob` or `STORAGE_DRIVER=local` overrides the choice.
+`STORAGE_DRIVER=blob`, `STORAGE_DRIVER=gcs` or `STORAGE_DRIVER=local` overrides the choice. On Cloud Storage and local disk uploads go through the app.
 
 On Vercel Blob, the upload page sends the PDF straight from the browser to the store with a short-lived signed URL, because a request to a Vercel Function cannot be larger than 4.5 MB. The upload lands in a pending folder, the app reads it back and validates it like any other upload, stores its own copy, and deletes the pending one. A pending upload that is never picked up is deleted by Blob after a day.
 
