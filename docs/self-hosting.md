@@ -148,6 +148,7 @@ A deployment made with the button needs no environment variables. These are ther
 | `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`                                                                                               | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. Can also be set in the app. See [Single sign-on](#single-sign-on). |
 | `RESEND_API_KEY`                                                                                                                                 | The Resend key email is sent with. The Resend integration on Vercel sets it; elsewhere it can be pasted into the app instead. See [Email](#email).                                                            |
 | `GOOGLE_WORKSPACE_DOMAINS`, `GOOGLE_ADMIN_GROUP`, `GOOGLE_WORKSPACE_DIRECTORY`, `GOOGLE_WORKSPACE_ADMIN_SUBJECT`, `GOOGLE_WORKSPACE_CUSTOMER_ID` | Google Workspace sign-in, directory suggestions and the administrator group, fixed from the environment instead of in Settings. See [Google Workspace](google-workspace.md).                                  |
+| `SLACK_BOT_TOKEN`, `NOTIFICATION_EXPIRING_DAYS`, `NOTIFICATION_STUCK_DAYS`                                                                       | Notifications in Slack, and when the job warns about a deadline or an idle envelope, fixed from the environment instead of in Settings. See [Notifications](notifications.md).                                |
 | `MAX_SIGNERS_PER_ENVELOPE`                                                                                                                       | The most signers one envelope can have, from 1 to 100. 25 when not set. See [Teams and signing order](teams-and-signing-order.md).                                                                            |
 
 ## Set the site up
@@ -338,6 +339,19 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 
 - `CRON_SECRET` is the one to use on Vercel, because Vercel sends it on its own cron calls.
 - `RETENTION_JOB_SECRET` does the same for a scheduler of your own. On Vercel, a deployment that sets only this one turns Vercel's cron call away, so store the secret as `CRON_SECRET` there instead.
+
+## Notifications
+
+Slack can tell senders, their teammates and channels when envelopes are signed, completed, declined or stuck, and administrators when a backup fails. An administrator sets it up under Settings, Notifications; [Notifications](notifications.md) has the steps. Most messages go out within seconds of what they are about. The rest (retries, deadlines coming up, envelopes with no activity) wait for a request to:
+
+```text
+/api/internal/notifications
+```
+
+- **On Vercel** `vercel.json` calls it once a day, which is as often as a Hobby plan allows. On a Pro plan, change its schedule to every few minutes for quicker retries.
+- **Anywhere else**, have your scheduler (Cloud Scheduler, say) send it a `GET` or `POST` every 5 to 15 minutes.
+
+It takes the same secrets as the daily cleanup: with `CRON_SECRET` or `RETENTION_JOB_SECRET` set, a caller has to send `Authorization: Bearer <secret>`. Without one it runs at most once a minute and answers with an empty response.
 
 ## Rate limits
 
