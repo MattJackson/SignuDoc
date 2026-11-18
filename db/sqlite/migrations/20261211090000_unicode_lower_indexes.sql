@@ -22,7 +22,7 @@ drop index if exists teams_name_unique;
 drop index if exists teams_google_group_email_unique;
 
 -- Each team's place among the teams whose names are now the same, worked out
--- before anything changes. The suffix is the team's own id, so it cannot meet
+-- before anything changes. The suffix is the team's own id (its first 8 characters), so it is unlikely to meet
 -- another team's name.
 create temp table unicode_lower_places (
   row_id integer not null,

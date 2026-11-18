@@ -69,9 +69,9 @@ export function isTransientLeaseError(error) {
   return (
     name === "TimeoutError" ||
     name === "AbortError" ||
-    // What fetch throws when the network fails; any other TypeError is a bug.
+    // What fetch throws when the network fails (undici: "fetch failed", or "terminated" when the connection drops while the body is read); any other TypeError is a bug.
     (name === "TypeError" &&
-      /fetch failed/.test(
+      /fetch failed|^terminated$/.test(
         String(/** @type {{ message?: unknown }} */ (error).message),
       ))
   );
@@ -676,6 +676,10 @@ export function holdLease({
     /** Starts handling the app and Litestream, once they are running. */
     attach(/** @type {HeldChild} */ running) {
       child = running;
+
+      // A fence that went off before there was a child is armed again, and goes
+      // off at once if its time has passed.
+      armFence();
 
       if (handoverStarted) {
         runHandover();
