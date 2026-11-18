@@ -919,4 +919,12 @@ test("only a network failure is a TypeError worth retrying", async () => {
     /enough/,
   );
   assert.equal(tries.count, 3);
+
+  // What undici throws when the connection drops while the body is read.
+  tries.count = 0;
+  await assert.rejects(
+    failing(new TypeError("terminated")).acquire(),
+    /enough/,
+  );
+  assert.equal(tries.count, 3);
 });
