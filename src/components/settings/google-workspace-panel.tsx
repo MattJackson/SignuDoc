@@ -935,7 +935,7 @@ export function GoogleDirectorySection({
           <div className="max-w-xl">
             <FieldShell
               disabled={pending !== null || view.adminGroup.source === "env"}
-              error={errors.adminGroup}
+              error={errors.adminGroup ?? view.adminGroup.problem}
               helper={
                 view.adminGroup.source === "env"
                   ? fromEnvHelper("GOOGLE_ADMIN_GROUP")

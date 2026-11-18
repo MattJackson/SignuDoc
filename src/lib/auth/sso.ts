@@ -217,6 +217,11 @@ export function mayUsePassword(
 export type WorkspaceDomains = {
   domains: string[];
   /**
+   * A list was set but none of its entries is a domain. Nobody is let in
+   * until it is corrected, rather than everyone.
+   */
+  invalid?: true;
+  /**
    * Where the list comes from: GOOGLE_WORKSPACE_DOMAINS, the app's Google
    * Workspace settings, or the sign-up rule's domains. "none" means no list
    * is known, so any Google Workspace account passes the check but a
@@ -239,16 +244,27 @@ export function resolveWorkspaceDomains({
   const fromEnv = readEnv(env, "GOOGLE_WORKSPACE_DOMAINS");
 
   if (fromEnv) {
-    return { domains: parseEmailDomainList(fromEnv).domains, source: "env" };
+    const { domains } = parseEmailDomainList(fromEnv);
+
+    if (domains.length === 0) {
+      warnOnce(
+        "GOOGLE_WORKSPACE_DOMAINS has no valid domain, so Google sign-in lets no one in until it is corrected.",
+      );
+
+      return { domains, invalid: true, source: "env" };
+    }
+
+    return { domains, source: "env" };
   }
 
   const fromSettings = stored?.["google.workspaceDomains"];
 
   if (fromSettings?.trim()) {
-    return {
-      domains: parseEmailDomainList(fromSettings).domains,
-      source: "settings",
-    };
+    const { domains } = parseEmailDomainList(fromSettings);
+
+    return domains.length === 0
+      ? { domains, invalid: true, source: "settings" }
+      : { domains, source: "settings" };
   }
 
   if (signupDomains.length > 0) {
@@ -289,8 +305,13 @@ export type WorkspaceAccountDecision =
  */
 export function checkWorkspaceAccount(
   profile: Readonly<Record<string, unknown>> | undefined,
-  domains: readonly string[],
+  allowed: readonly string[] | WorkspaceDomains,
 ): WorkspaceAccountDecision {
+  const domains = Array.isArray(allowed)
+    ? allowed
+    : (allowed as WorkspaceDomains).domains;
+  const noneAllowed =
+    !Array.isArray(allowed) && (allowed as WorkspaceDomains).invalid === true;
   const claim = profile?.hd;
   const hd = typeof claim === "string" ? claim.trim().toLowerCase() : "";
 
@@ -302,7 +323,7 @@ export function checkWorkspaceAccount(
     };
   }
 
-  if (domains.length > 0 && !domains.includes(hd)) {
+  if (noneAllowed || (domains.length > 0 && !domains.includes(hd))) {
     return {
       allowed: false,
       code: "workspace_domain_not_allowed",

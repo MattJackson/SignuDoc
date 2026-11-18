@@ -446,10 +446,7 @@ test("an invalid backup folder in the environment is a configuration problem, no
   );
 
   assert.equal(config.target, null);
-  assert.match(
-    (config as { problem?: string }).problem ?? "",
-    /BACKUP_GCS_PREFIX/,
-  );
+  assert.match(config.problem ?? "", /BACKUP_GCS_PREFIX/);
 
   const status = summarizeBackupStatus(config, []);
 

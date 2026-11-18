@@ -149,6 +149,14 @@ export function parseKeepDays(value: unknown): number | null {
     : null;
 }
 
+/** An environment setting for the backup that cannot be used. */
+export class BackupEnvironmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupEnvironmentError";
+  }
+}
+
 /**
  * The backup target set in the environment, or null when none is. The
  * environment wins over what an administrator chose in Settings.
@@ -160,10 +168,20 @@ export function readBackupTargetFromEnv(
   const bucket = readEnv(env, "BACKUP_GCS_BUCKET");
 
   if (bucket) {
+    let prefix: string;
+
+    try {
+      prefix = normalizeGcsPrefix(readEnv(env, "BACKUP_GCS_PREFIX"));
+    } catch {
+      throw new BackupEnvironmentError(
+        'BACKUP_GCS_PREFIX is not a valid folder name (no empty parts, "." or ".."), so backups cannot run.',
+      );
+    }
+
     return {
       bucket: bucket.replace(/^gs:\/\//, "").replace(/\/+$/, ""),
       kind: "gcs",
-      prefix: normalizeGcsPrefix(readEnv(env, "BACKUP_GCS_PREFIX")),
+      prefix,
     };
   }
 
@@ -226,6 +244,18 @@ export function isBackupStoreTheAppStore(
     .map((id) => id.toLowerCase());
 
   return Boolean(backupStore && appStores.includes(backupStore));
+}
+
+/**
+ * Lets go of a download that was not used up, so its connection is not
+ * held open until it is collected.
+ */
+async function discardStream(stream: ReadableStream<Uint8Array> | undefined) {
+  try {
+    await stream?.cancel();
+  } catch {
+    // Already read, or closed: nothing is held.
+  }
 }
 
 async function listAll(store: BackupStore, prefix?: string) {
@@ -538,8 +568,10 @@ export async function runBackup({
     // Until this copy is done, the one in the backup is not this version.
     delete copiedFrom[original.pathname];
 
+    let found: Awaited<ReturnType<BackupStore["get"]>> = null;
+
     try {
-      const found = await source.get(original.pathname);
+      found = await source.get(original.pathname);
 
       if (!found) {
         continue;
@@ -551,6 +583,7 @@ export async function runBackup({
       copiedFrom[original.pathname] = version;
       summary.filesCopied += 1;
     } catch (error) {
+      await discardStream(found?.stream);
       summary.fileFailures.push(original.pathname);
       console.error(
         `[backup] Could not copy ${original.pathname}:`,
@@ -815,8 +848,10 @@ export async function restoreFiles({
       continue;
     }
 
+    let found: Awaited<ReturnType<BackupStore["get"]>> = null;
+
     try {
-      const found = await source.get(copy.pathname);
+      found = await source.get(copy.pathname);
 
       if (!found) {
         failures.push(copy.pathname);
@@ -828,6 +863,7 @@ export async function restoreFiles({
       });
       copied += 1;
     } catch {
+      await discardStream(found?.stream);
       failures.push(copy.pathname);
     }
   }

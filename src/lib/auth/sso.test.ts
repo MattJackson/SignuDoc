@@ -205,13 +205,10 @@ test("Workspace domains in the environment that are all invalid let no one in", 
   });
 
   assert.equal(
-    checkWorkspaceAccount({ hd: "other.com" }, resolved as never).allowed,
+    checkWorkspaceAccount({ hd: "other.com" }, resolved).allowed,
     false,
   );
-  assert.equal(
-    checkWorkspaceAccount({ hd: "acme" }, resolved as never).allowed,
-    false,
-  );
+  assert.equal(checkWorkspaceAccount({ hd: "acme" }, resolved).allowed, false);
 
   // A list that is not set at all still means any Workspace account.
   assert.equal(
@@ -221,7 +218,7 @@ test("Workspace domains in the environment that are all invalid let no one in", 
         env: {},
         signupDomains: [],
         stored: null,
-      }) as never,
+      }),
     ).allowed,
     true,
   );

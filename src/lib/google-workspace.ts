@@ -42,7 +42,11 @@ import { readEnv, resolveAuthUrl, type EnvSource } from "./utils/env.ts";
 export type SettingSource = "default" | "env" | "none" | "settings";
 
 export type GoogleWorkspaceView = {
-  adminGroup: { group: string | null; source: SettingSource };
+  adminGroup: {
+    group: string | null;
+    problem?: string;
+    source: SettingSource;
+  };
   directory: {
     adminSubject: string | null;
     adminSubjectFromEnv: boolean;
@@ -296,19 +300,25 @@ export async function saveGoogleWorkspaceSettings(
 
     if (input.passwordSignIn !== undefined) {
       update["sso.passwordSignIn"] = input.passwordSignIn ? "on" : "off";
+    }
 
-      if (!input.passwordSignIn) {
-        const next = { ...current, ...withoutNulls(update) };
+    // Judged as the settings will be once this save is applied, so a clear
+    // made in the same save counts. It runs whenever password sign-in ends
+    // up off and something it depends on is being changed.
+    const next = applyUpdate(current, update);
 
-        if (!readSsoConfig(env, next)) {
-          errors.passwordSignIn =
-            "Set up Google sign-in first. Password sign-in can only be turned off while single sign-on works.";
-        }
+    if (
+      next["sso.passwordSignIn"] === "off" &&
+      PASSWORD_GUARD_KEYS.some((key) => key in update)
+    ) {
+      if (!readSsoConfig(env, next)) {
+        errors.passwordSignIn =
+          "Set up Google sign-in first. Password sign-in can only be turned off while single sign-on works.";
+      }
 
-        if (!(next["sso.passwordAllowedEmails"] ?? "").trim()) {
-          errors.passwordAllowedEmails =
-            "Keep at least one administrator's address here, as a way in if Google is unavailable.";
-        }
+      if (!(next["sso.passwordAllowedEmails"] ?? "").trim()) {
+        errors.passwordAllowedEmails =
+          "Keep at least one administrator's address here, as a way in if Google is unavailable.";
       }
     }
   }
@@ -382,12 +392,26 @@ export async function saveGoogleWorkspaceSettings(
   return getGoogleWorkspaceView(env, saved);
 }
 
-function withoutNulls(update: IntegrationSettingsUpdate): IntegrationSettings {
-  const result: IntegrationSettings = {};
+const PASSWORD_GUARD_KEYS = [
+  "sso.passwordSignIn",
+  "sso.passwordAllowedEmails",
+  "sso.clientSecret",
+  "sso.issuer",
+  "sso.clientId",
+] as const;
+
+/** The settings as they will be stored once the update is applied. */
+function applyUpdate(
+  current: IntegrationSettings,
+  update: IntegrationSettingsUpdate,
+): IntegrationSettings {
+  const result: IntegrationSettings = { ...current };
 
   for (const [key, value] of Object.entries(update)) {
-    if (typeof value === "string") {
+    if (typeof value === "string" && value.trim() !== "") {
       result[key as keyof IntegrationSettings] = value;
+    } else {
+      delete result[key as keyof IntegrationSettings];
     }
   }
 
@@ -410,9 +434,19 @@ export type GroupTestResult =
 async function directoryForTest(env: EnvSource) {
   const stored = await getIntegrationSettings(env);
   const config = readDirectoryConfig(env, stored);
-  const credentials = getGoogleCredentials();
 
-  return { config, credentials, stored };
+  // A malformed key throws here; the test reports it like any other
+  // failure.
+  let credentials: ReturnType<typeof getGoogleCredentials> = null;
+  let error: unknown;
+
+  try {
+    credentials = getGoogleCredentials();
+  } catch (caught) {
+    error = caught;
+  }
+
+  return { config, credentials, error, stored };
 }
 
 function failed(error: unknown) {
@@ -438,7 +472,11 @@ export async function testDirectoryAccess(
   adminEmail: string,
   env: EnvSource = process.env,
 ): Promise<DirectoryTestResult> {
-  const { config, credentials } = await directoryForTest(env);
+  const { config, credentials, error } = await directoryForTest(env);
+
+  if (error) {
+    return failed(error);
+  }
 
   if (!credentials) {
     return {
@@ -475,7 +513,7 @@ export async function testGroupLookup(
   groupInput: string | null,
   env: EnvSource = process.env,
 ): Promise<GroupTestResult> {
-  const { config, credentials, stored } = await directoryForTest(env);
+  const { config, credentials, error, stored } = await directoryForTest(env);
   const group = groupInput
     ? normalizeGroupAddress(groupInput)
     : readAdminGroup(env, stored).group;
@@ -486,6 +524,10 @@ export async function testGroupLookup(
       ok: false,
       status: null,
     };
+  }
+
+  if (error) {
+    return failed(error);
   }
 
   if (!credentials) {

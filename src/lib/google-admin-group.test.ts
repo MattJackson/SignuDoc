@@ -8,10 +8,7 @@ test("an administrator group in the environment that is not an address is report
 
   assert.equal(setting.group, null);
   assert.equal(setting.source, "env");
-  assert.match(
-    (setting as { problem?: string }).problem ?? "",
-    /GOOGLE_ADMIN_GROUP/,
-  );
+  assert.match(setting.problem ?? "", /GOOGLE_ADMIN_GROUP/);
 });
 
 test("a good administrator group has no problem", () => {

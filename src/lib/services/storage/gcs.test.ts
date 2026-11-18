@@ -698,7 +698,7 @@ test("a request that gets no answer fails by the deadline instead of hanging", a
     credentials,
     fetchImpl,
     requestTimeoutMs: 50,
-  } as Parameters<typeof createGcsClient>[0]);
+  });
 
   await assert.rejects(client.download("a"), GcsRequestError);
   await assert.rejects(

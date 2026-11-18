@@ -365,38 +365,39 @@ export function createEmailService({
 
     if (!known?.["resend.apiKey"]) {
       // Look again, so a key saved since on another instance is seen by
-      // the next send.
-      if (known) {
-        void getIntegrationSettings(env).catch(() => undefined);
-      }
+      // the next send, and so is one that startup could not read.
+      void getIntegrationSettings(env).catch(() => undefined);
 
       assertServiceConfig("email", EMAIL_ENV_KEYS, env);
     }
   }
 
-  let pendingClient: Promise<Resend> | null = null;
-  const getClient = (): Promise<Resend> => {
+  // The client for a key saved in the app is made again when the key
+  // changes, so mail goes out with the key saved now.
+  let envClient: Resend | null = null;
+  let settingsClient: { client: Resend; key: string } | null = null;
+  const getClient = async (): Promise<Resend> => {
     if (resendClient) {
-      return Promise.resolve(resendClient);
+      return resendClient;
     }
 
     if (envKey) {
-      pendingClient ??= Promise.resolve(new Resend(envKey));
+      envClient ??= new Resend(envKey);
+
+      return envClient;
     }
 
-    pendingClient ??= resolveResendApiKey(env).then((resolved) => {
-      if (!resolved) {
-        throw notConnected();
-      }
+    const resolved = await resolveResendApiKey(env);
 
-      return new Resend(resolved.key);
-    });
-    // A failed lookup is not remembered: the next message asks again.
-    pendingClient.catch(() => {
-      pendingClient = null;
-    });
+    if (!resolved) {
+      throw notConnected();
+    }
 
-    return pendingClient;
+    if (settingsClient?.key !== resolved.key) {
+      settingsClient = { client: new Resend(resolved.key), key: resolved.key };
+    }
+
+    return settingsClient.client;
   };
 
   return {
