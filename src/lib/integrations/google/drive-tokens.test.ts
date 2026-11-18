@@ -36,7 +36,7 @@ function memoryRepository(): DriveConnectionRepository & {
   const rows = new Map<string, StoredDriveConnection>();
 
   return {
-    async delete(userId, expectedRefreshToken) {
+    async delete(userId: string, expectedRefreshToken?: string) {
       const row = rows.get(userId) ?? null;
 
       if (

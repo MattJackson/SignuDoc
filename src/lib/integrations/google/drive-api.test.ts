@@ -3,6 +3,11 @@ import { test } from "node:test";
 
 import { DriveApiError, driveFetch } from "./drive-api.ts";
 
+// The request time limit is the last argument.
+const withTimeout = driveFetch as (
+  ...args: [...Parameters<typeof driveFetch>, number]
+) => Promise<Response>;
+
 // A Drive request that Google never answers is given up on, so it cannot
 // hold its caller for minutes.
 
@@ -34,7 +39,7 @@ test("a Drive request with no answer ends with a could-not-be-reached error", as
 
   await assert.rejects(
     within(
-      driveFetch(
+      withTimeout(
         fetchImpl,
         "token",
         "Reading a file",
