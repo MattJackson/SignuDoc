@@ -89,19 +89,19 @@ jobs:
           name: playwright-traces-${{ matrix.backend }}
           path: test-results/
           retention-days: 7
-      # Full-page screenshots of the administrator's screens
-      # (e2e/screenshots.spec.ts), to look at without running the app. Taken
-      # on the install the tests left behind, whether they passed or not,
-      # with the build they made.
+      # Full-page screenshots of the administrator's screens, from the
+      # Postgres run (e2e/screenshots.spec.ts), to look at without running
+      # the app. Taken on the install the tests left behind, whether they
+      # passed or not, with the build they made.
       - run: npx playwright test --project=screenshots
-        if: always()
+        if: always() && matrix.backend == 'postgres'
         env:
-          E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+          E2E_DATABASE_URL: ${{ matrix.database }}
           E2E_KEEP_DATABASE: "1"
           E2E_NO_BUILD: "1"
           E2E_SCREENSHOTS: "1"
       - uses: actions/upload-artifact@v6
-        if: always()
+        if: always() && matrix.backend == 'postgres'
         with:
           name: screenshots
           path: test-results/screenshots/
