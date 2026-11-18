@@ -12,6 +12,7 @@
 // copy.
 
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 
 import pg from "pg";
@@ -93,11 +94,17 @@ async function main() {
     // Compressed as it is read, so the export is never one big string.
     const chunks: Buffer[] = [];
 
-    for await (const chunk of Readable.from(
-      exportDatabaseLines(source, new Date()),
-    ).pipe(createGzip())) {
-      chunks.push(chunk as Buffer);
-    }
+    // pipeline() passes a failed export on instead of waiting for data that
+    // will not come.
+    await pipeline(
+      Readable.from(exportDatabaseLines(source, new Date())),
+      createGzip(),
+      async (compressed) => {
+        for await (const chunk of compressed) {
+          chunks.push(chunk as Buffer);
+        }
+      },
+    );
 
     const store = memoryStore();
     const path = "database/transfer.ndjson.gz";

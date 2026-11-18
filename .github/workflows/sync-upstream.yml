@@ -104,7 +104,13 @@ jobs:
 
           # A pull request or issue for this very commit is already open.
           open_pr=$(gh pr list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
-          open_issue=$(gh issue list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          # Issues are off on some forks, where listing them fails; a failed
+          # check of that setting still stops the run.
+          issues_on=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
+          open_issue=""
+          if [ "$issues_on" = "true" ]; then
+            open_issue=$(gh issue list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          fi
           if [ -n "$open_pr$open_issue" ]; then
             summary "$UPSTREAM $REQUESTED_REF ($short) is already waiting in ${open_pr:-$open_issue}."
             exit 0
