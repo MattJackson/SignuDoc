@@ -1,6 +1,7 @@
 import { createSign } from "node:crypto";
 
 import { readEnv, type EnvSource } from "../../utils/env.ts";
+import { googleUrl } from "./endpoints.ts";
 
 // Access tokens for Google APIs (Cloud Storage, Drive, the Workspace
 // directory), shared by every Google integration in the app.
@@ -188,7 +189,9 @@ export function createGoogleCredentials({
     assertion: string,
     tokenUri: string,
   ): Promise<CachedToken> {
-    const response = await fetchImpl(tokenUri, {
+    // The assertion names Google's token endpoint; a test stand-in
+    // (endpoints.ts) answers in its place.
+    const response = await fetchImpl(googleUrl(tokenUri, env), {
       body: new URLSearchParams({ assertion, grant_type: JWT_BEARER_GRANT }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
@@ -278,7 +281,10 @@ export function createGoogleCredentials({
       scopes: [GOOGLE_SCOPES.cloudPlatform],
     });
     const signResponse = await fetchImpl(
-      `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}:signJwt`,
+      googleUrl(
+        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}:signJwt`,
+        env,
+      ),
       {
         body: JSON.stringify({
           payload: JSON.stringify(

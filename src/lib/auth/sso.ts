@@ -1,4 +1,5 @@
 import { readEnv, type EnvSource } from "../utils/env.ts";
+import { googleUrl } from "../integrations/google/endpoints.ts";
 import { parseEmailDomainList } from "../signup-policy.ts";
 
 // Single sign-on with the organization's own identity provider, over OpenID
@@ -159,7 +160,10 @@ export function readSsoConfig(
   return {
     clientId,
     clientSecret,
-    discoveryUrl: `${issuer}/.well-known/openid-configuration`,
+    // Google's discovery document can be served by a test stand-in
+    // (integrations/google/endpoints.ts); the issuer stays Google's, so the
+    // ID tokens are checked exactly as in production.
+    discoveryUrl: googleUrl(`${issuer}/.well-known/openid-configuration`, env),
     google,
     issuer,
     name,

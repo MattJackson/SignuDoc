@@ -4,6 +4,7 @@ import {
   GOOGLE_SCOPES,
   type GoogleCredentials,
 } from "./credentials.ts";
+import { googleUrl } from "./endpoints.ts";
 
 // The organization's Google Workspace directory, read through the Admin SDK
 // Directory API with plain fetch and the shared credentials (credentials.ts):
@@ -107,6 +108,8 @@ type FetchLike = typeof fetch;
 type CreateDirectoryClientOptions = {
   config: DirectoryConfig;
   credentials: GoogleCredentials;
+  /** Read for a test stand-in in place of Google (endpoints.ts). */
+  env?: EnvSource;
   fetchImpl?: FetchLike;
   now?: () => number;
 };
@@ -195,6 +198,7 @@ type GroupsResponse = {
 export function createDirectoryClient({
   config,
   credentials,
+  env = process.env,
   fetchImpl = fetch,
   now = Date.now,
 }: CreateDirectoryClientOptions): DirectoryClient {
@@ -228,9 +232,12 @@ export function createDirectoryClient({
     let response: Response;
 
     try {
-      response = await fetchImpl(`${DIRECTORY_BASE_URL}${path}`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
+      response = await fetchImpl(
+        googleUrl(`${DIRECTORY_BASE_URL}${path}`, env),
+        {
+          headers: { authorization: `Bearer ${token}` },
+        },
+      );
     } catch {
       throw directoryError(null);
     }
