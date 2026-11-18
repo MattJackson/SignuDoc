@@ -905,7 +905,7 @@ export async function runWorkspaceSetup(
           `${driveBase}/drives/${encodeURIComponent(exportDriveId)}?useDomainAdminAccess=true&fields=id`,
         ).catch((error: unknown) => {
           if (error instanceof GoogleSetupError && error.status === 404) {
-            return {};
+            return { id: undefined };
           }
 
           throw error;
