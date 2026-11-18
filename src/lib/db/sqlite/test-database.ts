@@ -1,0 +1,40 @@
+// The SQLite side of src/lib/db/test-database.ts: the database tests
+// (npm run test:db) on the SQLite backend, with E2E_DATABASE_URL set to a
+// sqlite: URL. Each test file runs in a process of its own, and gets the
+// file new: the first open in a process deletes it and migrates it again.
+// getDb() in the same process, pointed at the same URL (some tests set
+// DATABASE_URL to it), shares the pool's connections and write lock.
+import { rmSync } from "node:fs";
+import path from "node:path";
+
+import type pg from "pg";
+
+import { runMigrations } from "../../../../db/migrate.mjs";
+import { sqliteFilePath } from "../../../../db/sqlite/open.mjs";
+import { SqlitePool } from "./pool.ts";
+
+const wiped = new Set<string>();
+
+export async function openSqliteTestDatabase(
+  connectionString: string,
+): Promise<pg.Pool> {
+  const file = sqliteFilePath(connectionString);
+
+  if (!path.basename(file).toLowerCase().includes("e2e")) {
+    throw new Error(
+      `Refusing to run database tests on "${file}". The test database must have "e2e" in its name.`,
+    );
+  }
+
+  if (!wiped.has(file)) {
+    wiped.add(file);
+
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      rmSync(`${file}${suffix}`, { force: true });
+    }
+  }
+
+  await runMigrations({ connectionString, log: () => undefined });
+
+  return new SqlitePool(connectionString) as unknown as pg.Pool;
+}

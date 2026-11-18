@@ -1,7 +1,8 @@
 import { expect, test, type Browser } from "@playwright/test";
-import pg from "pg";
+import type pg from "pg";
 
 import { e2eDatabaseUrl, e2eGoogleUrl } from "../playwright.config";
+import { openE2ePool } from "./support/database";
 import { PEOPLE, WORKSPACE_DOMAIN } from "./support/google-workspace";
 import { writeSamplePdf } from "./support/sample-pdf";
 
@@ -18,7 +19,7 @@ import { writeSamplePdf } from "./support/sample-pdf";
 let database: pg.Pool;
 
 test.beforeAll(() => {
-  database = new pg.Pool({ connectionString: e2eDatabaseUrl });
+  database = openE2ePool(e2eDatabaseUrl);
 });
 
 test.afterAll(async () => {

@@ -26,7 +26,18 @@ Every setting, and which ones are optional, is described in `.env.example`.
 
 ### 3. Start the database and apply the schema
 
-With Docker installed, this starts Postgres and applies the migrations:
+SignuDoc runs on Postgres (the default) or SQLite; see [Database](#database). The quickest start needs nothing installed: put a SQLite file in `.env`, and the migrations make it.
+
+```bash
+DATABASE_URL=sqlite:.data/signudoc.db
+BETTER_AUTH_SECRET=any-random-value-of-32-characters-or-more
+```
+
+```bash
+npm run db:migrate
+```
+
+For Postgres, with Docker installed, this starts it and applies the migrations:
 
 ```bash
 npm run db:start
@@ -95,9 +106,17 @@ E2E_STORAGE_DRIVER=blob BLOB_READ_WRITE_TOKEN=... npm run test:e2e
 
 ## Database
 
-SignuDoc uses Postgres as its only database and talks to it with `pg`. Any Postgres 15 or newer works, including Neon and Supabase.
+SignuDoc talks to Postgres with `pg`. Any Postgres 15 or newer works, including Neon and Supabase. Postgres is the default, and what Vercel and most installs use.
 
-The schema lives in `db/migrations` as plain SQL files. `npm run db:migrate` applies the ones that have not run yet and records them in the `signudoc_migrations` table, so it is safe to run on every deploy.
+It also runs on SQLite, through Node's built-in `node:sqlite` (no extra package), when `DATABASE_URL` is a `sqlite:` URL: `sqlite:/absolute/path/file.db` or `sqlite:relative/path/file.db`. That is what the fork's Cloud Run deployment uses, one instance with the file copied to Cloud Storage by Litestream ([Deploy on Google Cloud Run](google-cloud-run.md)). The app's code is the same on both: it writes Postgres SQL, and the SQLite pool in `src/lib/db/sqlite/` translates it, converts values so they come back exactly as `pg` returns them, and runs one transaction at a time. [The design](design/database-backends.md) explains how, and what to keep in mind.
+
+The schema lives in `db/migrations` as plain SQL files for Postgres. `npm run db:migrate` applies the ones that have not run yet and records them in the `signudoc_migrations` table, so it is safe to run on every deploy. On SQLite it applies `db/sqlite/baseline.sql` (everything up to the migrations listed in `db/sqlite/baseline.versions`) to a new database, then the files in `db/sqlite/migrations`.
+
+**Every schema change needs two migrations:** the Postgres one in `db/migrations`, and its SQLite version with the same file name in `db/sqlite/migrations`. CI fails without the second (`db/sqlite/migrations.test.mjs`), and the database tests compare the two schemas column by column.
+
+SQL in the app is checked against SQLite in CI as well: `src/lib/db/sqlite/rewrite.test.ts` finds every statement passed to `query`, `queryOne` and `queryMany`, translates it and prepares it against the SQLite schema. A query the translation does not support fails there, with the file and line; the fix goes in `src/lib/db/sqlite/rewrite.ts` or `functions.ts`, not in the query. A query built from pieces the test cannot work out needs a stand-in in `src/lib/db/sqlite/sql-corpus-exceptions.ts`.
+
+To copy an install's data between databases, of either kind: `npm run transfer-database -- --from <URL> --to <URL>`.
 
 ## Email delivery
 
@@ -138,7 +157,7 @@ npm run test:db
 npm run test:e2e
 ```
 
-`npm test` runs the unit tests, which need nothing else running. `npm run test:db` runs the few tests that need a real Postgres (the rate limit counter, the cleanup job's lock and first-run setup) against the `signudoc_e2e` database.
+`npm test` runs the unit tests, which need nothing else running (the SQLite backend's included). `npm run test:db` runs the tests that need a real database against the `signudoc_e2e` database on Postgres, or on SQLite with `E2E_DATABASE_URL=sqlite:/tmp/signudoc/signudoc_e2e.db npm run test:db`, which gives each test file a new file of its own. `npm run test:e2e` takes the same `E2E_DATABASE_URL`. CI runs both on both backends.
 
 `npm run test:e2e` runs the Playwright end-to-end test. It starts the app against a separate `signudoc_e2e` database on the same Postgres server, sets the site up as its first visitor, signs up a sender, sends a PDF, signs it as the recipient and downloads the results. Then a second Playwright project, `google-workspace`, signs in with Google against the fake Google server below. Install the browser once with `npx playwright install chromium`.
 

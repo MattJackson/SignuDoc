@@ -1,6 +1,15 @@
 # Deploys this branch to Google Cloud Run: builds the image, pushes it to
-# Artifact Registry, runs the migrations with it, then points the service
-# at it by digest. Run it from the Actions tab; it never runs by itself.
+# Artifact Registry, then points the service at it by digest. Run it from
+# the Actions tab; it never runs by itself.
+#
+# The database backend (docs/design/database-backends.md):
+# - sqlite (the default): the service runs one instance with a SQLite file
+#   that Litestream copies to Cloud Storage. The image migrates the database
+#   when it starts, so there is no migrate job. This workflow also sets the
+#   service's database, storage and backup settings, its secrets, and its
+#   one-instance limits, so a service made by hand is brought in line.
+# - postgres: Cloud SQL. The migrate job runs with the new image first, and
+#   every other setting of the service is kept.
 #
 # It signs in to Google Cloud through Workload Identity Federation, so no
 # key is stored. deploy/google-cloud/setup.sh with GITHUB_REPOSITORY set
@@ -14,6 +23,12 @@
 #   GCP_DEPLOY_SERVICE_ACCOUNT      signudoc-deploy@my-project.iam.gserviceaccount.com
 #   CLOUD_RUN_SERVICE               optional, signudoc
 #   ARTIFACT_REPOSITORY             optional, signudoc
+#   DB_BACKEND                      optional, sqlite or postgres (sqlite)
+#   APP_URL                         optional, the site's address (https://sign.getbusbar.com)
+#
+# On SQLite the buckets are the ones setup.sh makes: <project>-<service>-files
+# for documents, <project>-<service>-db for the database replica and
+# <project>-<service>-backups for backups.
 #
 # See docs/google-cloud-run.md.
 
@@ -23,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       migrate:
-        description: "Run the database migrations before deploying."
+        description: "Postgres only: run the database migrations before deploying."
         type: boolean
         default: true
 
@@ -46,6 +61,8 @@ jobs:
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'signudoc' }}
       REPOSITORY: ${{ vars.ARTIFACT_REPOSITORY || 'signudoc' }}
+      DB_BACKEND: ${{ vars.DB_BACKEND || 'sqlite' }}
+      APP_URL: ${{ vars.APP_URL || 'https://sign.getbusbar.com' }}
     steps:
       - name: Check the settings
         env:
@@ -58,6 +75,10 @@ jobs:
               exit 1
             fi
           done
+          case "${DB_BACKEND}" in
+            sqlite | postgres) ;;
+            *) echo "::error::DB_BACKEND must be sqlite or postgres."; exit 1 ;;
+          esac
 
       - uses: actions/checkout@v6
 
@@ -80,17 +101,42 @@ jobs:
           echo "Image: \`${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Run the migrations
-        if: inputs.migrate
+        if: inputs.migrate && env.DB_BACKEND == 'postgres'
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
           gcloud run jobs update "${SERVICE}-migrate" --project="${PROJECT_ID}" --region="${REGION}" --image="${IMAGE}"
           gcloud run jobs execute "${SERVICE}-migrate" --project="${PROJECT_ID}" --region="${REGION}" --wait
 
-      - name: Deploy
+      - name: Deploy (Postgres)
+        if: env.DB_BACKEND == 'postgres'
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
           gcloud run services update "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --image="${IMAGE}"
+
+      # The database is a file on the one instance, copied to the replica
+      # bucket by Litestream, and migrated when the container starts.
+      - name: Deploy (SQLite)
+        if: env.DB_BACKEND == 'sqlite'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          env_vars="APP_URL=${APP_URL}"
+          env_vars+=",DATABASE_URL=sqlite:/data/signudoc.db"
+          env_vars+=",LITESTREAM_REPLICA_URL=gs://${PROJECT_ID}-${SERVICE}-db/db"
+          env_vars+=",STORAGE_DRIVER=gcs,GCS_BUCKET=${PROJECT_ID}-${SERVICE}-files"
+          env_vars+=",BACKUP_GCS_BUCKET=${PROJECT_ID}-${SERVICE}-backups"
+          secrets="BETTER_AUTH_SECRET=${SERVICE}-better-auth-secret:latest"
+          secrets+=",SETUP_TOKEN=${SERVICE}-setup-token:latest"
+          secrets+=",RETENTION_JOB_SECRET=${SERVICE}-retention-job-secret:latest"
+          gcloud run deploy "${SERVICE}" --quiet --project="${PROJECT_ID}" --region="${REGION}" \
+            --image="${IMAGE}" --service-account="${SERVICE}-run@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --max-instances=1 --min-instances=0 --no-cpu-throttling --execution-environment=gen2 \
+            --cpu=1 --memory=1Gi --port=8080 \
+            --update-env-vars="${env_vars}" --update-secrets="${secrets}"
+
+      - name: Summary
+        run: |
           url="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
-          echo "Deployed to ${url}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Deployed to ${url} (${DB_BACKEND})" >> "${GITHUB_STEP_SUMMARY}"

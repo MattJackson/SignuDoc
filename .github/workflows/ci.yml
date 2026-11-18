@@ -35,9 +35,20 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
 
+  # Both database backends (docs/design/database-backends.md): Postgres, the
+  # default, and SQLite, what the fork's Cloud Run deployment runs. The
+  # Postgres service is only used by the first.
   e2e:
-    name: End-to-end test
+    name: End-to-end test (${{ matrix.backend }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: postgres
+            database: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+          - backend: sqlite
+            database: sqlite:/tmp/signudoc-sqlite/signudoc_e2e.db
     services:
       postgres:
         image: postgres:17
@@ -63,7 +74,7 @@ jobs:
       # the cleanup job's lock.
       - run: npm run test:db
         env:
-          E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+          E2E_DATABASE_URL: ${{ matrix.database }}
       - run: npx playwright install --with-deps chromium
       # Starts the app with the eID Easy and Google stand-ins beside it
       # (playwright.config.ts). The Google project (e2e/google-workspace.spec.ts)
@@ -71,11 +82,11 @@ jobs:
       # flow has set the site up.
       - run: npm run test:e2e
         env:
-          E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+          E2E_DATABASE_URL: ${{ matrix.database }}
       - uses: actions/upload-artifact@v6
         if: failure()
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.backend }}
           path: test-results/
           retention-days: 7
       # Full-page screenshots of the administrator's screens
@@ -141,3 +152,42 @@ jobs:
           test "$(docker exec signudoc id -u)" != "0"
       - if: always()
         run: docker logs signudoc || true
+      # The SQLite backend, as the Cloud Run deployment runs it, with a
+      # Litestream replica on disk instead of in Cloud Storage: the image
+      # migrates the database itself at start, a write made just before a
+      # normal stop reaches the replica, and a fresh container (an empty
+      # disk, as every Cloud Run instance has) restores it.
+      - name: SQLite with a Litestream replica
+        run: |
+          mkdir -p /tmp/litestream-replica
+          chmod 777 /tmp/litestream-replica
+          start() {
+            docker run -d --name "$1" --network host \
+              -v /tmp/litestream-replica:/replica \
+              -e DATABASE_URL=sqlite:/data/signudoc.db \
+              -e LITESTREAM_REPLICA_URL=file:///replica/db \
+              -e PORT=8081 \
+              -e APP_URL=http://localhost:8081 \
+              -e BETTER_AUTH_SECRET=ci-docker-secret-0123456789abcdef0123456789 \
+              -e EMAIL_DRIVER=capture \
+              signudoc:ci
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8081/api/health; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8081/api/health
+            curl -fsS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8081/login
+          }
+          sql() {
+            docker exec "$1" node -e 'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync("/data/signudoc.db", { timeout: 5000 }); const sql = process.argv[1]; console.log(JSON.stringify(/^\s*select/i.test(sql) ? db.prepare(sql).all() : db.prepare(sql).run()));' "$2"
+          }
+          start sqlite-first
+          test "$(sql sqlite-first "select count(*) as n from signudoc_migrations")" != '[{"n":0}]'
+          sql sqlite-first "insert into rate_limits (key, count, expires_at) values ('ci-marker', 1, 1)"
+          # SIGTERM: the server stops, then Litestream syncs what is left.
+          docker stop sqlite-first
+          docker logs sqlite-first
+          start sqlite-second
+          test "$(sql sqlite-second "select count(*) as n from rate_limits where key = 'ci-marker'")" = '[{"n":1}]'
+      - if: always()
+        run: docker logs sqlite-second || true
