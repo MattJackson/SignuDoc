@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import * as routes from "./drive-routes.ts";
+import * as routes from "./drive-failures.ts";
 import { DriveAuthorizationError } from "./integrations/google/drive-oauth.ts";
 
 test("Drive open sends only a missing connection to connect", () => {
