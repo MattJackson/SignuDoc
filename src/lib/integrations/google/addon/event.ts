@@ -31,7 +31,11 @@ const driveItemSchema = z.object({
   id: shortText,
   iconUrl: z.string().max(2048).optional(),
   mimeType: z.string().max(255).optional(),
-  title: z.string().max(1024).optional(),
+  // Cut to length rather than refusing the whole request.
+  title: z
+    .string()
+    .transform((title) => title.slice(0, 1024))
+    .optional(),
 });
 
 const eventSchema = z.object({
@@ -53,7 +57,12 @@ const eventSchema = z.object({
   drive: z
     .object({
       activeCursorItem: driveItemSchema.optional(),
-      selectedItems: z.array(driveItemSchema).max(100).optional(),
+      // A long selection is cut to its first 100, not refused.
+      selectedItems: z
+        .array(z.unknown())
+        .transform((items) => items.slice(0, 100))
+        .pipe(z.array(driveItemSchema))
+        .optional(),
     })
     .optional(),
   gmail: z

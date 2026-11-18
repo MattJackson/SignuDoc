@@ -5,7 +5,11 @@ import {
   addonWorkspaceDomains,
   readStoredAddonConfig,
 } from "@/lib/google-addon";
-import { pushCard, signInCard } from "@/lib/integrations/google/addon/cards";
+import {
+  pushCard,
+  rateLimitedResponse,
+  signInCard,
+} from "@/lib/integrations/google/addon/cards";
 import {
   addonEndpointUrl,
   isAddonTrigger,
@@ -161,16 +165,7 @@ export async function POST(request: Request, context: AddonRouteContext) {
   });
 
   if (!limited.allowed) {
-    return answer(
-      {
-        renderActions: {
-          action: {
-            notification: { text: "Too many requests. Try again in a minute." },
-          },
-        },
-      },
-      200,
-    );
+    return answer(rateLimitedResponse(trigger), 200);
   }
 
   try {

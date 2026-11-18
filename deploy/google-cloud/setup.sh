@@ -75,8 +75,17 @@ APP_URL="${APP_URL:-${RUN_URL}}"
 
 secret_name() { printf '%s-%s' "${SERVICE}" "$1"; }
 
+# Whether the secret has an enabled version. A gcloud failure stops the script,
+# so it never reads as "no value yet".
 has_secret_value() {
-  [[ -n "$(gc secrets versions list "$1" --filter='state=ENABLED' --limit=1 --format='value(name)' 2>/dev/null)" ]]
+  local versions
+
+  versions="$(gc secrets versions list "$1" --filter='state=ENABLED' --limit=1 \
+    --format='value(name)')" || {
+    echo "Could not read the versions of secret $1." >&2
+    exit 1
+  }
+  [[ -n "${versions}" ]]
 }
 
 # Creates the secret if it is missing. With a value, stores it unless the
@@ -102,19 +111,11 @@ put_secret() {
 put_generated_secret() {
   local name="$1"
 
-  local versions
-
-  # Created first, so listing its versions only fails for a real reason, and
-  # then a failure stops the script instead of reading as "no value yet".
+  # Created first, so listing its versions only fails for a real reason.
   exists secrets describe "${name}" ||
     cmd secrets create "${name}" --replication-policy=automatic
-  versions="$(gc secrets versions list "${name}" --filter='state=ENABLED' --limit=1 \
-    --format='value(name)')" || {
-    echo "Could not read the versions of secret ${name}." >&2
-    exit 1
-  }
 
-  if [[ -n "${versions}" ]]; then
+  if has_secret_value "${name}"; then
     put_secret "${name}"
   else
     put_secret "${name}" "$(openssl rand -hex 32)"
@@ -172,12 +173,7 @@ if [[ "${DB_BACKEND}" == postgres ]]; then
     cmd sql databases create "${DB_NAME}" --instance="${DB_INSTANCE}"
   exists secrets describe "$(secret_name database-url)" ||
     cmd secrets create "$(secret_name database-url)" --replication-policy=automatic
-  db_versions="$(gc secrets versions list "$(secret_name database-url)" --filter='state=ENABLED' \
-    --limit=1 --format='value(name)')" || {
-    echo "Could not read the versions of secret $(secret_name database-url)." >&2
-    exit 1
-  }
-  if [[ -z "${db_versions}" ]]; then
+  if ! has_secret_value "$(secret_name database-url)"; then
     DB_PASSWORD="$(openssl rand -hex 24)"
     if exists sql users describe "${DB_USER}" --instance="${DB_INSTANCE}"; then
       printf '  + gcloud sql users set-password %s (password not shown)\n' "${DB_USER}"

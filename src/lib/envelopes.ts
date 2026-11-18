@@ -3674,9 +3674,9 @@ export async function correctSentEnvelopeSigner(
       );
     }
 
-    // The administrator's rule about the sender's manager was checked when
-    // this was sent. Changing an approver's address must not swap out the
-    // manager it required, so the rule is checked again with the new one.
+    // The administrator's rule about the sender's manager may have been
+    // met when this was sent. Changing an approver's address must not swap
+    // out the manager it required, so the rule is checked again with the new one.
     if (
       managerLookup &&
       signer.role === "approver" &&
@@ -3684,6 +3684,14 @@ export async function correctSentEnvelopeSigner(
       (await managerPolicyAppliesTo(userId, managerLookup.policy, tx))
     ) {
       const current = await listSignersForEnvelopeId(envelopeId, tx);
+      // Refused only when this change itself breaks a rule the order met:
+      // an envelope the rule did not cover when it was sent, or a directory
+      // that cannot be asked, never stops a correction.
+      const before = judgeManagerPolicy(
+        managerLookup.policy,
+        managerLookup.found,
+        current,
+      );
       const managerCheck = judgeManagerPolicy(
         managerLookup.policy,
         managerLookup.found,
@@ -3692,7 +3700,7 @@ export async function correctSentEnvelopeSigner(
         ),
       );
 
-      if (managerCheck.status === "blocked") {
+      if (before.status === "satisfied" && managerCheck.status === "blocked") {
         throw new EnvelopeMutationError(managerCheck.message, 409);
       }
     }

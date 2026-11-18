@@ -3,8 +3,9 @@
 -- does (SQLite's own folds ASCII only). The index on lower(teams.name) is
 -- rebuilt with it. Team names that are distinct under the old lower() but
 -- equal under the new one (a team 'Équipe' next to 'équipe') would stop the
--- unique index from being built, so the later one gets a number first:
--- 'équipe' becomes 'équipe (2)'. Nothing is deleted, and with no such names
+-- unique index from being built, so the later one has the first 8 characters
+-- of its id added, after its name is cut to 60 characters: 'équipe' becomes
+-- 'équipe (1a2b3c4d)'. Nothing is deleted, and with no such names
 -- nothing changes.
 --
 -- The signer and group address indexes do not need the new function. They

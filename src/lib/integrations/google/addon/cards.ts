@@ -1,5 +1,6 @@
 import type { EnvelopeStatus } from "../../../types/domain.ts";
 import { escapeHtml } from "../../../utils/html.ts";
+import type { AddonTrigger } from "./config.ts";
 import type { AddonContract } from "./contracts.ts";
 import type { DriveFileKind } from "./drive.ts";
 import type { GmailSender, SignableAttachment } from "./gmail.ts";
@@ -119,6 +120,17 @@ export function notify(message: string): RenderActions {
   return {
     renderActions: { action: { notification: { text: clip(message, 200) } } },
   };
+}
+
+/**
+ * The answer for a person who has made too many requests. Only an action may
+ * answer with a bare message; the homepage and contextual triggers must
+ * show a card.
+ */
+export function rateLimitedResponse(trigger: AddonTrigger): RenderActions {
+  return trigger === "action"
+    ? notify("Too many requests. Try again in a minute.")
+    : pushCard(messageCard("Too many requests", "Try again in a minute."));
 }
 
 /**

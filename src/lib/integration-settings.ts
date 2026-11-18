@@ -267,12 +267,16 @@ function describeChange(
  *
  * The update can be a function of the settings as they are stored once
  * the rows are locked, for a change made from what is there now (merging
- * one entry into a JSON value, say).
+ * one entry into a JSON value, say). It is also given the transaction, so
+ * work that must stand or fall with the save can run inside it.
  */
 export async function saveIntegrationSettings(
   update:
     | IntegrationSettingsUpdate
-    | ((before: IntegrationSettings) => IntegrationSettingsUpdate),
+    | ((
+        before: IntegrationSettings,
+        tx: DbExecutor,
+      ) => IntegrationSettingsUpdate | Promise<IntegrationSettingsUpdate>),
   actor: IntegrationSettingsActor | null,
   {
     area,
@@ -288,7 +292,7 @@ export async function saveIntegrationSettings(
     const now = Math.floor(Date.now() / 1000);
 
     const changesToMake =
-      typeof update === "function" ? update(before) : update;
+      typeof update === "function" ? await update(before, tx) : update;
 
     for (const [rawKey, rawValue] of Object.entries(changesToMake)) {
       if (!isKnownKey(rawKey) || rawValue === undefined) {
