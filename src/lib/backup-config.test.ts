@@ -433,3 +433,23 @@ test("the local store lists its files without their metadata", async () => {
     await rm(rootDir, { force: true, recursive: true });
   }
 });
+
+test("an invalid backup folder in the environment is a configuration problem, not a crash", () => {
+  const broken = {
+    ...env,
+    BACKUP_GCS_BUCKET: "from-env",
+    BACKUP_GCS_PREFIX: "a//b",
+  };
+  const config = resolveBackupConfig(
+    stored({ destination: "gcs", gcsBucket: "saved" }),
+    broken,
+  );
+
+  assert.equal(config.target, null);
+  assert.match(config.problem ?? "", /BACKUP_GCS_PREFIX/);
+
+  const status = summarizeBackupStatus(config, []);
+
+  assert.equal(status.state, "failing");
+  assert.match(status.message, /BACKUP_GCS_PREFIX/);
+});

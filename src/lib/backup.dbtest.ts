@@ -452,3 +452,56 @@ test("a file written again at the same size is copied again", async () => {
   assert.equal(third.filesCopied, 0);
   assert.equal(third.filesUnchanged, 1);
 });
+
+test("a file whose copy fails before it is read is let go, in a backup and in a restore", async () => {
+  let cancelled = 0;
+  const source = memoryStore();
+  const target = memoryStore();
+  const body = () =>
+    new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled += 1;
+      },
+      pull(controller) {
+        controller.enqueue(new Uint8Array(4));
+      },
+    });
+
+  await source.put("a.pdf", Buffer.from("a"), {
+    contentType: "application/pdf",
+  });
+  source.get = async () => ({ contentType: "application/pdf", stream: body() });
+
+  // The target refuses every file before reading any of it.
+  const put = target.put;
+
+  target.put = async (pathname, stream, options) => {
+    if (pathname.startsWith("files/")) {
+      throw new Error("denied");
+    }
+
+    return put(pathname, stream, options);
+  };
+
+  const summary = await runBackup({ database, keepDays: 30, source, target });
+
+  assert.deepEqual(summary.fileFailures, ["a.pdf"]);
+  assert.equal(cancelled, 1, "the source download was given up");
+
+  // And the other way round.
+  const backup = memoryStore();
+  const app = memoryStore();
+
+  await backup.put("files/b.pdf", Buffer.from("b"), {
+    contentType: "application/pdf",
+  });
+  backup.get = async () => ({ contentType: "application/pdf", stream: body() });
+  app.put = async () => {
+    throw new Error("denied");
+  };
+
+  const restored = await restoreFiles({ source: backup, target: app });
+
+  assert.deepEqual(restored.failures, ["files/b.pdf"]);
+  assert.equal(cancelled, 2, "the backup's copy was given up");
+});

@@ -21,6 +21,7 @@ import {
   claimDriveExport,
   claimDueDriveExports,
   exportClaimedRow,
+  requeueDriveExport,
   settleScheduledDriveExports,
 } from "./drive-export.ts";
 
@@ -442,5 +443,37 @@ test("a failed try waits to retry; a good one records the files", async () => {
     certificate_file_id: "file-2",
     signed_pdf_file_id: "file-1",
     status: "exported",
+  });
+});
+
+test("an export being tried is not put back in line under the attempt that holds it", async () => {
+  const now = unixNow();
+  const beingTried = await createExport({
+    attempts: 1,
+    lockedUntil: now + 300,
+    nextAttemptAt: now - 60,
+    status: "pending",
+  });
+
+  assert.equal(await requeueDriveExport(database, beingTried, now), null);
+
+  const held = await database.query<{ attempts: number; locked_until: string }>(
+    `select attempts, locked_until from drive_exports where envelope_id = $1`,
+    [beingTried],
+  );
+
+  assert.equal(Number(held.rows[0]?.locked_until), now + 300);
+  assert.equal(held.rows[0]?.attempts, 1);
+
+  // Once the lock has lapsed it can be retried.
+  const lapsed = await createExport({
+    attempts: 2,
+    lockedUntil: now - 1,
+    nextAttemptAt: now - 60,
+    status: "failed",
+  });
+
+  assert.deepEqual(await requeueDriveExport(database, lapsed, now), {
+    title: "Lease",
   });
 });
