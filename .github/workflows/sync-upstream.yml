@@ -127,7 +127,7 @@ jobs:
             branch="$branch-$short"
           fi
 
-          commits=$(git log --no-merges --format='%h %s' "HEAD..$target" | head -n 100)
+          commits=$(git log -n 100 --no-merges --format='%h %s' "HEAD..$target")
           count=$(git rev-list --count --no-merges "HEAD..$target")
           merge_base=$(git merge-base HEAD "$target")
           compare="https://github.com/$UPSTREAM/compare/$merge_base...$target"
