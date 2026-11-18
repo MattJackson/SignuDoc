@@ -72,8 +72,23 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7
       # Full-page screenshots of the administrator's screens
-      # (e2e/screenshots.spec.ts), to look at without running the app.
+      # (e2e/screenshots.spec.ts), to look at without running the app. Taken
+      # on the install the tests left behind, whether they passed or not,
+      # with the build they made.
+      - run: npx playwright test --project=screenshots
+        if: always()
+        env:
+          E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+          E2E_KEEP_DATABASE: "1"
+          E2E_NO_BUILD: "1"
+          E2E_SCREENSHOTS: "1"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -81,12 +96,6 @@ jobs:
           path: test-results/screenshots/
           if-no-files-found: ignore
           retention-days: 14
-      - uses: actions/upload-artifact@v6
-        if: failure()
-        with:
-          name: playwright-traces
-          path: test-results/
-          retention-days: 7
 
   docker:
     name: Docker image
