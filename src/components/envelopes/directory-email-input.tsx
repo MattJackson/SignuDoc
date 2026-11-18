@@ -50,12 +50,20 @@ export function DirectoryEmailInput({
     setHighlighted(-1);
   }
 
-  function search(term: string) {
+  // Drops the queued lookup and any request still on its way, so a late
+  // answer cannot reopen the list.
+  function cancelPending() {
     if (timer.current) {
       clearTimeout(timer.current);
     }
 
     request.current?.abort();
+    timer.current = null;
+    request.current = null;
+  }
+
+  function search(term: string) {
+    cancelPending();
 
     if (directoryOff.current || term.trim().length < MIN_TERM_LENGTH) {
       setPeople([]);
@@ -76,6 +84,11 @@ export function DirectoryEmailInput({
             people?: Person[];
           } | null;
 
+          // Superseded or cancelled while the body was read.
+          if (controller.signal.aborted) {
+            return;
+          }
+
           if (payload?.enabled === false) {
             directoryOff.current = true;
           }
@@ -93,6 +106,7 @@ export function DirectoryEmailInput({
   }
 
   function pick(person: Person) {
+    cancelPending();
     onPick(person);
     setPeople([]);
     close();
@@ -133,6 +147,7 @@ export function DirectoryEmailInput({
         disabled={disabled}
         maxLength={maxLength}
         onBlur={() => {
+          cancelPending();
           close();
           onBlur?.();
         }}
