@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { resolveWorkspaceDomains } from "./auth/sso.ts";
+import { resolveWorkspaceDomains, type WorkspaceDomains } from "./auth/sso.ts";
 import {
   getIntegrationSettings,
   saveIntegrationSettings,
@@ -61,7 +61,7 @@ export async function readStoredAddonConfig(
 /** The Workspace domains the add-on's users must be in, as for sign-in. */
 export async function addonWorkspaceDomains(
   env: EnvSource = process.env,
-): Promise<string[]> {
+): Promise<WorkspaceDomains> {
   const [settings, stored] = await Promise.all([
     getSettings(env),
     getIntegrationSettings(env),
@@ -72,7 +72,7 @@ export async function addonWorkspaceDomains(
     signupDomains:
       settings.signupMode === "domains" ? settings.allowedEmailDomains : [],
     stored,
-  }).domains;
+  });
 }
 
 export async function getGoogleAddonView(

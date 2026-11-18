@@ -201,3 +201,53 @@ test("the last settings read are remembered for code that cannot wait", async ()
   await getIntegrationSettings(env);
   assert.equal(peekIntegrationSettings()?.["resend.apiKey"], KEY);
 });
+
+test("a secret keeps the spaces it was given, and other settings are trimmed", async () => {
+  await saveIntegrationSettings(
+    { "google.adminGroup": " a@example.test ", "seal.p12Password": " pw " },
+    actor,
+    { area: "test", database, env },
+  );
+
+  const settings = await readIntegrationSettings(database, env);
+
+  assert.equal(settings["seal.p12Password"], " pw ");
+  assert.equal(settings["google.adminGroup"], "a@example.test");
+});
+
+test("removing a stored secret that can no longer be read still removes it, and says so", async () => {
+  await saveIntegrationSettings({ "sso.clientSecret": "shh" }, actor, {
+    area: "test",
+    database,
+    env,
+  });
+
+  // The auth secret has changed since: the stored value cannot be opened.
+  const changed = { BETTER_AUTH_SECRET: "b".repeat(40) };
+
+  await saveIntegrationSettings({ "sso.clientSecret": null }, actor, {
+    area: "removal",
+    database,
+    env: changed,
+  });
+
+  const rows = await database.query(
+    `select 1 from public.integration_settings where key = 'sso.clientSecret'`,
+  );
+
+  assert.equal(rows.rowCount, 0, "the row is gone");
+  assert.deepEqual(await lastSettingsEvent(), {
+    area: "removal",
+    changes: { "sso.clientSecret": { from: "set", to: null } },
+  });
+
+  // Removing what is not there is still no change.
+  const earlier = await lastSettingsEvent();
+
+  await saveIntegrationSettings({ "sso.clientSecret": null }, actor, {
+    area: "again",
+    database,
+    env,
+  });
+  assert.deepEqual(await lastSettingsEvent(), earlier);
+});

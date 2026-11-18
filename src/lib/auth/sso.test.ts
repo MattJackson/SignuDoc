@@ -196,3 +196,30 @@ test("the hd claim decides whether a Google account is in the Workspace", () => 
 test("the redirect URI is Better Auth's callback for the sso provider", () => {
   assert.equal(ssoRedirectPath(), "/api/auth/callback/sso");
 });
+
+test("Workspace domains in the environment that are all invalid let no one in", () => {
+  const resolved = resolveWorkspaceDomains({
+    env: { GOOGLE_WORKSPACE_DOMAINS: "acme" },
+    signupDomains: [],
+    stored: null,
+  });
+
+  assert.equal(
+    checkWorkspaceAccount({ hd: "other.com" }, resolved).allowed,
+    false,
+  );
+  assert.equal(checkWorkspaceAccount({ hd: "acme" }, resolved).allowed, false);
+
+  // A list that is not set at all still means any Workspace account.
+  assert.equal(
+    checkWorkspaceAccount(
+      { hd: "other.com" },
+      resolveWorkspaceDomains({
+        env: {},
+        signupDomains: [],
+        stored: null,
+      }),
+    ).allowed,
+    true,
+  );
+});

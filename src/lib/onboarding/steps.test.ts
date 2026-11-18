@@ -410,3 +410,10 @@ test("storage is described from the deployment's setting", async () => {
     "needs_attention",
   );
 });
+
+test("storage is not done while the driver cannot be used", async () => {
+  assert.equal(
+    await check("storage", context({ env: { STORAGE_DRIVER: "gcs" } })),
+    "needs_attention",
+  );
+});

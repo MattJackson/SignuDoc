@@ -5,6 +5,7 @@ import {
   isBackupStoreTheAppStore,
   parseKeepDays,
   readBackupSettings,
+  readBackupTargetFromEnv,
 } from "./backup.ts";
 
 test("backups are off until a backup target is set", () => {
@@ -100,4 +101,17 @@ test("the app's own bucket is refused as the backup bucket", () => {
     false,
   );
   assert.equal(isBackupStoreTheAppStore(settings, {}), false);
+});
+
+test("a folder in the environment that cannot be one is reported by name", () => {
+  for (const prefix of ["a//b", "../x"]) {
+    assert.throws(
+      () =>
+        readBackupTargetFromEnv({
+          BACKUP_GCS_BUCKET: "b",
+          BACKUP_GCS_PREFIX: prefix,
+        }),
+      /BACKUP_GCS_PREFIX/,
+    );
+  }
 });

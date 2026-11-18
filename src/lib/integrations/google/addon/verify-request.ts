@@ -1,3 +1,7 @@
+import {
+  splitWorkspaceDomains,
+  type WorkspaceDomains,
+} from "../../../auth/sso.ts";
 import type { AddonConfig } from "./config.ts";
 import {
   IdTokenError,
@@ -60,7 +64,7 @@ export type AuthenticateAddonRequestInput = {
   /** The event's own copy of the system ID token. */
   systemIdToken: string;
   userIdToken: string;
-  workspaceDomains: readonly string[];
+  workspaceDomains: readonly string[] | WorkspaceDomains;
 };
 
 function tokenProblem(error: unknown): string | null {
@@ -141,12 +145,14 @@ export async function authenticateAddonRequest({
     );
   }
 
+  const { domains, noneAllowed } = splitWorkspaceDomains(workspaceDomains);
   const hostedDomain =
     typeof user.hd === "string" ? user.hd.trim().toLowerCase() : "";
 
   if (
     !hostedDomain ||
-    (workspaceDomains.length > 0 && !workspaceDomains.includes(hostedDomain))
+    noneAllowed ||
+    (domains.length > 0 && !domains.includes(hostedDomain))
   ) {
     throw new AddonRequestError(
       "outside_workspace",

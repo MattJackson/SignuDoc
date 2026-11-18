@@ -56,6 +56,7 @@ import {
   mayUsePassword,
   resolveWorkspaceDomains,
   SSO_PROVIDER_ID,
+  type WorkspaceDomains,
 } from "./sso.ts";
 import { getIntegrationSettings } from "../integration-settings.ts";
 import { recordSystemAuditEvent } from "../services/system-audit.ts";
@@ -652,7 +653,7 @@ export function createAppAuth({
  * The Workspace domains Google sign-in is held to right now, read fresh:
  * like the sign-up rule, a change must hold at once.
  */
-async function readWorkspaceDomains(env: EnvSource): Promise<string[]> {
+async function readWorkspaceDomains(env: EnvSource): Promise<WorkspaceDomains> {
   const [stored, settings] = await Promise.all([
     getIntegrationSettings(env),
     readStoredSettings(),
@@ -663,7 +664,7 @@ async function readWorkspaceDomains(env: EnvSource): Promise<string[]> {
     signupDomains:
       settings?.signupMode === "domains" ? settings.allowedEmailDomains : [],
     stored,
-  }).domains;
+  });
 }
 
 /**

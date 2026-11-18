@@ -871,7 +871,9 @@ export async function listDriveExports(
 /**
  * Puts an export back in line now, with its tries counted from zero, and
  * reports whether there was one to retry. An export already done is
- * tried again too: it finds its files and only labels them again.
+ * tried again too: it finds its files and only labels them again. One
+ * that is being tried right now is left alone (null), so two tries of the
+ * same envelope never run together.
  */
 export async function requeueDriveExport(
   database: DbExecutor,
@@ -890,6 +892,7 @@ export async function requeueDriveExport(
         updated_at = $2
       FROM envelopes e
       WHERE x.envelope_id = $1 AND e.id = x.envelope_id
+        AND (x.locked_until IS NULL OR x.locked_until < $2)
       RETURNING e.title
     `,
     [envelopeId, nowSeconds],

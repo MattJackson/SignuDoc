@@ -20,8 +20,11 @@ import {
   type GcsTokenSource,
   readGcsLocation,
 } from "./services/storage/gcs.ts";
-import { createLocalStorageService } from "./services/storage/local.ts";
-import { type EnvSource, readEnv } from "./utils/env.ts";
+import {
+  createLocalStorageService,
+  resolveLocalStorageRoot,
+} from "./services/storage/local.ts";
+import { type EnvSource } from "./utils/env.ts";
 
 // The places a backup reads from and writes to, as BackupStores
 // (backup.ts): Vercel Blob, a Google Cloud Storage bucket, or the local
@@ -107,10 +110,7 @@ export function createLocalBackupStore(
   env: EnvSource = process.env,
 ): BackupStore {
   const storage = createLocalStorageService({ env });
-  const rootDir = path.resolve(
-    /*turbopackIgnore: true*/ readEnv(env, "STORAGE_LOCAL_DIR") ??
-      ".data/storage",
-  );
+  const rootDir = resolveLocalStorageRoot(env);
 
   async function walk(dir: string, into: BackupBlob[]) {
     let entries;
@@ -223,7 +223,7 @@ function requireCredentials(
 
 /** The install's own files, wherever the storage driver keeps them. */
 export function createAppFilesStore({
-  credentials = getGoogleCredentials(),
+  credentials,
   env = process.env,
 }: {
   credentials?: GcsTokenSource | null;
@@ -242,7 +242,9 @@ export function createAppFilesStore({
       return createGcsBackupStore({
         client: createGcsClient({
           bucket: location.bucket,
-          credentials: requireCredentials(credentials),
+          credentials: requireCredentials(
+            credentials ?? getGoogleCredentials(),
+          ),
         }),
         prefix: location.prefix,
       });
@@ -255,7 +257,7 @@ export function createAppFilesStore({
 /** The store a backup target names. */
 export function createBackupTargetStore(
   target: BackupTarget,
-  credentials: GcsTokenSource | null = getGoogleCredentials(),
+  credentials?: GcsTokenSource | null,
 ): BackupStore {
   if (target.kind === "blob") {
     return createVercelBlobStore(target.token);
@@ -264,7 +266,7 @@ export function createBackupTargetStore(
   return createGcsBackupStore({
     client: createGcsClient({
       bucket: target.bucket,
-      credentials: requireCredentials(credentials),
+      credentials: requireCredentials(credentials ?? getGoogleCredentials()),
     }),
     prefix: target.prefix,
   });

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Pool } from "pg";
 import type { Resend } from "resend";
 
+import { replaceDbPoolForTests } from "../db/connection.ts";
 import { createEmailService } from "./email.ts";
+import { ServiceConfigurationError } from "./service-config.ts";
 
 // What the Resend client is asked to do when the service turns a request
 // away for rate. Nothing here talks to Resend.
@@ -129,4 +132,87 @@ test("a batch turned away for rate is sent again too", async () => {
 
   assert.equal(deliveries[0]?.messageId, "email_1");
   assert.equal(requests(), 2);
+});
+
+// The Resend key saved in the app, as the settings cache holds it.
+function cacheStoredKey(key: string | null) {
+  globalThis.__signudocIntegrationSettings = {
+    expiresAt: Date.now() + 60_000,
+    value: key ? { "resend.apiKey": key } : {},
+  };
+}
+
+const addresses = async () => ({
+  senderAddress: "Example <hello@example.test>",
+  supportAddress: null,
+});
+
+test("mail goes out with the Resend key saved now, not the one saved when the service was made", async () => {
+  const originalFetch = globalThis.fetch;
+  const authorizations: (string | null)[] = [];
+
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    authorizations.push(new Headers(init?.headers).get("authorization"));
+
+    return Response.json({ id: "email_1" });
+  }) as typeof fetch;
+
+  try {
+    cacheStoredKey("re_keyA");
+
+    const service = createEmailService({
+      env: {},
+      resolveAddresses: addresses,
+    });
+
+    await service.send(MESSAGE);
+    // The key is replaced in Settings while the service is still in use.
+    cacheStoredKey("re_keyB");
+    await service.send(MESSAGE);
+
+    assert.deepEqual(authorizations, ["Bearer re_keyA", "Bearer re_keyB"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.__signudocIntegrationSettings = undefined;
+  }
+});
+
+test("a saved key is looked for again after a startup read that failed", async () => {
+  const database = {
+    queries: 0,
+    async query() {
+      database.queries += 1;
+
+      return {
+        rows: [{ key: "resend.apiKey", secret: false, value: "re_saved" }],
+      };
+    },
+  };
+  const replaced = replaceDbPoolForTests(database as unknown as Pool);
+
+  globalThis.__signudocIntegrationSettings = undefined;
+
+  try {
+    assert.throws(
+      () => createEmailService({ env: {}, resolveAddresses: addresses }),
+      ServiceConfigurationError,
+    );
+
+    for (let turn = 0; turn < 20 && database.queries === 0; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    assert.equal(database.queries, 1, "the settings were read");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.doesNotThrow(() =>
+      createEmailService({ env: {}, resolveAddresses: addresses }),
+    );
+  } finally {
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+
+    globalThis.__signudocIntegrationSettings = undefined;
+  }
 });
