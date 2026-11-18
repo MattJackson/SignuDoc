@@ -8,6 +8,42 @@ release says when it does.
 
 ## [Unreleased]
 
+## [0.5.0] - Unreleased
+
+The first release of this fork, [MattJackson/SignuDoc](https://github.com/MattJackson/SignuDoc):
+SignuDoc for organizations on Google Workspace and Google Cloud, which still
+deploys to Vercel as before. It is built on SignuDoc 0.4.0 from
+[NYLLON-SOFTWARE/SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc),
+with every later change on its main branch up to 2026-11-17. The fork's own
+version numbers start at 0.5.0; Settings shows the upstream version a build
+is based on (docs/development.md, "Maintaining the fork").
+
+### Google Workspace and Google Cloud
+
+- Sign in with Google, held to the organization's Workspace by the ID
+  token's hd claim, with an administrator group in Google Groups and
+  recipient suggestions from the Workspace directory.
+- One Docker image for Google Cloud Run, file storage and backups in Google
+  Cloud Storage, and shared Google credentials (the metadata server on
+  Google Cloud, or a service account key anywhere else).
+- Signers can sign at the same time, and teams can see each other's
+  envelopes.
+
+### Updates
+
+- Settings, SignuDoc, checks this fork's releases, shows the latest one's
+  notes, and names the upstream version the install is built on.
+  `SIGNUDOC_RELEASES_REPO` takes releases from another owner/repository.
+- The Update SignuDoc workflow in a copy takes releases from this fork, or
+  from the repository variable `SIGNUDOC_RELEASES_REPO`.
+- A weekly workflow in the fork brings in the original project's changes as
+  a pull request, listing any files that clash.
+
+### Testing
+
+- A fake Google server for tests: sign-in, the Admin SDK directory and
+  Drive. The end-to-end test signs in with Google against it.
+
 ## [0.4.0] - 2026-11-17
 
 A name field, and fixes for nine reported bugs. This release changes the

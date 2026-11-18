@@ -75,17 +75,39 @@ export function UpdatesPanel({
                 (commit <code className="text-(--fg)">{status.commit}</code>)
               </>
             ) : null}
-            . New versions are published on{" "}
+            . New versions are published on GitHub, in{" "}
             <a
               className={linkClassName}
               href={status.releasesUrl}
               rel="noreferrer"
               target="_blank"
             >
-              GitHub
+              {status.releasesRepo}
             </a>
             .
           </p>
+          {status.upstream.version ? (
+            <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+              It is built on version{" "}
+              <span
+                className="font-bold text-(--fg)"
+                data-testid="upstream-version"
+              >
+                {status.upstream.version}
+              </span>{" "}
+              of the original project,{" "}
+              <a
+                className={linkClassName}
+                href={status.upstream.url}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {status.upstream.repository}
+              </a>
+              , with its later changes brought in by the maintainers of{" "}
+              {status.releasesRepo}.
+            </p>
+          ) : null}
         </div>
 
         <ShellButton
@@ -131,10 +153,22 @@ export function UpdatesPanel({
                 </a>
               </div>
             ) : (
-              <p className="notice notice-success" role="status">
-                You are up to date. {check.latest.version} is the latest
-                release.
-              </p>
+              <div className="space-y-4" role="status">
+                <p className="notice notice-success">
+                  You are up to date. {check.latest.version} is the latest
+                  release.
+                </p>
+                {check.latest.notes ? (
+                  <details className="space-y-2">
+                    <summary className="cursor-pointer text-sm font-bold text-(--fg)">
+                      What is in {check.latest.name}
+                    </summary>
+                    <div className="mt-2 max-h-80 space-y-1 overflow-y-auto rounded-2xl bg-(--surface) px-5 py-4 text-sm leading-6 text-(--secondary)">
+                      <ReleaseNotes notes={check.latest.notes} />
+                    </div>
+                  </details>
+                ) : null}
+              </div>
             )
           ) : (
             <p className="notice notice-warning" role="status">
@@ -201,7 +235,7 @@ function HowToUpdate({ status }: { status: UpdateStatus }) {
       <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
         How to update
       </h3>
-      {repository && !repository.isUpstream ? (
+      {repository && !repository.isReleaseSource ? (
         <>
           <ol className="max-w-2xl list-decimal space-y-2 pl-5 text-sm leading-6 text-(--secondary)">
             <li>

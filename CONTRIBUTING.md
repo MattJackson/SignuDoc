@@ -32,6 +32,10 @@ If your change touches Better Auth tables or plugins, run `npm run auth:generate
 - Schema-validated inputs using Zod.
 - Keep dependencies minimal. Don't add a library for something a few lines of code can handle.
 
+## Versions and upstream
+
+This is a fork of [NYLLON-SOFTWARE/SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc). It has its own semantic versions, always above the upstream release it is built on (0.5.0 on upstream 0.4.0), and `package.json` records both. Upstream changes arrive through the weekly Sync upstream pull request. See [Maintaining the fork](./docs/development.md#maintaining-the-fork).
+
 ## Pull requests
 
 - Keep PRs focused on a single change.

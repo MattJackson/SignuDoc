@@ -3,13 +3,27 @@ import { readFileSync } from "node:fs";
 import type { NextConfig } from "next";
 
 // The version this deployment runs, compared with the latest release by
-// "Check for updates" in Settings (src/lib/software-update.ts).
-const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
+// "Check for updates" in Settings (src/lib/software-update.ts), the
+// repository releases come from, and the release of the original project
+// this fork is built on (docs/development.md, "Maintaining the fork").
+const { repository, upstream, version } = JSON.parse(
+  readFileSync("./package.json", "utf8"),
+) as {
+  repository?: { url?: string } | string;
+  upstream?: { repository?: string; version?: string };
   version: string;
 };
+const repositoryUrl =
+  typeof repository === "string" ? repository : (repository?.url ?? "");
 
 const nextConfig: NextConfig = {
   env: {
+    NEXT_PUBLIC_SIGNUDOC_REPOSITORY: repositoryUrl
+      .replace(/^git\+/, "")
+      .replace(/^https:\/\/github\.com\//, "")
+      .replace(/\.git$/, ""),
+    NEXT_PUBLIC_SIGNUDOC_UPSTREAM_REPOSITORY: upstream?.repository ?? "",
+    NEXT_PUBLIC_SIGNUDOC_UPSTREAM_VERSION: upstream?.version ?? "",
     NEXT_PUBLIC_SIGNUDOC_VERSION: version,
     // Whether Vercel BotID is on, decided once at build time so the browser
     // code that adds its proof and the server code that checks it cannot

@@ -77,7 +77,7 @@ After this, preview deployments have no database and open on the page that asks 
 
 ### Keep your install up to date
 
-The Deploy button makes a copy of this repository in your GitHub account, and Vercel deploys every push to it. A copy does not receive new versions by itself: an update means bringing a new [release](https://github.com/NYLLON-SOFTWARE/SignuDoc/releases) into your copy. Vercel then builds it, and the production build applies any new database migrations.
+The Deploy button makes a copy of this repository in your GitHub account, and Vercel deploys every push to it. A copy does not receive new versions by itself: an update means bringing a new [release](https://github.com/MattJackson/SignuDoc/releases) into your copy. Vercel then builds it, and the production build applies any new database migrations.
 
 **See whether there is one.** Sign in as the administrator and open Settings. The SignuDoc section shows the version the site runs; **Check for updates** asks GitHub for the latest release and shows what is new in it.
 
@@ -106,14 +106,16 @@ To skip the pull request, run the workflow with **Merge straight into the produc
 
 If Vercel deploys your site from a branch other than the repository's default branch, set the repository variable `SIGNUDOC_PRODUCTION_BRANCH` to that branch, so the workflow updates and opens pull requests against it.
 
-**A copy made before version 0.2.0** does not have the workflow yet. Add it once: in your repository on GitHub choose **Add file**, **Create new file**, name it `.github/workflows/update-signudoc.yml`, paste in [the workflow](https://raw.githubusercontent.com/NYLLON-SOFTWARE/SignuDoc/main/.github/workflows/update-signudoc.yml), and commit it to your production branch. Settings in SignuDoc links to the right page. Then run it as above.
+**Where releases come from.** This is a fork of [SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc) for Google Workspace and Google Cloud, and both Settings and the workflow take releases from the fork, [MattJackson/SignuDoc](https://github.com/MattJackson/SignuDoc/releases). Settings also names the version of the original project the install is built on. To take releases from another repository, set `SIGNUDOC_RELEASES_REPO` to its owner/repository: as an environment variable for Settings, and as a repository variable (Settings, Secrets and variables, Actions, Variables) for the workflow. A copy made from the original project moves to the fork by replacing its `.github/workflows/update-signudoc.yml` with the fork's; the fork carries the original's history, so the merge still finds the version the copy started from.
+
+**A copy made before version 0.2.0** does not have the workflow yet. Add it once: in your repository on GitHub choose **Add file**, **Create new file**, name it `.github/workflows/update-signudoc.yml`, paste in [the workflow](https://raw.githubusercontent.com/MattJackson/SignuDoc/main/.github/workflows/update-signudoc.yml), and commit it to your production branch. Settings in SignuDoc links to the right page. Then run it as above.
 
 **Updating by hand.** A copy made by the Deploy button has none of this project's history, so a plain `git merge` refuses to merge "unrelated histories". Tell git which SignuDoc commit your copy started from, then merge as usual:
 
 ```bash
 git clone https://github.com/<your-account>/signudoc.git
 cd signudoc
-git fetch https://github.com/NYLLON-SOFTWARE/SignuDoc.git main --tags
+git fetch https://github.com/MattJackson/SignuDoc.git main --tags
 # The SignuDoc commit your copy started from. The workflow's summary
 # names it when it stops, or use the release tag you deployed, e.g. v0.1.0.
 git replace --graft "$(git rev-list --max-parents=0 HEAD)" v0.1.0

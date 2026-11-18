@@ -65,6 +65,10 @@ jobs:
         env:
           E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
       - run: npx playwright install --with-deps chromium
+      # Starts the app with the eID Easy and Google stand-ins beside it
+      # (playwright.config.ts). The Google project (e2e/google-workspace.spec.ts)
+      # signs in with Google against the fake Google server, after the main
+      # flow has set the site up.
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
