@@ -140,7 +140,70 @@ npm run test:e2e
 
 `npm test` runs the unit tests, which need nothing else running. `npm run test:db` runs the few tests that need a real Postgres (the rate limit counter, the cleanup job's lock and first-run setup) against the `signudoc_e2e` database.
 
-`npm run test:e2e` runs the Playwright end-to-end test. It starts the app against a separate `signudoc_e2e` database on the same Postgres server, sets the site up as its first visitor, signs up a sender, sends a PDF, signs it as the recipient and downloads the results. Install the browser once with `npx playwright install chromium`.
+`npm run test:e2e` runs the Playwright end-to-end test. It starts the app against a separate `signudoc_e2e` database on the same Postgres server, sets the site up as its first visitor, signs up a sender, sends a PDF, signs it as the recipient and downloads the results. Then a second Playwright project, `google-workspace`, signs in with Google against the fake Google server below. Install the browser once with `npx playwright install chromium`.
+
+## The fake Google server
+
+Tests do not reach Google. `src/lib/integrations/google/test-support/fake-google.ts` is a stand-in for the parts of Google the app talks to, one plain Node HTTP server on `127.0.0.1` with no dependencies:
+
+- **Google sign-in:** OpenID Connect discovery, an account chooser page, the token endpoint (authorization code with PKCE, refresh tokens), JWKS and userinfo. ID tokens are signed for Google's real issuer, `https://accounts.google.com`, and carry `hd` for a Workspace account (none for a personal one), so the app checks them exactly as it checks Google's. A `login_hint` naming an account skips the chooser. The chooser lists every account whatever the `hd` hint says, so a test can try the wrong one.
+- **Service accounts:** the JWT bearer grant, with a subject for domain-wide delegation, and IAM `signJwt`. Assertions from a service account whose key the fake was given are checked against it.
+- **Admin SDK Directory API:** users search (the `query` language: `givenName:`, `familyName:`, `name:`, `email:` with a trailing `*`, `isSuspended=`, `directManager=` and more), one user with the manager in `relations`, groups by user or customer, group members (optionally derived), and `hasMember` through nested groups.
+- **Drive API v3:** uploads (multipart, media and resumable) with conversion into Docs, Sheets and Slides, `files.get` with `alt=media`, `files.export` (a PDF that was converted comes back as it was; anything else as a one-page PDF naming the file), `files.list` with the `q` language (`appProperties has { key=... and value=... }`, `'id' in parents`, `name`, `mimeType`, `trashed`, times, `and`/`or`/`not`), copy, update with `addParents`/`removeParents`, permissions and shared drives.
+
+Like Google, it answers only with `id`, `name` and `mimeType` for a Drive file unless `?fields=` asks for more, finds files in shared drives only with `supportsAllDrives=true`, refuses to download a Google Docs file, refuses a token without the right scope, and answers 400 to a query term it does not know rather than guessing.
+
+The app is pointed at it with two variables, honoured only for loopback addresses (`src/lib/integrations/google/endpoints.ts`): `GOOGLE_OAUTH_BASE_URL` takes the place of `accounts.google.com` and `oauth2.googleapis.com`, and `GOOGLE_API_BASE_URL` of every other `*.googleapis.com` API, keeping the path. Code that calls a Google URL wraps it in `googleUrl(...)` so tests can redirect it; without the variables nothing changes.
+
+In a unit or database test:
+
+```ts
+import {
+  startFakeGoogle,
+  createFakeServiceAccountKey,
+} from "./test-support/fake-google.ts";
+
+const key = createFakeServiceAccountKey();
+const google = await startFakeGoogle({
+  directoryDomains: ["acme.example"],
+  groups: [{ email: "admins@acme.example", members: ["dana@acme.example"] }],
+  serviceAccounts: [key],
+  users: [
+    { email: "dana@acme.example", familyName: "Admin", givenName: "Dana" },
+  ],
+});
+const env = { ...google.env, GOOGLE_SERVICE_ACCOUNT_KEY: JSON.stringify(key) };
+// ... createGoogleCredentials({ env }), the code under test ...
+await google.close();
+```
+
+`google.state` holds everything it has (files, tokens, authorization requests), and `google.issueAccessToken(...)` hands out a token directly. The end-to-end test runs it as a process (`e2e/support/google-stand-in.ts`) with the Workspace in `e2e/support/google-workspace.ts`; from another process, `GET /__fake/state` shows what it holds and `POST /__fake/users`, `/__fake/groups` and `/__fake/drives` add to it.
+
+## Maintaining the fork
+
+This repository is a fork of [NYLLON-SOFTWARE/SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc) for Google Workspace and Google Cloud. It follows the original project and publishes releases of its own, which installs take (docs/self-hosting.md, "Keep your install up to date").
+
+**Versions.** The fork numbers its releases with plain semantic versions, no pre-release part, always above the upstream version it is built on: it started at 0.5.0 on upstream 0.4.0. After that it moves as semantic versioning says for its own changes, and a sync that brings in a new upstream minor or major release moves it to at least the next minor, so it stays above the upstream base. `package.json` records both: `version` is the fork's, and `upstream` names the original project and the upstream release the code is based on. Settings shows both (`src/lib/software-update.ts`), and a unit test checks the fork's version is above the upstream one.
+
+**Upstream sync.** `.github/workflows/sync-upstream.yml` runs every Monday and on demand (Actions, Sync upstream, Run workflow, optionally with a release tag such as `v0.5.0`). It merges upstream's main branch into `sync/upstream-<date>` and opens a pull request listing the upstream commits and the newest upstream release included; it also updates `upstream.version` in `package.json`. When files clash, the pull request is opened from upstream's commit itself, so GitHub shows the conflicts, and lists the files with the commands to resolve them locally. Expect `package.json` (`version`) and `CHANGELOG.md` to clash at every upstream release: keep the fork's version and entries, and put upstream's entries below them. When the branch cannot be pushed (upstream changed a file in `.github/workflows`, which the workflow's own token may not touch) or a pull request cannot be opened, the workflow opens an issue instead with the same details. Upstream's tags are fetched under `refs/upstream/tags`, never into this repository's tags, since both number releases `v0.x.y`.
+
+To merge upstream by hand:
+
+```bash
+git remote add upstream https://github.com/NYLLON-SOFTWARE/SignuDoc.git
+git fetch upstream main
+git checkout -b sync/upstream-manual origin/main
+git merge upstream/main
+npm pkg set upstream.version=<newest upstream release>
+```
+
+**Releases.** To release the fork:
+
+1. Move `version` in `package.json` (and `package-lock.json`) as above, and turn `## [Unreleased]` in `CHANGELOG.md` into the new version with its date, saying which upstream release it is built on.
+2. Merge to `main`, tag it `v<version>` and publish a GitHub Release with the changelog entry as its notes. `release-artifacts.yml` attaches the SBOM and source archive with their attestations.
+3. Installs see it in Settings, and their Update SignuDoc workflow opens a pull request with it.
+
+`SIGNUDOC_RELEASES_REPO` (an environment variable for Settings, a repository variable for the workflows) points an install, or a further fork, at another release source; the fork's own repository is set in `package.json` (`repository`). `SIGNUDOC_UPSTREAM_REPO`, a repository variable, changes where the sync workflow fetches from.
 
 ## Project structure
 
