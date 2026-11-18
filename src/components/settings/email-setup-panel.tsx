@@ -1,7 +1,14 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
+import {
+  EnvLockedNotice,
+  ExternalButton,
+  IntegrationPanel,
+  type ConnectionStatus,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { EmailDnsRecord, EmailStatus } from "@/lib/email-status";
 
@@ -53,6 +60,32 @@ function describeStage(status: EmailStatus): {
   }
 }
 
+/** Settings, Integrations, Email. */
+export function EmailPanel({
+  detail,
+  status,
+}: {
+  detail: string;
+  status: ConnectionStatus;
+}) {
+  const router = useRouter();
+
+  return (
+    <IntegrationPanel
+      brand="resend"
+      description="Signing invitations, reminders and finished documents are emailed through Resend, from an address at your own domain. The sender and support addresses are under Organization."
+      detail={detail}
+      id="email"
+      name="Email"
+      status={status}
+    >
+      {/* The header's status is worked out on the server. */}
+      <EmailSetupPanel onStatusChange={() => router.refresh()} />
+    </IntegrationPanel>
+  );
+}
+
+/** Email's steps, in Settings and in onboarding. */
 export function EmailSetupPanel({
   onStatusChange,
 }: {
@@ -182,17 +215,15 @@ export function EmailSetupPanel({
     (keyState.source === null || replacingKey);
 
   return (
-    <div className="space-y-5 border-t border-(--border) pt-8" id="email-setup">
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-          Email setup
-        </h3>
-        {stage ? (
+    <div className="space-y-5" id="email-setup">
+      {stage ? (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-(--secondary)">
+          Resend:
           <span className={`pill pill-${stage.tone}`} data-email-stage>
             {stage.label}
           </span>
-        ) : null}
-      </div>
+        </p>
+      ) : null}
 
       {loadError ? (
         <p className="notice notice-danger" role="alert">
@@ -243,10 +274,7 @@ export function EmailSetupPanel({
       )}
 
       {keyState?.source === "env" ? (
-        <p className="text-sm leading-6 text-(--secondary)">
-          The Resend API key is set by the RESEND_API_KEY environment variable
-          where this site runs, so it is changed there.
-        </p>
+        <EnvLockedNotice variables={["RESEND_API_KEY"]} />
       ) : null}
 
       {keyState?.source === "settings" && !replacingKey ? (
@@ -386,9 +414,7 @@ export function EmailSetupPanel({
         {status?.state === "restricted_key" ||
         status?.state === "error" ||
         status?.state === "test_sender" ? (
-          <ShellButton href={RESEND_DOMAINS_URL} variant="ghost">
-            Open Resend
-          </ShellButton>
+          <ExternalButton href={RESEND_DOMAINS_URL}>Open Resend</ExternalButton>
         ) : null}
       </div>
 

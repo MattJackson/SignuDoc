@@ -244,26 +244,33 @@ export function SealSettingsSection({
     },
   ];
 
+  // In onboarding (which passes onChange) the step around it has the
+  // title and the card.
+  const embedded = onChange !== undefined;
+
   return (
     <section
-      className="panel scroll-mt-6 p-6 sm:p-8"
-      data-animate="enter"
+      className={embedded ? undefined : "panel scroll-mt-6 p-6 sm:p-8"}
+      data-animate={embedded ? undefined : "enter"}
       data-animate-delay="2"
       data-testid="seal-settings"
       id="seal"
     >
       <div className="space-y-6">
-        <div className="space-y-2">
-          <p className="section-eyebrow">Administrator</p>
-          <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-            Seal &amp; timestamp
-          </h2>
-          <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-            Every finished document and certificate is sealed, so any later
-            change shows in a PDF reader. A timestamp server adds a trusted time
-            to the seal and keeps it checkable for years (long-term validation).
-          </p>
-        </div>
+        {embedded ? null : (
+          <div className="space-y-2">
+            <p className="section-eyebrow">Administrator</p>
+            <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
+              Seal &amp; timestamp
+            </h2>
+            <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+              Every finished document and certificate is sealed, so any later
+              change shows in a PDF reader. A timestamp server adds a trusted
+              time to the seal and keeps it checkable for years (long-term
+              validation).
+            </p>
+          </div>
+        )}
 
         {view.part11Mode ? (
           <p className="notice notice-warning" role="status">

@@ -1,27 +1,39 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useState, type FormEvent } from "react";
 
-import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
+import { describeSsoError } from "@/components/auth/sso-button";
+import { useBranding } from "@/components/layout/branding-provider";
+import {
+  ActionRow,
+  CheckItem,
+  CopyValue,
+  EnvLockedNotice,
+  ExternalButton,
+  ExternalLink,
+  IntegrationPanel,
+  Notice,
+  SetupSteps,
+  TestResult,
+  type ConnectionStatus,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
-import type { GoogleDriveView } from "@/lib/google-drive";
 import type {
   DirectoryTestResult,
   GoogleWorkspaceView,
   GroupTestResult,
 } from "@/lib/google-workspace";
 
-// Settings, Google Workspace, and the onboarding steps of the same name.
-// Each part is a step-by-step checklist: what to do in Google's consoles,
-// with this site's own values to paste there, and live checks of what is
-// already in place. Values fixed by an environment variable are shown and
-// locked. The Google Drive section (google-drive-panel.tsx) comes after the
-// directory one, on the same service account.
+// Settings, Integrations, Google sign-in and Workspace directory, and the
+// onboarding steps of the same names. Each is a numbered checklist: what to
+// do in Google's consoles, with this site's own values to copy there, and
+// live checks of what is already in place. Values fixed by an environment
+// variable are shown and locked. Google Drive (google-drive-panel.tsx) uses
+// the same service account.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
-const GOOGLE_AUTH_CLIENTS_URL = "https://console.cloud.google.com/auth/clients";
-const GOOGLE_AUTH_AUDIENCE_URL =
-  "https://console.cloud.google.com/auth/audience";
+const GOOGLE_CONSOLE_URL = "https://console.cloud.google.com";
 const ADMIN_ROLES_URL = "https://admin.google.com/ac/roles";
 const ADMIN_DELEGATION_URL =
   "https://admin.google.com/ac/owl/domainwidedelegation";
@@ -29,6 +41,36 @@ const DIRECTORY_SCOPES = [
   "https://www.googleapis.com/auth/admin.directory.user.readonly",
   "https://www.googleapis.com/auth/admin.directory.group.readonly",
 ];
+
+/**
+ * The Google Cloud project this site runs in, from its service account's
+ * address (name@project.iam.gserviceaccount.com), so links open the right
+ * project's console. Null when it is not known.
+ */
+export function googleProjectId(serviceAccountEmail: string | null) {
+  const match =
+    /@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/.exec(
+      serviceAccountEmail ?? "",
+    );
+
+  return match ? match[1] : null;
+}
+
+/** The scheme and host of this site, which Google calls its origin. */
+function originOf(url: string | null): string | null {
+  try {
+    return url ? new URL(url).origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A page of the Google Cloud console, in this site's project if known. */
+function consoleUrl(path: string, project: string | null) {
+  return project
+    ? `${GOOGLE_CONSOLE_URL}${path}?project=${encodeURIComponent(project)}`
+    : `${GOOGLE_CONSOLE_URL}${path}`;
+}
 
 type SaveResult = { fieldErrors: Record<string, string>; ok: boolean };
 
@@ -48,6 +90,7 @@ type SaveFields = Partial<{
 }>;
 
 export function useGoogleWorkspace(initialView: GoogleWorkspaceView) {
+  const router = useRouter();
   const [view, setView] = useState(initialView);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +115,8 @@ export function useGoogleWorkspace(initialView: GoogleWorkspaceView) {
       }
 
       setView(payload.view);
+      // The status in the page's header is worked out on the server.
+      router.refresh();
 
       return { fieldErrors: {}, ok: true };
     } catch {
@@ -85,116 +130,68 @@ export function useGoogleWorkspace(initialView: GoogleWorkspaceView) {
 
 type Workspace = ReturnType<typeof useGoogleWorkspace>;
 
-/** The whole Google Workspace area of Settings. */
-export function GoogleWorkspacePanel({
-  driveView = null,
-  initialView,
-}: {
-  /** The Google Drive settings, shown after the directory. */
-  driveView?: GoogleDriveView | null;
+type PanelProps = {
+  detail: string;
   initialView: GoogleWorkspaceView;
-}) {
+  status: ConnectionStatus;
+  /** How "Test sign-in" ended, from the address it came back to. */
+  testOutcome?: { error?: string; ok: boolean } | null;
+};
+
+/** Settings, Integrations, Google sign-in. */
+export function GoogleSignInPanel({
+  detail,
+  initialView,
+  status,
+  testOutcome = null,
+}: PanelProps) {
   const workspace = useGoogleWorkspace(initialView);
 
   return (
-    <section
-      className="panel scroll-mt-6 space-y-8 p-6 sm:p-8"
-      data-animate="enter"
-      id="google-workspace"
+    <IntegrationPanel
+      brand="google"
+      description="Everyone in your Google Workspace signs in with their Google account. Google's own security, such as two-step verification and suspending leavers, then applies here."
+      detail={detail}
+      id="google-sign-in"
+      name="Google sign-in"
+      status={status}
     >
-      <div className="space-y-2">
-        <p className="section-eyebrow">Administrator</p>
-        <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-          Google Workspace
-        </h2>
-        <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-          Let everyone in your organization sign in with their Google account,
-          suggest colleagues as recipients, and make a Google Group&apos;s
-          members administrators, and work with Google Drive. The full guide is
-          in docs/google-workspace.md.
-        </p>
-      </div>
+      <TestResult
+        result={
+          testOutcome
+            ? {
+                message: testOutcome.ok
+                  ? "Google sign-in works. You signed in with Google and came back here."
+                  : describeSsoError(testOutcome.error ?? ""),
+                ok: testOutcome.ok,
+              }
+            : null
+        }
+      />
       <GoogleSignInSection workspace={workspace} />
-      <GoogleDirectorySection workspace={workspace} />
-      {driveView ? <GoogleDriveSection initialView={driveView} /> : null}
-    </section>
+    </IntegrationPanel>
   );
 }
 
-function StatusPill({ ok, children }: { children: ReactNode; ok: boolean }) {
-  return (
-    <span className={`pill ${ok ? "pill-success" : "pill-warning"}`}>
-      {children}
-    </span>
-  );
-}
+/** Settings, Integrations, Workspace directory. */
+export function GoogleDirectoryPanel({
+  detail,
+  initialView,
+  status,
+}: PanelProps) {
+  const workspace = useGoogleWorkspace(initialView);
 
-function CheckItem({
-  children,
-  ok,
-  title,
-}: {
-  children: ReactNode;
-  ok: boolean | null;
-  title: string;
-}) {
   return (
-    <li className="space-y-3 rounded-2xl bg-(--surface) px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-bold text-(--fg)">{title}</span>
-        {ok === null ? null : (
-          <StatusPill ok={ok}>{ok ? "Done" : "To do"}</StatusPill>
-        )}
-      </div>
-      <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-function ExternalLink({
-  children,
-  href,
-}: {
-  children: ReactNode;
-  href: string;
-}) {
-  return (
-    <a
-      className="font-semibold text-(--accent-ink) underline underline-offset-4"
-      href={href}
-      rel="noreferrer"
-      target="_blank"
+    <IntegrationPanel
+      brand="google"
+      description="Suggest colleagues as recipients while a document is prepared, and make the members of a Google Group administrators here."
+      detail={detail}
+      id="google-directory"
+      name="Workspace directory"
+      status={status}
     >
-      {children}
-    </a>
-  );
-}
-
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <code
-        aria-label={label}
-        className="rounded-lg bg-white px-2 py-1 font-mono text-[0.8rem] break-all text-(--fg)"
-      >
-        {value}
-      </code>
-      <button
-        className="btn-quiet"
-        onClick={() => {
-          void navigator.clipboard?.writeText(value).then(() => {
-            setCopied(true);
-          });
-        }}
-        type="button"
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
+      <GoogleDirectorySection workspace={workspace} />
+    </IntegrationPanel>
   );
 }
 
@@ -205,26 +202,65 @@ function Feedback({
   message: string;
   tone: "error" | "success";
 }) {
-  return (
-    <p
-      className={`notice ${tone === "success" ? "notice-success" : "notice-danger"}`}
-      role={tone === "error" ? "alert" : "status"}
-    >
-      {message}
-    </p>
-  );
+  return <Notice tone={tone}>{message}</Notice>;
 }
 
 function fromEnvHelper(name: string) {
   return `Set by the ${name} environment variable.`;
 }
 
+/**
+ * Starts Google sign-in in a new tab and comes back to this page, which
+ * says whether it worked. The tab is opened before asking for Google's
+ * address, so a pop-up blocker lets it through.
+ */
+async function startTestSignIn(): Promise<string | null> {
+  const tab = window.open("", "_blank");
+  const origin = window.location.origin;
+  const back = `${origin}/settings/integrations/google-sign-in`;
+
+  try {
+    const response = await fetch("/api/auth/sign-in/social", {
+      body: JSON.stringify({
+        callbackURL: `${back}?signin=ok`,
+        errorCallbackURL: back,
+        newUserCallbackURL: `${back}?signin=ok`,
+        provider: "sso",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      url?: string;
+    } | null;
+
+    if (!response.ok || !payload?.url) {
+      tab?.close();
+      return "Sign-in could not start. Save the client ID and secret first, then try again.";
+    }
+
+    if (tab) {
+      tab.location.href = payload.url;
+    } else {
+      window.location.assign(payload.url);
+    }
+
+    return null;
+  } catch {
+    tab?.close();
+    return GENERIC_ERROR_MESSAGE;
+  }
+}
+
 /** Google sign-in: the OAuth client, the sign-up rule, and passwords. */
 export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
   const { error, save, view } = workspace;
+  const { productName } = useBranding();
   const { signIn } = view;
   const locked = signIn.source === "env";
   const passwordLocked = signIn.passwordSource === "env";
+  const project = googleProjectId(view.serviceAccount.email);
+  const siteOrigin = originOf(view.siteUrl);
   const [values, setValues] = useState({
     clientId: signIn.clientId,
     clientSecret: "",
@@ -239,6 +275,7 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const [showOtherProvider, setShowOtherProvider] = useState(!signIn.google);
   const signupLimited =
     view.signupRule.mode === "domains" && view.signupRule.domains.length > 0;
@@ -279,71 +316,101 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
         name: values.name,
         workspaceDomains: values.workspaceDomains,
       },
-      "Saved. Sign-in uses the new settings within a minute, with no restart.",
+      "Saved. Sign-in uses the new settings within a minute, with no restart or redeploy.",
     );
   }
 
-  return (
-    <div
-      className="space-y-5 border-t border-(--border) pt-8"
-      id="google-sign-in"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-          Google sign-in
-        </h3>
-        <StatusPill ok={signIn.ready}>
-          {signIn.ready ? "On" : "Not set up"}
-        </StatusPill>
-      </div>
+  async function testSignIn() {
+    setPending("test");
+    setTestError(null);
+    setTestError(await startTestSignIn());
+    setPending(null);
+  }
 
+  return (
+    <div className="space-y-5">
       {error ? <Feedback message={error} tone="error" /> : null}
       {notice ? <Feedback message={notice} tone="success" /> : null}
 
-      <ol className="space-y-3">
+      <SetupSteps>
         <CheckItem ok={signIn.ready} title="1. Create the OAuth client">
+          <p>
+            In Google Cloud, create an OAuth client for this site.
+            {project ? (
+              <>
+                {" "}
+                The link opens project <strong>{project}</strong>, where this
+                site runs.
+              </>
+            ) : null}
+          </p>
+          <ActionRow>
+            <ExternalButton
+              href={consoleUrl("/auth/clients/create", project)}
+              variant="primary"
+            >
+              Create the OAuth client
+            </ExternalButton>
+          </ActionRow>
           <ol className="list-decimal space-y-1 pl-5">
             <li>
-              In the Google Cloud console, open{" "}
-              <ExternalLink href={GOOGLE_AUTH_AUDIENCE_URL}>
-                Google Auth Platform, Audience
-              </ExternalLink>{" "}
-              and set the user type to <strong>Internal</strong>, so only
-              accounts in your Workspace can use it.
-            </li>
-            <li>
-              Open{" "}
-              <ExternalLink href={GOOGLE_AUTH_CLIENTS_URL}>
-                Clients
+              If Google asks to configure the Google Auth Platform first, give
+              it the app name below and your support address, and choose{" "}
+              <strong>Internal</strong> so only accounts in your Workspace can
+              use it. (Set later under{" "}
+              <ExternalLink href={consoleUrl("/auth/audience", project)}>
+                Audience
               </ExternalLink>
-              , choose Create client, and pick <strong>Web application</strong>.
+              .)
             </li>
             <li>
-              Under Authorized redirect URIs, add exactly:
-              {view.redirectUri ? (
-                <CopyValue label="Redirect URI" value={view.redirectUri} />
-              ) : (
-                <span className="block">
-                  This site does not know its own address yet. Set APP_URL (or
-                  BETTER_AUTH_URL) where it runs; the redirect URI is that
-                  address followed by /api/auth/callback/sso.
-                </span>
-              )}
+              For Application type, choose <strong>Web application</strong> and
+              give it the name below.
             </li>
             <li>
-              The scopes are the basic ones: <code>openid</code>,{" "}
-              <code>email</code> and <code>profile</code>. Nothing needs to be
-              verified by Google for an Internal app.
+              Add the JavaScript origin and the redirect URI below, exactly as
+              shown, then choose Create.
             </li>
-            <li>Copy the client ID and client secret into the form below.</li>
+            <li>
+              Copy the client ID and client secret Google shows into the form in
+              step 2. The scopes are the basic ones (openid, email and profile);
+              an Internal app needs no review by Google.
+            </li>
           </ol>
+          <div className="grid gap-4">
+            <CopyValue label="App name" value={productName} />
+            {siteOrigin ? (
+              <CopyValue
+                hint="Under Authorized JavaScript origins."
+                label="JavaScript origin"
+                value={siteOrigin}
+              />
+            ) : null}
+            {view.redirectUri ? (
+              <CopyValue
+                hint="Under Authorized redirect URIs."
+                label="Redirect URI"
+                value={view.redirectUri}
+              />
+            ) : (
+              <Notice tone="warning">
+                This site does not know its own address yet. Set APP_URL (or
+                BETTER_AUTH_URL) where it runs; the redirect URI is that address
+                followed by /api/auth/callback/sso.
+              </Notice>
+            )}
+          </div>
+        </CheckItem>
 
+        <CheckItem ok={signIn.ready} title="2. Paste the client ID and secret">
           {locked ? (
-            <p>
-              Single sign-on is set by the SSO_ISSUER, SSO_CLIENT_ID and
-              SSO_CLIENT_SECRET environment variables where this site runs, so
-              it is changed there. Issuer: <code>{signIn.issuer}</code>.
-            </p>
+            <EnvLockedNotice
+              variables={["SSO_ISSUER", "SSO_CLIENT_ID", "SSO_CLIENT_SECRET"]}
+            >
+              <p>
+                Issuer: <code>{signIn.issuer}</code>
+              </p>
+            </EnvLockedNotice>
           ) : (
             <form className="space-y-4" noValidate onSubmit={saveClient}>
               <div className="grid gap-4 sm:grid-cols-2">
@@ -423,7 +490,7 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
                   />
                 </div>
               ) : null}
-              <div className="flex flex-wrap gap-2">
+              <ActionRow>
                 <ShellButton
                   disabled={pending !== null}
                   loading={pending === "client"}
@@ -454,40 +521,65 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
                     Remove
                   </ShellButton>
                 ) : null}
-              </div>
+              </ActionRow>
             </form>
           )}
         </CheckItem>
 
+        <CheckItem ok={null} title="3. Test sign-in">
+          <p>
+            Sign in with your own Google account in a new tab. It comes back to
+            this page and says whether it worked. Use the same account you are
+            signed in with now, or you will be signed in as the other one.
+          </p>
+          <ActionRow>
+            <ShellButton
+              disabled={pending !== null || !signIn.ready}
+              loading={pending === "test"}
+              onClick={() => void testSignIn()}
+              variant="secondary"
+            >
+              Test sign-in
+            </ShellButton>
+          </ActionRow>
+          {!signIn.ready ? (
+            <p className="text-xs leading-5 text-(--tertiary)">
+              Available once the client ID and secret are saved.
+            </p>
+          ) : null}
+          <TestResult
+            result={testError ? { message: testError, ok: false } : null}
+          />
+        </CheckItem>
+
         <CheckItem
           ok={signupLimited}
-          title="2. Limit sign-up to your Workspace domain"
+          title="4. Limit sign-up to your Workspace domain"
         >
           <p>
             {signupLimited
               ? `New accounts can only be made at ${view.signupRule.domains.join(", ")}. Google sign-in is held to the same domains unless other Workspace domains are given above.`
               : "Anyone who signs in for the first time gets an account under the sign-up rule. Set it to your Workspace's domain so only your organization gets in."}
           </p>
-          <ShellButton href="/settings#organization" variant="ghost">
+          <ShellButton href="/settings/organization" variant="secondary">
             Open the sign-up rule
           </ShellButton>
         </CheckItem>
 
         <CheckItem
           ok={signIn.ready ? !signIn.passwordSignIn : null}
-          title="3. Turn password sign-in off, keeping a way in"
+          title="5. Turn password sign-in off, keeping a way in"
         >
           <p>
-            With passwords off, Google decides who gets in: its MFA and
-            offboarding apply. Keep one or two administrators&apos; addresses
-            below; they can still use a password if Google is unavailable (a
-            break-glass account).
+            With passwords off, Google decides who gets in: its two-step
+            verification and offboarding apply. Keep one or two
+            administrators&apos; addresses below; they can still use a password
+            if Google is unavailable (a break-glass account).
           </p>
           {passwordLocked ? (
-            <p>
-              {fromEnvHelper("PASSWORD_SIGN_IN")} Password sign-in is{" "}
-              {signIn.passwordSignIn ? "on" : "off"}.
-            </p>
+            <EnvLockedNotice variables={["PASSWORD_SIGN_IN"]}>
+              <p>Password sign-in is {signIn.passwordSignIn ? "on" : "off"}.</p>
+            </EnvLockedNotice>
           ) : (
             <div className="space-y-4">
               <div className="max-w-xl">
@@ -532,7 +624,7 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
             </div>
           )}
         </CheckItem>
-      </ol>
+      </SetupSteps>
     </div>
   );
 }
@@ -644,22 +736,10 @@ export function GoogleDirectorySection({
   const delegation = directory.mode === "delegation";
 
   return (
-    <div
-      className="space-y-5 border-t border-(--border) pt-8"
-      id="google-directory"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-          Workspace directory and admin group
-        </h3>
-        <StatusPill ok={directory.enabled}>
-          {directory.enabled ? "Suggestions on" : "Off"}
-        </StatusPill>
-      </div>
-
+    <div className="space-y-5">
       {notice ? <Feedback message={notice.message} tone={notice.tone} /> : null}
 
-      <ol className="space-y-3">
+      <SetupSteps>
         <CheckItem
           ok={serviceAccount.email !== null}
           title="1. The service account this site runs as"
@@ -817,7 +897,7 @@ export function GoogleDirectorySection({
             or address. Outside recipients are still typed in full.
           </p>
           {directory.enabledSource === "env" ? (
-            <p>{fromEnvHelper("GOOGLE_WORKSPACE_DIRECTORY")}</p>
+            <EnvLockedNotice variables={["GOOGLE_WORKSPACE_DIRECTORY"]} />
           ) : (
             <ShellButton
               disabled={pending !== null}
@@ -919,7 +999,7 @@ export function GoogleDirectorySection({
             )
           ) : null}
         </CheckItem>
-      </ol>
+      </SetupSteps>
     </div>
   );
 }

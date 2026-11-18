@@ -117,7 +117,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
       };
     },
     id: "organization",
-    settingsHref: "/settings#organization",
+    settingsHref: "/settings/organization",
     summary:
       "Your organization's name, support address, and who can create an account.",
     title: "Organization",
@@ -152,7 +152,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
           };
     },
     id: "email",
-    settingsHref: "/settings#email-setup",
+    settingsHref: "/settings/integrations/email",
     summary:
       "Connect Resend, verify the sending domain, and send yourself a test email.",
     title: "Email",
@@ -173,7 +173,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
         : { detail: `People sign in with ${sso.name}.`, status: "done" };
     },
     id: "google-sign-in",
-    settingsHref: "/settings#google-workspace",
+    settingsHref: "/settings/integrations/google-sign-in",
     summary:
       "Let everyone in your Google Workspace sign in with Google, and turn passwords off.",
     title: "Google sign-in",
@@ -210,7 +210,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
           };
     },
     id: "google-directory",
-    settingsHref: "/settings#google-workspace",
+    settingsHref: "/settings/integrations/google-directory",
     summary:
       "Suggest colleagues as recipients, and make a Google Group's members administrators.",
     title: "Workspace directory and admin group",
@@ -247,7 +247,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     },
     confirmable: true,
     id: "people",
-    settingsHref: "/settings#people",
+    settingsHref: "/settings/managers",
     summary:
       "Have the sender's manager approve first, ask employees to sign with Google, and hand over a leaver's envelopes.",
     title: "Managers, employees and leavers",
@@ -295,7 +295,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
       };
     },
     id: "google-drive",
-    settingsHref: "/settings#google-drive",
+    settingsHref: "/settings/integrations/google-drive",
     summary:
       "Start envelopes from Drive, open files with this site, and keep executed copies in a Shared Drive.",
     title: "Google Drive",
@@ -323,7 +323,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
           };
     },
     id: "google-addon",
-    settingsHref: "/settings#google-workspace-addon",
+    settingsHref: "/settings/integrations/google-addon",
     summary:
       "Send attachments and Drive files for signature from the Gmail and Drive side panel.",
     title: "Gmail and Drive add-on",
@@ -345,7 +345,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
       };
     },
     id: "storage",
-    settingsHref: "/settings",
+    settingsHref: "/settings/integrations/storage",
     summary:
       "Where documents are kept. Chosen when the site is deployed; check it works.",
     title: "Storage",
@@ -354,7 +354,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     check: async ({ env, marks, stored }) => checkSeal(env, stored, marks),
     confirmable: true,
     id: "seal",
-    settingsHref: "/settings#seal",
+    settingsHref: "/settings/documents",
     summary:
       "The trusted time on every seal, and the certificate finished documents are sealed with.",
     title: "Seal & timestamp",
@@ -385,7 +385,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     },
     confirmable: true,
     id: "backups",
-    settingsHref: "/settings#backups",
+    settingsHref: "/settings/backups",
     summary:
       "A daily copy of the database and every document, kept apart from this install.",
     title: "Backups",
@@ -411,7 +411,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     },
     confirmable: true,
     id: "retention",
-    settingsHref: "/settings#organization",
+    settingsHref: "/settings/organization",
     summary: "How long finished documents are kept before they are deleted.",
     title: "Retention",
   },

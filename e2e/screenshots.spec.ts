@@ -16,6 +16,7 @@ const OUTPUT_DIR = path.resolve("test-results", "screenshots");
 const SETTINGS_PAGES = [
   "/settings",
   "/settings/organization",
+  "/settings/setup",
   "/settings/people",
   "/settings/teams",
   "/settings/managers",

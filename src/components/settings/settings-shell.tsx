@@ -21,6 +21,8 @@ const CLOSURE_CONFIRMATION_PHRASE = "close my account";
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 type SettingsShellProps = {
+  /** Off where the page around it already has the Settings header. */
+  header?: boolean;
   initialProfile?: ProfileValues;
   twoFactor?: { enabled: boolean; required: boolean };
 };
@@ -162,6 +164,7 @@ function isNoOpEmailChangeMessage(message: string) {
 }
 
 export function SettingsShell({
+  header = true,
   initialProfile = defaultProfileValues,
   twoFactor = { enabled: false, required: false },
 }: SettingsShellProps) {
@@ -555,10 +558,12 @@ export function SettingsShell({
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        description="Manage your sender profile, password, two-step sign-in and account lifecycle."
-        title="Settings"
-      />
+      {header ? (
+        <PageHeader
+          description="Manage your sender profile, password, two-step sign-in and account lifecycle."
+          title="Settings"
+        />
+      ) : null}
 
       {feedback ? <SettingsFeedback feedback={feedback} /> : null}
 

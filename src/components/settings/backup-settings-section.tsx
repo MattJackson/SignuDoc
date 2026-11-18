@@ -266,28 +266,34 @@ export function BackupSettingsSection({
         ? "notice-danger"
         : "notice-warning";
 
+  // In onboarding (which passes onChange) the step around it has the
+  // title and the card.
+  const embedded = onChange !== undefined;
+
   return (
     <section
-      className="panel scroll-mt-6 p-6 sm:p-8"
-      data-animate="enter"
+      className={embedded ? undefined : "panel scroll-mt-6 p-6 sm:p-8"}
+      data-animate={embedded ? undefined : "enter"}
       data-animate-delay="2"
       data-testid="backup-settings"
       id="backups"
     >
       <div className="space-y-6">
-        <div className="space-y-2">
-          <p className="section-eyebrow">Administrator</p>
-          <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-            Backups
-          </h2>
-          <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-            Once a day the database and every stored document are copied to a
-            place kept apart from this install. Copies of deleted documents and
-            old database copies are removed after the number of days below. The
-            database&apos;s own backups (Cloud SQL or Neon) are separate; keep
-            those on too.
-          </p>
-        </div>
+        {embedded ? null : (
+          <div className="space-y-2">
+            <p className="section-eyebrow">Administrator</p>
+            <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
+              Backups
+            </h2>
+            <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+              Once a day the database and every stored document are copied to a
+              place kept apart from this install. Copies of deleted documents
+              and old database copies are removed after the number of days
+              below. The database&apos;s own backups (Cloud SQL or Neon) are
+              separate; keep those on too.
+            </p>
+          </div>
+        )}
 
         <p className={`notice ${statusTone}`} role="status">
           {view.status.message}

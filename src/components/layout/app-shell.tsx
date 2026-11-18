@@ -155,7 +155,7 @@ export function AppShell({
               </p>
               <Link
                 className="shrink-0 text-sm font-bold text-(--warning) underline underline-offset-4"
-                href="/settings#organization"
+                href="/settings/integrations/email"
               >
                 Finish email setup
               </Link>

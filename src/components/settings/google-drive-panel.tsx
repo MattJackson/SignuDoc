@@ -2,6 +2,15 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import {
+  CheckItem,
+  CopyValue,
+  ExternalLink,
+  IntegrationPanel,
+  Notice as KitNotice,
+  SetupSteps,
+  type ConnectionStatus,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   GoogleDriveView,
@@ -57,91 +66,12 @@ function StatusPill({ children, ok }: { children: ReactNode; ok: boolean }) {
   );
 }
 
-function CheckItem({
-  children,
-  ok,
-  title,
-}: {
-  children: ReactNode;
-  ok: boolean | null;
-  title: string;
-}) {
-  return (
-    <li className="space-y-3 rounded-2xl bg-(--surface) px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-bold text-(--fg)">{title}</span>
-        {ok === null ? null : (
-          <StatusPill ok={ok}>{ok ? "Done" : "To do"}</StatusPill>
-        )}
-      </div>
-      <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-function ExternalLink({
-  children,
-  href,
-}: {
-  children: ReactNode;
-  href: string;
-}) {
-  return (
-    <a
-      className="font-semibold text-(--accent-ink) underline underline-offset-4"
-      href={href}
-      rel="noreferrer"
-      target="_blank"
-    >
-      {children}
-    </a>
-  );
-}
-
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="min-w-40 text-xs font-semibold text-(--fg)">
-        {label}
-      </span>
-      <code
-        aria-label={label}
-        className="rounded-lg bg-white px-2 py-1 font-mono text-[0.8rem] break-all text-(--fg)"
-      >
-        {value}
-      </code>
-      <button
-        className="btn-quiet"
-        onClick={() => {
-          void navigator.clipboard?.writeText(value).then(() => {
-            setCopied(true);
-          });
-        }}
-        type="button"
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
-  );
-}
-
 function Feedback({ notice }: { notice: Notice }) {
   if (!notice) {
     return null;
   }
 
-  return (
-    <p
-      className={`notice ${notice.tone === "success" ? "notice-success" : "notice-danger"}`}
-      role={notice.tone === "error" ? "alert" : "status"}
-    >
-      {notice.message}
-    </p>
-  );
+  return <KitNotice tone={notice.tone}>{notice.message}</KitNotice>;
 }
 
 function fromEnv(name: string) {
@@ -171,7 +101,31 @@ function formatTime(seconds: number | null): string {
     : "";
 }
 
-/** The Google Drive section of the Google Workspace settings. */
+/** Settings, Integrations, Google Drive. */
+export function GoogleDrivePanel({
+  detail,
+  initialView,
+  status,
+}: {
+  detail: string;
+  initialView: GoogleDriveView;
+  status: ConnectionStatus;
+}) {
+  return (
+    <IntegrationPanel
+      brand="google-drive"
+      description="Start an envelope from a file in Drive, open files from Drive with this site, and keep a copy of every executed envelope in a Shared Drive. Each part is optional and stays off until it is set up."
+      detail={detail}
+      id="google-drive"
+      name="Google Drive"
+      status={status}
+    >
+      <GoogleDriveSection initialView={initialView} />
+    </IntegrationPanel>
+  );
+}
+
+/** Google Drive's steps, in Settings and in onboarding. */
 export function GoogleDriveSection({
   initialView,
 }: {
@@ -334,36 +288,15 @@ export function GoogleDriveSection({
   const labelLocked = view.labels.source === "env";
 
   return (
-    <div
-      className="space-y-5 border-t border-(--border) pt-8"
-      id="google-drive"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-          Google Drive
-        </h3>
-        <StatusPill ok={view.picker.ready || exportsEnabled}>
-          {exportsEnabled
-            ? "Executed copies on"
-            : view.picker.ready
-              ? "Picker on"
-              : "Off"}
-        </StatusPill>
-      </div>
-      <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-        Start an envelope from a file in Drive, open files from Drive with this
-        site, and keep a copy of every executed envelope in a Shared Drive. Each
-        part is optional and stays off until it is set up.
-      </p>
-
+    <div className="space-y-5">
       <Feedback notice={notice} />
 
-      <ol className="space-y-3">
+      <SetupSteps>
         <CheckItem ok={view.available} title="1. In the Google Cloud project">
           {view.available ? null : (
             <p>
-              Set up Google sign-in first (above): each person connects Drive
-              with the same OAuth client.
+              Set up Google sign-in first (Integrations, Google sign-in): each
+              person connects Drive with the same OAuth client.
             </p>
           )}
           <ol className="list-decimal space-y-1 pl-5">
@@ -913,12 +846,14 @@ export function GoogleDriveSection({
             Save label settings
           </ShellButton>
         </CheckItem>
-      </ol>
+      </SetupSteps>
 
       {exportsEnabled || (exportList && exportList.length > 0) ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h4 className="text-sm font-bold text-(--fg)">Executed copies</h4>
+            <h4 className="text-base font-extrabold text-(--fg)">
+              Executed copies
+            </h4>
             <button
               className="btn-quiet"
               onClick={() => void loadExports()}

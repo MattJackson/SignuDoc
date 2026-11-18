@@ -38,7 +38,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       resetError={error === "INVALID_TOKEN" ? error : null}
       resetToken={resolvedSearchParams?.token ?? null}
       returnTo={returnTo}
-      sso={sso ? { name: sso.name } : null}
+      sso={sso ? { google: sso.google, name: sso.name } : null}
       // Anything else is single sign-on coming back without a session.
       ssoError={error && error !== "INVALID_TOKEN" ? error.slice(0, 80) : null}
     />

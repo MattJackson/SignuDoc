@@ -13,6 +13,7 @@ import {
   useGoogleWorkspace,
 } from "@/components/settings/google-workspace-panel";
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
+import { StorageCheckSection } from "@/components/settings/storage-panel";
 import type { BackupSettingsView } from "@/lib/backup-config";
 import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleAddonView } from "@/lib/google-addon";
@@ -267,61 +268,7 @@ function GoogleAddonStep({ data }: StepFormProps) {
 }
 
 function StorageStep({ data }: StepFormProps) {
-  const [result, setResult] = useState<Feedback>(null);
-  const [checking, setChecking] = useState(false);
-
-  async function check() {
-    setChecking(true);
-    setResult(null);
-
-    try {
-      const response = await fetch("/api/admin/onboarding", {
-        body: JSON.stringify({ action: "check_storage" }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
-      const payload = (await response.json().catch(() => null)) as {
-        error?: string;
-        storage?: { driver: string | null; message?: string; ok: boolean };
-      } | null;
-
-      setResult(
-        payload?.storage?.ok
-          ? {
-              message: `A test file was written to ${payload.storage.driver ?? "storage"}, read back and deleted.`,
-              tone: "success",
-            }
-          : {
-              message:
-                payload?.storage?.message ??
-                payload?.error ??
-                GENERIC_ERROR_MESSAGE,
-              tone: "error",
-            },
-      );
-    } catch {
-      setResult({ message: GENERIC_ERROR_MESSAGE, tone: "error" });
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4 text-sm leading-6 text-(--secondary)">
-      <p>
-        {data.storage.driver
-          ? `Documents are kept in ${data.storage.driver} storage.`
-          : `Storage is not set up: ${data.storage.problem ?? "unknown driver"}.`}{" "}
-        Where documents are kept is chosen when the site is deployed (the
-        STORAGE_DRIVER setting and its credentials), so it is shown here, not
-        changed. See the self-hosting guide to move it.
-      </p>
-      <ShellButton loading={checking} onClick={() => void check()}>
-        {checking ? "Checking..." : "Test read and write"}
-      </ShellButton>
-      <Notice feedback={result} />
-    </div>
-  );
+  return <StorageCheckSection storage={data.storage} />;
 }
 
 function SealStep({ data, onChanged }: StepFormProps) {

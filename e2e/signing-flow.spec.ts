@@ -132,7 +132,7 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
     ).toBeVisible();
 
     // Everything onboarding sets is also in Settings.
-    await adminPage.goto("/settings#organization");
+    await adminPage.goto("/settings/organization");
     await expect(
       adminPage.getByRole("link", { exact: true, name: ORGANIZATION_NAME }),
     ).toBeVisible();
@@ -146,9 +146,12 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
     await expect(adminPage.getByLabel("Email domains")).toHaveValue(
       "example.com",
     );
+    // Email has its own page under Integrations.
+    await adminPage.goto("/settings/integrations/email");
     await expect(
       adminPage.getByText("Emails are being captured, not sent"),
     ).toBeVisible();
+    await adminPage.goto("/settings/organization");
 
     const testEmailResponse = await adminContext.request.post(
       "/api/admin/email",
@@ -819,7 +822,7 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
 
     expect(claimed.status()).toBe(201);
 
-    await page.goto("/settings");
+    await page.goto("/settings/organization");
     await expect(
       page.getByRole("heading", { name: "Organization" }),
     ).toBeVisible();
@@ -868,12 +871,13 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/documents");
     await page.getByRole("button", { name: "Turn on Part 11 mode" }).click();
     await expect(
       page.getByRole("button", { name: "Turn off Part 11 mode" }),
     ).toBeVisible();
     // A retention period would delete regulated records on a timer.
+    await page.goto("/settings/organization");
     await expect(
       page.getByLabel("Days to keep", { exact: true }),
     ).toBeDisabled();
@@ -956,7 +960,7 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
       ),
     ).toBeVisible();
 
-    await page.goto("/settings");
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: `Confirm ${signerName}'s identity` })
       .click();
@@ -1437,6 +1441,8 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
   });
 
   await test.step("the administrator sets up an authenticator app", async () => {
+    // Two-step sign-in for one's own account is under Profile and sign-in.
+    await page.goto("/settings");
     await page.getByRole("button", { name: "Set up two-step sign-in" }).click();
     await page.getByLabel("Your password").fill(PASSWORD);
     await page.getByRole("button", { name: "Continue" }).click();
@@ -1465,6 +1471,7 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
   });
 
   await test.step("and requires it of everyone", async () => {
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: "Require two-step sign-in" })
       .click();
