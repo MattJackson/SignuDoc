@@ -190,7 +190,7 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
         />
       </div>
       <fieldset className="space-y-3">
-        <legend className="text-sm font-bold text-(--fg)">
+        <legend className="pb-1 text-sm font-bold text-(--fg)">
           Who can create an account
         </legend>
         {(
@@ -204,7 +204,7 @@ function OrganizationStep({ data, onChanged }: StepFormProps) {
           ] as const
         ).map(([value, label]) => (
           <label
-            className="flex items-center gap-3 text-sm text-(--fg)"
+            className="flex cursor-pointer items-center gap-3 rounded-2xl bg-(--surface) px-4 py-3.5 text-sm font-semibold text-(--fg) ring-2 ring-transparent transition has-[:checked]:bg-(--accent-softer) has-[:checked]:ring-(--accent)"
             key={value}
           >
             <input
@@ -316,7 +316,7 @@ function NotificationsStep() {
         Notifications are optional. To go without them, choose &quot;Mark as
         done&quot;.
       </p>
-      <ShellButton href="/settings/notifications" variant="ghost">
+      <ShellButton href="/settings/notifications" variant="secondary">
         Set up notifications
       </ShellButton>
     </div>
