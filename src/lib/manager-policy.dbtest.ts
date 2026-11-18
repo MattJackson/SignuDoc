@@ -705,7 +705,7 @@ test("correcting an approver on an envelope the rule did not cover when it was s
   assert.match(after.rows[0]!.email, /^fixed-/);
 });
 
-test("correcting an approver still works when the directory cannot be asked", async () => {
+test("correcting an approver is refused, to try again, while the directory cannot be asked", async () => {
   const manager = `boss-${randomUUID()}@example.test`;
   const draft = await createDraft([
     { email: manager, role: "approver", step: 1 },
@@ -724,15 +724,16 @@ test("correcting an approver still works when the directory cannot be asked", as
       throw new Error("directory unreachable");
     },
   };
-  const signerId = await correctApproverUnderRequire(
-    draft,
-    manager,
-    unreachable,
-  );
-  const after = await database.query<{ email: string }>(
-    `select email from signers where id = $1`,
-    [signerId],
+  await assert.rejects(
+    correctApproverUnderRequire(draft, manager, unreachable),
+    (error: unknown) =>
+      error instanceof EnvelopeMutationError && error.statusCode === 503,
   );
 
-  assert.match(after.rows[0]!.email, /^fixed-/);
+  const after = await database.query<{ email: string }>(
+    `select email from signers where envelope_id = $1 and role = 'approver'`,
+    [draft.envelopeId],
+  );
+
+  assert.equal(after.rows[0]?.email, manager);
 });
