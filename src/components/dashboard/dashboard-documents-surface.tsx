@@ -249,7 +249,11 @@ function EnvelopeCard({
     <>
       <span className="flex h-52 items-center justify-center rounded-2xl bg-(--surface) p-3.5 transition group-hover:bg-[#f0f0f6]">
         {interactive ? (
-          <DocumentThumbnail envelopeId={envelope.id} title={envelope.title} />
+          <DocumentThumbnail
+            canBackfill={envelope.canManage !== false}
+            envelopeId={envelope.id}
+            title={envelope.title}
+          />
         ) : (
           <SampleDocumentPage seed={envelope.id} />
         )}
@@ -269,6 +273,11 @@ function EnvelopeCard({
         <span className="block truncate text-[0.8125rem] text-(--tertiary)">
           {envelope.contextLine}
         </span>
+        {envelope.sentByLabel ? (
+          <span className="block truncate text-[0.8125rem] text-(--tertiary)">
+            Sent by {envelope.sentByLabel}
+          </span>
+        ) : null}
       </span>
 
       <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-1 pb-0.5">

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { MAX_SIGNERS_PER_ENVELOPE } from "../types/domain.ts";
+import { MAX_SIGNERS_CEILING, recipientRoles } from "../types/domain.ts";
 import {
   emailSchema,
   envelopeTitleSchema,
@@ -19,17 +19,32 @@ export const templateRoleNameSchema = nonEmptyStringSchema.max(
 export const duplicateRoleNameMessage =
   "Give each signer in the template a different name.";
 
+/** Who fills a template role on their own, rather than the sender. */
+export const templateRoleFills = ["sender_manager"] as const;
+export type TemplateRoleFill = (typeof templateRoleFills)[number];
+
 /** One place in a template's signing order, such as "Client". */
 export const templateRoleSchema = z.object({
   id: idSchema,
   name: templateRoleNameSchema,
+  // The step of the signing order the role is in; roles that share one
+  // sign at the same time. Templates saved before steps existed have none,
+  // and their roles sign one after the other.
+  step: z.number().int().positive().max(MAX_SIGNERS_CEILING).optional(),
+  // Whether the person in this role signs or only approves. Templates
+  // saved before approvers existed have none, and every role signs.
+  kind: z.enum(recipientRoles).optional(),
+  // Who fills the role when the template is used: "sender_manager" is the
+  // sender's manager from the Workspace directory, looked up then. Left
+  // out, the sender names someone.
+  fill: z.enum(templateRoleFills).optional(),
 });
 
 /** A template's roles, in the order their people will sign. */
 export const templateRolesSchema = z
   .array(templateRoleSchema)
   .min(1)
-  .max(MAX_SIGNERS_PER_ENVELOPE)
+  .max(MAX_SIGNERS_CEILING)
   .superRefine((roles, ctx) => {
     const ids = new Set<string>();
     const names = new Set<string>();
@@ -66,7 +81,13 @@ export const saveTemplateSchema = z.object({
   roleNames: z
     .array(templateRoleNameSchema)
     .min(1)
-    .max(MAX_SIGNERS_PER_ENVELOPE)
+    .max(MAX_SIGNERS_CEILING)
+    .optional(),
+  // Which roles the sender's manager fills, in the same order as the
+  // signers. Null or left out: the sender names someone each time.
+  roleFills: z
+    .array(z.enum(templateRoleFills).nullable())
+    .max(MAX_SIGNERS_CEILING)
     .optional(),
 });
 
@@ -75,7 +96,7 @@ export const useTemplateSchema = z.object({
   signers: z
     .array(z.object({ email: emailSchema, name: nameSchema }))
     .min(1)
-    .max(MAX_SIGNERS_PER_ENVELOPE)
+    .max(MAX_SIGNERS_CEILING)
     .superRefine((signers, ctx) => {
       const emails = new Set<string>();
 
