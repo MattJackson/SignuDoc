@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { test } from "node:test";
@@ -16,7 +16,7 @@ const root = path.resolve(
   "../../../..",
 );
 
-/** A database with the SQLite baseline schema, as the app opens one. */
+/** A database with the SQLite schema (the baseline and the migrations after it), as the app opens one. */
 function baselineDatabase() {
   const database = new DatabaseSync(":memory:");
 
@@ -27,6 +27,15 @@ function baselineDatabase() {
   database.exec(
     readFileSync(path.join(root, "db/sqlite/baseline.sql"), "utf8"),
   );
+
+  const migrations = path.join(root, "db/sqlite/migrations");
+
+  for (const file of readdirSync(migrations)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()) {
+    database.exec(readFileSync(path.join(migrations, file), "utf8"));
+  }
+
   database.exec(
     "create table signudoc_migrations (version text primary key, applied_at timestamptz not null)",
   );

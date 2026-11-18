@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import { PLANNED_CHANNELS, safeErrorCode } from "./channel.ts";
 import {
+  BURST_KINDS,
+  IN_PLACE_KINDS,
   listNotificationEvents,
   notificationEventKinds,
   notificationKindFor,
@@ -10,11 +12,13 @@ import {
 } from "./events.ts";
 import {
   buildNotificationMessage,
+  headlineText,
   readNotificationPayload,
   type NotificationEnvelope,
 } from "./message.ts";
 import {
   MAX_DELIVERY_ATTEMPTS,
+  placementFor,
   retryDelaySeconds,
   updateForFailure,
 } from "./outbox.ts";
@@ -70,55 +74,106 @@ test("every kind has a definition, and the job's own kinds come from no audit ev
   assert.equal(NOTIFICATION_EVENTS.backup_failed.audience, "admin");
 });
 
-test("a message says what happened, who did it, and links to the envelope", () => {
+test("a message says what happened, who did it, and where the envelope stands", () => {
   const message = buildNotificationMessage({
     appUrl: "https://sign.example.com/",
     envelope,
     kind: "envelope_signed",
+    occurredAt: 1_900_000_000,
     payload: { signerEmail: "riley@example.com", signerName: "Riley" },
   });
 
   assert.equal(
-    message.headline,
-    'Riley (riley@example.com) signed "Master services agreement"',
+    headlineText(message.headline),
+    "Riley signed Master services agreement — 1 of 2 signed",
   );
-  assert.deepEqual(message.fields, [
-    { label: "Status", value: "Out for signature" },
-    { label: "Signed", value: "1 of 2" },
-    { label: "Sender", value: "Sam Sender (sam@example.com)" },
+  assert.deepEqual(
+    message.headline.filter((part) => part.strong).map((part) => part.text),
+    ["Master services agreement"],
+  );
+  assert.deepEqual(message.details, [
+    "Out for signature",
+    "Sent by Sam Sender",
   ]);
-  assert.deepEqual(message.link, {
-    label: "Open envelope",
-    url: "https://sign.example.com/envelopes/env-1",
-  });
-  assert.match(message.text, /Master services agreement/);
+  assert.equal(message.progress, "1 of 2 signed");
+  assert.equal(message.tone, "progress");
+  assert.equal(message.occurredAt, 1_900_000_000);
+  assert.deepEqual(message.actions, [
+    {
+      id: "open",
+      label: "Open envelope",
+      url: "https://sign.example.com/envelopes/env-1",
+    },
+  ]);
+  assert.equal(
+    message.text,
+    "Riley signed Master services agreement — 1 of 2 signed · Out for signature · Sent by Sam Sender",
+  );
 });
 
-test("each kind has its own headline", () => {
-  const headlines = notificationEventKinds.map(
-    (kind) =>
+test("each kind has its own headline, and none shouts", () => {
+  const headlines = notificationEventKinds.map((kind) =>
+    headlineText(
       buildNotificationMessage({
         appUrl: null,
         envelope: kind === "backup_failed" ? null : envelope,
         kind,
         payload: { expiresAt: 1_900_000_000, idleDays: 7, signerName: "Riley" },
       }).headline,
+    ),
   );
 
   assert.equal(new Set(headlines).size, headlines.length);
   assert.ok(headlines.some((line) => /no activity for 7 days/.test(line)));
   assert.ok(headlines.some((line) => /expires on/.test(line)));
+  assert.ok(headlines.every((line) => !line.includes("!")));
 });
 
-test("without the site's address there is no link", () => {
+test("buttons: the certificate when complete, a reminder only for the sender", () => {
+  const actionIds = (
+    kind: Parameters<typeof buildNotificationMessage>[0]["kind"],
+    forSender: boolean,
+    status = "sent",
+  ) =>
+    buildNotificationMessage({
+      appUrl: "https://sign.example.com",
+      envelope: { ...envelope, status },
+      forSender,
+      kind,
+      payload: {},
+    }).actions.map((action) => action.id);
+
+  assert.deepEqual(actionIds("envelope_completed", false, "completed"), [
+    "certificate",
+    "open",
+  ]);
+  assert.deepEqual(actionIds("envelope_stuck", true), ["remind", "open"]);
+  assert.deepEqual(actionIds("envelope_expiring_soon", true), [
+    "remind",
+    "open",
+  ]);
+  assert.deepEqual(actionIds("envelope_stuck", false), ["open"]);
+  assert.deepEqual(actionIds("envelope_signed", true), ["open"]);
   assert.equal(
+    buildNotificationMessage({
+      appUrl: "https://sign.example.com",
+      envelope: { ...envelope, status: "completed" },
+      kind: "envelope_completed",
+      payload: {},
+    }).actions[0]?.url,
+    "https://sign.example.com/api/envelopes/env-1/download?type=evidence",
+  );
+});
+
+test("without the site's address there are no buttons", () => {
+  assert.deepEqual(
     buildNotificationMessage({
       appUrl: null,
       envelope,
       kind: "envelope_completed",
       payload: {},
-    }).link,
-    null,
+    }).actions,
+    [],
   );
   assert.deepEqual(
     buildNotificationMessage({
@@ -126,9 +181,32 @@ test("without the site's address there is no link", () => {
       envelope: null,
       kind: "backup_failed",
       payload: { status: "partial" },
-    }).link,
-    { label: "Open Settings", url: "https://sign.example.com/settings" },
+    }).actions,
+    [
+      {
+        id: "settings",
+        label: "Open Settings",
+        url: "https://sign.example.com/settings",
+      },
+    ],
   );
+});
+
+test("progress edits one direct message, outcomes post a new one, and bursts wait", () => {
+  assert.equal(placementFor("envelope_signed", "user", true), "in_place");
+  assert.equal(placementFor("envelope_viewed", "user", true), "in_place");
+  assert.equal(placementFor("envelope_completed", "user", true), "new_message");
+  assert.equal(placementFor("envelope_declined", "user", true), "new_message");
+  assert.equal(placementFor("envelope_stuck", "user", true), "new_message");
+  assert.equal(
+    placementFor("envelope_completed", "channel", true),
+    "channel_thread",
+  );
+  assert.equal(placementFor("backup_failed", "channel", false), "standalone");
+  assert.equal(placementFor("backup_failed", "user", false), "standalone");
+  assert.ok(BURST_KINDS.has("envelope_signed"));
+  assert.ok(!BURST_KINDS.has("envelope_completed"));
+  assert.ok(!IN_PLACE_KINDS.has("envelope_expiring_soon"));
 });
 
 test("a payload keeps who did it and nothing else", () => {

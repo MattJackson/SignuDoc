@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 import { ShellButton } from "@/components/shared/form-shell";
 
 // "Continue with <provider>": hands the visitor to the organization's
@@ -9,7 +10,11 @@ import { ShellButton } from "@/components/shared/form-shell";
 // /api/auth/callback/sso, and from there to the dashboard, or to the sign-in
 // page with ?error= when it did not work.
 
-export type SsoOption = { name: string };
+export type SsoOption = {
+  /** Google is the provider, so the button follows Google's branding. */
+  google?: boolean;
+  name: string;
+};
 
 /** What the sign-in page says for an ?error= the provider callback sent. */
 export function describeSsoError(code: string): string {
@@ -87,6 +92,16 @@ export function SsoButton({
       onError(describeSsoError(""));
       setIsBusy(false);
     }
+  }
+
+  if (sso.google) {
+    return (
+      <GoogleSignInButton
+        busy={isBusy}
+        label={label ?? "Continue with Google"}
+        onClick={() => void start()}
+      />
+    );
   }
 
   return (

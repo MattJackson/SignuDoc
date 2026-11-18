@@ -1,7 +1,17 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
+import {
+  CheckItem,
+  CopyButton,
+  CopyValue,
+  ExternalLink,
+  IntegrationPanel,
+  Notice,
+  SetupSteps,
+  type ConnectionStatus,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { GoogleAddonView } from "@/lib/google-addon";
 
@@ -22,110 +32,31 @@ function fromEnvHelper(name: string) {
   return `Set by the ${name} environment variable.`;
 }
 
-function Pill({ children, ok }: { children: ReactNode; ok: boolean }) {
-  return (
-    <span className={`pill ${ok ? "pill-success" : "pill-warning"}`}>
-      {children}
-    </span>
-  );
-}
-
-function Step({
-  children,
-  ok,
-  title,
-}: {
-  children: ReactNode;
-  ok: boolean | null;
-  title: string;
-}) {
-  return (
-    <li className="space-y-3 rounded-2xl bg-(--surface) px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-bold text-(--fg)">{title}</span>
-        {ok === null ? null : <Pill ok={ok}>{ok ? "Done" : "To do"}</Pill>}
-      </div>
-      <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <button
-      className="btn-quiet"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value).then(() => {
-          setCopied(true);
-        });
-      }}
-      type="button"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
-function CopyLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <code
-        aria-label={label}
-        className="rounded-lg bg-white px-2 py-1 font-mono text-[0.8rem] break-all text-(--fg)"
-      >
-        {value}
-      </code>
-      <CopyButton value={value} />
-    </div>
-  );
-}
-
-function ExternalLink({
-  children,
-  href,
-}: {
-  children: ReactNode;
-  href: string;
-}) {
-  return (
-    <a
-      className="font-semibold text-(--accent-ink) underline underline-offset-4"
-      href={href}
-      rel="noreferrer"
-      target="_blank"
-    >
-      {children}
-    </a>
-  );
-}
-
-/** The add-on as its own area of Settings, after Google Workspace. */
+/** Settings, Integrations, Gmail and Drive add-on. */
 export function GoogleAddonPanel({
+  detail,
   initialView,
+  status,
 }: {
+  detail: string;
   initialView: GoogleAddonView;
+  status: ConnectionStatus;
 }) {
   return (
-    <section
-      className="panel scroll-mt-6 space-y-6 p-6 sm:p-8"
-      data-animate="enter"
-      id="google-workspace-addon"
+    <IntegrationPanel
+      brand="gmail"
+      description="Optional. Puts SignuDoc in the side panel of Gmail and Google Drive: send an attachment or a Drive file for signature in two clicks, see the contracts you have with the sender of an email, and nudge a signer. This site serves it; there is no Apps Script to keep."
+      detail={detail}
+      id="google-addon"
+      name="Gmail and Drive add-on"
+      status={status}
     >
-      <div className="space-y-2">
-        <p className="section-eyebrow">Administrator</p>
-        <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-          Google Workspace add-on
-        </h2>
-      </div>
       <GoogleAddonSection initialView={initialView} />
-    </section>
+    </IntegrationPanel>
   );
 }
 
+/** The add-on's steps, in Settings and in onboarding. */
 export function GoogleAddonSection({
   initialView,
 }: {
@@ -208,35 +139,11 @@ export function GoogleAddonSection({
   }
 
   return (
-    <div
-      className="space-y-5 border-t border-(--border) pt-8"
-      id="google-addon"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-          Gmail and Drive add-on
-        </h3>
-        <Pill ok={view.ready}>{view.ready ? "On" : "Not set up"}</Pill>
-      </div>
-      <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-        Optional. Puts SignuDoc in the side panel of Gmail and Google Drive:
-        send an email&apos;s PDF or Word attachment, or a file in Drive, for
-        signature in two clicks, see the contracts you have with the sender of
-        an email, and nudge a signer. It is served by this site; there is no
-        Apps Script to keep.
-      </p>
+    <div className="space-y-5">
+      {notice ? <Notice tone={notice.tone}>{notice.message}</Notice> : null}
 
-      {notice ? (
-        <p
-          className={`notice ${notice.tone === "success" ? "notice-success" : "notice-danger"}`}
-          role={notice.tone === "error" ? "alert" : "status"}
-        >
-          {notice.message}
-        </p>
-      ) : null}
-
-      <ol className="space-y-3">
-        <Step ok={json !== null} title="1. The deployment">
+      <SetupSteps>
+        <CheckItem ok={json !== null} title="1. The deployment">
           {json ? (
             <>
               <p>
@@ -248,7 +155,7 @@ export function GoogleAddonSection({
                 {json}
               </pre>
               <div className="flex flex-wrap gap-2">
-                <CopyButton value={json} />
+                <CopyButton label="deployment JSON" value={json} />
                 {/* A plain link: the file comes from an API route, not a page. */}
                 <a
                   className="btn-quiet"
@@ -266,9 +173,9 @@ export function GoogleAddonSection({
               from it.
             </p>
           )}
-        </Step>
+        </CheckItem>
 
-        <Step ok={null} title="2. Deploy it with gcloud">
+        <CheckItem ok={null} title="2. Deploy it with gcloud">
           <p>
             In a terminal signed in to the Google Cloud project that will own
             the add-on (the one this site runs in is a good choice), run:
@@ -276,14 +183,13 @@ export function GoogleAddonSection({
           <ul className="space-y-3">
             {view.commands.map((entry) => (
               <li className="space-y-1" key={entry.command}>
-                <span className="block">{entry.purpose}</span>
-                <CopyLine label={entry.purpose} value={entry.command} />
+                <CopyValue label={entry.purpose} value={entry.command} />
               </li>
             ))}
           </ul>
-        </Step>
+        </CheckItem>
 
-        <Step ok={view.ready} title="3. Paste what Google printed">
+        <CheckItem ok={view.ready} title="3. Paste what Google printed">
           <p>
             <code>gcloud workspace-add-ons get-authorization</code> prints the
             add-on&apos;s service account (serviceAccountEmail) and its OAuth
@@ -341,9 +247,9 @@ export function GoogleAddonSection({
               {saving ? "Saving..." : "Save"}
             </ShellButton>
           )}
-        </Step>
+        </CheckItem>
 
-        <Step ok={null} title="4. Install it for your organization">
+        <CheckItem ok={null} title="4. Install it for your organization">
           <p>
             <code>gcloud workspace-add-ons deployments install</code> installs
             it for you only, to try it. To give it to everyone, privately and
@@ -377,8 +283,8 @@ export function GoogleAddonSection({
             address. Anyone who has none yet is asked to sign in to SignuDoc
             once.
           </p>
-        </Step>
-      </ol>
+        </CheckItem>
+      </SetupSteps>
 
       {view.endpoints.length > 0 ? (
         <details className="text-sm leading-6 text-(--secondary)">

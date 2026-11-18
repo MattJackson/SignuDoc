@@ -14,7 +14,7 @@ import {
   type IntegrationSettingsActor,
   type IntegrationSettingsUpdate,
 } from "../integration-settings.ts";
-import { getSettings } from "../settings.ts";
+import { getBranding } from "../settings.ts";
 import { readEnv, resolveAppUrl, type EnvSource } from "../utils/env.ts";
 import {
   PLANNED_CHANNELS,
@@ -24,8 +24,9 @@ import {
 import {
   listNotificationEvents,
   type NotificationEventDefinition,
+  type NotificationEventKind,
 } from "./events.ts";
-import { buildNotificationMessage } from "./message.ts";
+import type { NotificationBrand } from "./message.ts";
 import { getPreferenceChoices, type PreferenceChoice } from "./preferences.ts";
 import { getNotificationChannels } from "./registry.ts";
 import { listNotificationRules, type NotificationRule } from "./rules.ts";
@@ -34,10 +35,19 @@ import {
   SLACK_DIRECT_MESSAGES_SETTING,
   SLACK_TOKEN_SETTING,
   slackBotTokenSchema,
-  buildSlackBlocks,
 } from "./slack/channel.ts";
-import type { SlackApiError, SlackChannelSummary } from "./slack/client.ts";
+import type {
+  SlackApiError,
+  SlackChannelSummary,
+  SlackMessageContent,
+} from "./slack/client.ts";
+import { buildSlackMessage } from "./slack/layout.ts";
 import { buildSlackManifest, SLACK_BOT_SCOPES } from "./slack/manifest.ts";
+import {
+  buildSampleMessage,
+  buildSlackPreviews,
+  type SlackPreview,
+} from "./slack/preview.ts";
 
 // Settings, Notifications: what the administrator sets up (the Slack app,
 // direct messages, the job's thresholds and the rules) and the checks they
@@ -97,6 +107,8 @@ function siteUrl(env: EnvSource): string | null {
 }
 
 export type DeliveryStats = {
+  /** Held signatures left out because a newer message covered them. */
+  combinedLastWeek: number;
   failedLastWeek: number;
   pending: number;
   recentProblems: {
@@ -113,6 +125,7 @@ export type DeliveryStats = {
 async function readDeliveryStats(database: DbExecutor): Promise<DeliveryStats> {
   const since = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
   const counts = await queryOne<{
+    combined: number;
     failed: number;
     pending: number;
     sent: number;
@@ -124,7 +137,14 @@ async function readDeliveryStats(database: DbExecutor): Promise<DeliveryStats> {
         count(*) FILTER (WHERE status IN ('pending', 'sending'))::int AS pending,
         count(*) FILTER (WHERE status = 'sent' AND updated_at >= $1)::int AS sent,
         count(*) FILTER (WHERE status = 'failed' AND updated_at >= $1)::int AS failed,
-        count(*) FILTER (WHERE status = 'skipped' AND updated_at >= $1)::int AS skipped
+        count(*) FILTER (
+          WHERE status = 'skipped' AND updated_at >= $1
+            AND last_error IS DISTINCT FROM 'superseded'
+        )::int AS skipped,
+        count(*) FILTER (
+          WHERE status = 'skipped' AND updated_at >= $1
+            AND last_error = 'superseded'
+        )::int AS combined
       FROM notification_deliveries
     `,
     [since],
@@ -137,7 +157,7 @@ async function readDeliveryStats(database: DbExecutor): Promise<DeliveryStats> {
       FROM notification_deliveries d
       JOIN notification_events e ON e.id = d.event_id
       WHERE d.last_error IS NOT NULL AND d.updated_at >= $1
-        AND d.status <> 'sent'
+        AND d.status <> 'sent' AND d.last_error <> 'superseded'
       ORDER BY d.updated_at DESC
       LIMIT 5
     `,
@@ -145,6 +165,7 @@ async function readDeliveryStats(database: DbExecutor): Promise<DeliveryStats> {
   );
 
   return {
+    combinedLastWeek: counts?.combined ?? 0,
     failedLastWeek: counts?.failed ?? 0,
     pending: counts?.pending ?? 0,
     recentProblems: problems,
@@ -162,8 +183,12 @@ export type NotificationsAdminView = {
   slack: {
     configured: boolean;
     directMessages: boolean;
+    /** The app's name in Slack: the organization's, or SignuDoc. */
+    appName: string;
     /** The app manifest to paste into Slack, as formatted JSON. */
     manifest: string;
+    /** A sample of each kind of message, as Slack would show it. */
+    previews: SlackPreview[];
     scopes: string[];
     source: "env" | "settings" | null;
   };
@@ -171,12 +196,36 @@ export type NotificationsAdminView = {
   thresholds: NotificationThresholds;
 };
 
+/**
+ * The organization's name and logo for messages. `absoluteLogo`: the logo
+ * as an https address Slack can fetch, else none; otherwise the path on
+ * this site, for a preview in the browser.
+ */
+async function messageBrand(
+  env: EnvSource,
+  absoluteLogo: boolean,
+): Promise<NotificationBrand & { brandColor: string | null }> {
+  const branding = await getBranding(env);
+  const base = siteUrl(env);
+  let logoUrl = branding.logoUrl;
+
+  if (logoUrl && absoluteLogo) {
+    logoUrl = base?.startsWith("https://") ? `${base}${logoUrl}` : null;
+  }
+
+  return {
+    brandColor: branding.brandColor,
+    logoUrl,
+    name: branding.organizationName ?? branding.productName,
+  };
+}
+
 export async function getNotificationsAdminView(
   env: EnvSource = process.env,
   database: DbExecutor = getDb(),
 ): Promise<NotificationsAdminView> {
   const stored = await readIntegrationSettings(database, env);
-  const settings = await getSettings(env);
+  const brand = await messageBrand(env, false);
   const slack = createSlackChannel().status({ env, stored });
   const url = siteUrl(env);
   const [rules, teams, deliveries] = await Promise.all([
@@ -195,18 +244,23 @@ export async function getNotificationsAdminView(
     rules,
     siteUrl: url,
     slack: {
+      appName: brand.name,
       configured: slack.configured,
       directMessages: slack.directMessages,
       manifest: JSON.stringify(
         buildSlackManifest({
-          appName: settings.organizationName
-            ? `${settings.organizationName} Signing`
-            : "SignuDoc",
+          appName: brand.name,
+          brandColor: brand.brandColor,
           siteUrl: url,
         }),
         null,
         2,
       ),
+      previews: buildSlackPreviews({
+        // Without the site's address there would be no buttons to show.
+        appUrl: url ?? "https://sign.example.com",
+        brand: { logoUrl: brand.logoUrl, name: brand.name },
+      }),
       scopes: [...SLACK_BOT_SCOPES],
       source: slack.source,
     },
@@ -392,12 +446,50 @@ export async function listSlackChannels(
 }
 
 /**
+ * A test message: a sample of `kind` as the real ones look, marked as a
+ * test, with one button to this site instead of a made-up envelope's.
+ */
+export function buildSlackTestMessage(
+  kind: NotificationEventKind,
+  { appUrl, brand }: { appUrl: string | null; brand: NotificationBrand },
+): SlackMessageContent {
+  const sample = buildSampleMessage(kind, { appUrl, brand });
+  const content = buildSlackMessage(
+    {
+      ...sample,
+      actions: appUrl
+        ? [
+            {
+              id: "open",
+              label: `Open ${brand.name}`,
+              url: `${appUrl.replace(/\/+$/, "")}/dashboard`,
+            },
+          ]
+        : [],
+    },
+    "message",
+  );
+  const note =
+    "Test message from Settings, Notifications. Nothing happened to a real envelope.";
+
+  return {
+    ...content,
+    blocks: [
+      ...(content.blocks ?? []),
+      { elements: [{ text: note, type: "mrkdwn" }], type: "context" },
+    ],
+    text: `${note} ${content.text}`,
+  };
+}
+
+/**
  * Sends a test message to a channel, or to the person asking (found by
  * their email address), so the setup can be seen to work.
  */
 export async function sendSlackTestMessage(
   to: { channel: string } | { email: string },
   env: EnvSource = process.env,
+  kind: NotificationEventKind = "envelope_completed",
 ): Promise<SlackCheckResult> {
   const slack = createSlackChannel().client(await slackContext(env));
 
@@ -419,28 +511,53 @@ export async function sendSlackTestMessage(
     destination = to.channel;
   }
 
-  const base = siteUrl(env);
-  const message = {
-    ...buildNotificationMessage({
-      appUrl: base,
-      envelope: null,
-      kind: "envelope_completed",
-      payload: {},
-    }),
-    fields: [],
-    headline: "This is a test message from SignuDoc. Notifications work.",
-    link: base ? { label: "Open SignuDoc", url: `${base}/dashboard` } : null,
-    text: "This is a test message from SignuDoc. Notifications work.",
-  };
+  const brand = await messageBrand(env, true);
   const result = await slack.postMessage({
-    blocks: buildSlackBlocks(message),
+    ...buildSlackTestMessage(kind, {
+      appUrl: siteUrl(env),
+      brand: { logoUrl: brand.logoUrl, name: brand.name },
+    }),
     channel: destination,
-    text: message.text,
   });
 
   return result.ok
     ? { message: "Sent. Look for it in Slack.", ok: true }
     : failure(result);
+}
+
+/**
+ * A rule's "Send test": a sample of the first event the rule names, posted
+ * to its channel. Null when there is no such rule.
+ */
+export async function sendSlackRuleTest(
+  ruleId: string,
+  env: EnvSource = process.env,
+  database: DbExecutor = getDb(),
+): Promise<SlackCheckResult | null> {
+  const rule = (await listNotificationRules(database)).find(
+    (item) => item.id === ruleId,
+  );
+
+  if (!rule) {
+    return null;
+  }
+
+  if (rule.channel !== "slack") {
+    return { message: "Only Slack rules can be tested here.", ok: false };
+  }
+
+  const result = await sendSlackTestMessage(
+    { channel: rule.destination },
+    env,
+    rule.events[0] ?? "envelope_completed",
+  );
+  const where = rule.destinationName
+    ? `#${rule.destinationName}`
+    : rule.destination;
+
+  return result.ok
+    ? { message: `Sent a test message to ${where}.`, ok: true }
+    : result;
 }
 
 export type NotificationPreferencesView = {

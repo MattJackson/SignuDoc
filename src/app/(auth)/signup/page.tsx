@@ -14,7 +14,7 @@ export default async function SignupPage() {
   return (
     <SignupShell
       passwordSignIn={passwordPolicy.enabled}
-      sso={sso ? { name: sso.name } : null}
+      sso={sso ? { google: sso.google, name: sso.name } : null}
       signupAvailable={buildBranding(settings).signupAvailable}
       // Says who can sign up before anyone fills the form in. Nothing to
       // say when anyone can.

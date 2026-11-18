@@ -64,7 +64,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: /google-workspace\.spec\.ts$/,
+      testIgnore: /(google-workspace|screenshots)\.spec\.ts$/,
       use: desktop,
     },
     // Google sign-in needs a site that has been set up, so it runs on the
@@ -75,6 +75,19 @@ export default defineConfig({
       testMatch: /google-workspace\.spec\.ts$/,
       use: desktop,
     },
+    // Screenshots of the administrator's screens (e2e/screenshots.spec.ts),
+    // only with E2E_SCREENSHOTS=1. CI takes them in a step of their own after
+    // the tests above, on the install they leave behind, whether they passed
+    // or not (E2E_KEEP_DATABASE=1 keeps it, E2E_NO_BUILD=1 reuses the build).
+    ...(process.env.E2E_SCREENSHOTS === "1"
+      ? [
+          {
+            name: "screenshots",
+            testMatch: /screenshots\.spec\.ts$/,
+            use: desktop,
+          },
+        ]
+      : []),
   ],
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   retries: process.env.CI ? 1 : 0,
@@ -89,7 +102,9 @@ export default defineConfig({
       command:
         process.env.E2E_DEV === "1"
           ? `npx next dev --port ${String(port)}`
-          : `npx next build && npx next start --port ${String(port)}`,
+          : process.env.E2E_NO_BUILD === "1"
+            ? `npx next start --port ${String(port)}`
+            : `npx next build && npx next start --port ${String(port)}`,
       env: {
         APP_URL: baseURL,
         BETTER_AUTH_SECRET: "e2e-only-secret-not-used-anywhere-else-0123456789",

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { notificationEventKinds } from "../events.ts";
 import {
-  buildSlackBlocks,
+  buildNotificationMessage,
+  type NotificationMessage,
+} from "../message.ts";
+import {
   createSlackChannelWithFetch,
   escapeSlackText,
   resolveSlackToken,
@@ -13,7 +17,13 @@ import {
   createSlackClient,
   type SlackFetch,
 } from "./client.ts";
-import { buildSlackManifest, SLACK_BOT_SCOPES } from "./manifest.ts";
+import { buildSlackMessage, SLACK_TONE_COLORS } from "./layout.ts";
+import {
+  buildSlackManifest,
+  SLACK_BOT_SCOPES,
+  slackBackgroundColor,
+} from "./manifest.ts";
+import { buildSlackPreviews } from "./preview.ts";
 
 // The Slack client against a fake fetch: what it sends, how it reads
 // Slack's answers, and that a failure keeps only Slack's status and error
@@ -277,11 +287,61 @@ test("auth.test and conversations.list are read", async () => {
   assert.match(calls[1]?.body ?? "", /exclude_archived=true/);
 });
 
+function sample(
+  overrides: Partial<Parameters<typeof buildNotificationMessage>[0]> = {},
+): NotificationMessage {
+  return buildNotificationMessage({
+    appUrl: "https://sign.example.com",
+    brand: {
+      logoUrl: "https://sign.example.com/api/brand/logo?v=1",
+      name: "Acme <Corp>",
+    },
+    envelope: {
+      expiresAt: null,
+      id: "e1",
+      ownerEmail: "sam@example.com",
+      ownerName: "Sam Rivera",
+      signedCount: 2,
+      signerCount: 3,
+      status: "sent",
+      title: "NDA <v2> & *more*",
+    },
+    kind: "envelope_signed",
+    occurredAt: 1_900_000_000,
+    payload: { signerEmail: "riley@example.com", signerName: "Riley" },
+    ...overrides,
+  });
+}
+
+type Body = {
+  attachments?: {
+    blocks: {
+      elements?: { style?: string; text?: unknown; url?: string }[];
+      text?: { text: string };
+      type: string;
+    }[];
+    color: string;
+  }[];
+  blocks?: {
+    elements?: { image_url?: string; text?: string; type: string }[];
+    text?: { text: string };
+    type: string;
+  }[];
+  channel?: string;
+  text: string;
+  thread_ts?: string;
+  ts?: string;
+};
+
+function bodyOf(call: Call | undefined): Body {
+  return JSON.parse(call?.body ?? "{}") as Body;
+}
+
 test("the channel looks people up and sends Block Kit messages", async () => {
   const { calls, fetch } = fakeFetch((call) =>
     call.url.endsWith("users.lookupByEmail")
       ? json({ ok: true, user: { id: "U777" } })
-      : json({ channel: "U777", ok: true, ts: "1.2" }),
+      : json({ channel: "D777", ok: true, ts: "1.2" }),
   );
   const channel = createSlackChannelWithFetch(fetch);
   const context = { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} };
@@ -290,35 +350,242 @@ test("the channel looks people up and sends Block Kit messages", async () => {
     externalId: "U777",
     outcome: "found",
   });
-  assert.deepEqual(
-    await channel.send(
-      "U777",
-      {
-        fields: [{ label: "Status", value: "Completed" }],
-        headline: 'Riley signed "NDA <v2>"',
-        kind: "envelope_signed",
-        link: {
-          label: "Open envelope",
-          url: "https://sign.example.com/envelopes/e1",
-        },
-        text: 'Riley signed "NDA <v2>"',
-      },
-      context,
-    ),
-    { outcome: "sent" },
-  );
+  assert.deepEqual(await channel.send("U777", sample(), context), {
+    outcome: "sent",
+    thread: null,
+  });
 
-  const body = JSON.parse(calls[1]?.body ?? "{}") as {
-    blocks: { elements?: { url?: string }[]; text?: { text: string } }[];
-    text: string;
-  };
+  const body = bodyOf(calls[1]);
 
-  assert.equal(body.text, 'Riley signed "NDA &lt;v2&gt;"');
-  assert.equal(body.blocks[0]?.text?.text, '*Riley signed "NDA &lt;v2&gt;"*');
   assert.equal(
-    body.blocks[2]?.elements?.[0]?.url,
-    "https://sign.example.com/envelopes/e1",
+    body.text,
+    "Riley signed NDA &lt;v2&gt; &amp; *more* — 2 of 3 signed · Out for signature · Sent by Sam Rivera",
   );
+});
+
+test("every message has the same layout: organization, coloured body, buttons", () => {
+  const content = buildSlackMessage(sample(), "message");
+
+  // The organization on top, with its logo.
+  assert.deepEqual(content.blocks, [
+    {
+      elements: [
+        {
+          alt_text: "Acme &lt;Corp&gt;",
+          image_url: "https://sign.example.com/api/brand/logo?v=1",
+          type: "image",
+        },
+        { text: "*Acme &lt;Corp&gt;*", type: "mrkdwn" },
+      ],
+      type: "context",
+    },
+  ]);
+
+  const [attachment] = content.attachments ?? [];
+
+  assert.equal(attachment?.color, SLACK_TONE_COLORS.progress);
+  assert.deepEqual(
+    attachment?.blocks.map((block) => block.type),
+    ["section", "context", "actions"],
+  );
+  // The title is bold and escaped; its own asterisks cannot end the bold.
+  assert.deepEqual(attachment?.blocks[0], {
+    text: {
+      text: ":writing_hand:  Riley signed *NDA &lt;v2&gt; &amp; ∗more∗* — 2 of 3 signed",
+      type: "mrkdwn",
+    },
+    type: "section",
+  });
+  assert.deepEqual(attachment?.blocks[1], {
+    elements: [
+      {
+        text: "Out for signature  ·  Sent by Sam Rivera  ·  <!date^1900000000^{date_short_pretty} at {time}|Mar 17, 2030>",
+        type: "mrkdwn",
+      },
+    ],
+    type: "context",
+  });
+  assert.deepEqual(attachment?.blocks[2], {
+    elements: [
+      {
+        action_id: "open",
+        text: { emoji: false, text: "Open envelope", type: "plain_text" },
+        type: "button",
+        url: "https://sign.example.com/envelopes/e1",
+      },
+    ],
+    type: "actions",
+  });
+
+  // Every kind has its colour and its emoji, and a text fallback.
+  for (const kind of notificationEventKinds) {
+    const each = buildSlackMessage(
+      kind === "backup_failed"
+        ? sample({ envelope: null, kind })
+        : sample({ kind }),
+    );
+    const headline = each.attachments?.[0]?.blocks[0]?.text as
+      { text?: string } | undefined;
+
+    assert.ok(each.text.length > 0);
+    assert.match(headline?.text ?? "", /^:[a-z_]+: {2}/);
+  }
+});
+
+test("a completed envelope offers its certificate, in green", () => {
+  const content = buildSlackMessage(
+    sample({
+      envelope: {
+        expiresAt: null,
+        id: "e1",
+        ownerEmail: "sam@example.com",
+        ownerName: "Sam Rivera",
+        signedCount: 3,
+        signerCount: 3,
+        status: "completed",
+        title: "NDA",
+      },
+      kind: "envelope_completed",
+    }),
+  );
+  const attachment = content.attachments?.[0];
+  const buttons = attachment?.blocks.at(-1)?.elements as
+    { style?: string; text: { text: string }; url: string }[] | undefined;
+
+  assert.equal(attachment?.color, SLACK_TONE_COLORS.success);
+  assert.deepEqual(
+    buttons?.map((button) => [button.text.text, button.style ?? null]),
+    [
+      ["View certificate", "primary"],
+      ["Open envelope", null],
+    ],
+  );
+  assert.equal(
+    buttons?.[0]?.url,
+    "https://sign.example.com/api/envelopes/e1/download?type=evidence",
+  );
+});
+
+test("a reply in a thread leads with the headline and leaves out the organization and Open envelope", () => {
+  const content = buildSlackMessage(sample(), "reply");
+
+  assert.equal(content.blocks?.length, 1);
+  assert.equal(content.blocks?.[0]?.type, "section");
+  assert.deepEqual(
+    content.attachments?.[0]?.blocks.map((block) => block.type),
+    ["context"],
+  );
+});
+
+test("a first message in a channel starts a thread; later ones edit it and reply in it", async () => {
+  const { calls, fetch } = fakeFetch(() =>
+    json({ channel: "C0123456", ok: true, ts: "100.1" }),
+  );
+  const channel = createSlackChannelWithFetch(fetch);
+  const context = { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} };
+
+  const first = await channel.send("C0123456", sample(), context, {
+    placement: "channel_thread",
+    thread: null,
+    updateThread: true,
+  });
+
+  assert.deepEqual(first, {
+    outcome: "sent",
+    thread: { conversation: "C0123456", ts: "100.1" },
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]?.url ?? "", /chat\.postMessage$/);
+  assert.equal(bodyOf(calls[0]).thread_ts, undefined);
+
+  const later = await channel.send(
+    "C0123456",
+    sample({ kind: "envelope_completed" }),
+    context,
+    {
+      placement: "channel_thread",
+      thread: { conversation: "C0123456", ts: "100.1" },
+      updateThread: true,
+    },
+  );
+
+  assert.deepEqual(later, {
+    outcome: "sent",
+    thread: { conversation: "C0123456", ts: "100.1" },
+  });
+  assert.match(calls[1]?.url ?? "", /chat\.update$/);
+  assert.equal(bodyOf(calls[1]).ts, "100.1");
+  assert.match(calls[2]?.url ?? "", /chat\.postMessage$/);
+  assert.equal(bodyOf(calls[2]).thread_ts, "100.1");
+});
+
+test("a deleted first message is replaced by a new one", async () => {
+  const { calls, fetch } = fakeFetch((call) =>
+    call.url.endsWith("chat.update")
+      ? json({ error: "message_not_found", ok: false })
+      : json({ channel: "D0123456", ok: true, ts: "200.2" }),
+  );
+  const channel = createSlackChannelWithFetch(fetch);
+  const context = { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} };
+  const result = await channel.send("U777", sample(), context, {
+    placement: "in_place",
+    thread: { conversation: "D0123456", ts: "100.1" },
+    updateThread: true,
+  });
+
+  assert.deepEqual(result, {
+    outcome: "sent",
+    thread: { conversation: "D0123456", ts: "200.2" },
+  });
+  assert.deepEqual(
+    calls.map((call) => call.url.split("/").at(-1)),
+    ["chat.update", "chat.postMessage"],
+  );
+});
+
+test("an outcome posts a new direct message and brings the progress message up to date", async () => {
+  const { calls, fetch } = fakeFetch(() =>
+    json({ channel: "D0123456", ok: true, ts: "300.3" }),
+  );
+  const channel = createSlackChannelWithFetch(fetch);
+  const context = { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} };
+  const progress = { conversation: "D0123456", ts: "100.1" };
+  const result = await channel.send(
+    "U777",
+    sample({ kind: "envelope_declined" }),
+    context,
+    { placement: "new_message", thread: progress, updateThread: true },
+  );
+
+  assert.deepEqual(result, { outcome: "sent", thread: progress });
+  assert.deepEqual(
+    calls.map((call) => call.url.split("/").at(-1)),
+    ["chat.update", "chat.postMessage"],
+  );
+  assert.equal(bodyOf(calls[1]).channel, "U777");
+});
+
+test("a failed edit is a failed send, kept to Slack's error code", async () => {
+  const { fetch } = fakeFetch(() =>
+    json({ error: "internal_error", ok: false }),
+  );
+  const channel = createSlackChannelWithFetch(fetch);
+  const result = await channel.send(
+    "C0123456",
+    sample(),
+    { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} },
+    {
+      placement: "channel_thread",
+      thread: { conversation: "C0123456", ts: "1.1" },
+      updateThread: true,
+    },
+  );
+
+  assert.deepEqual(result, {
+    error: "internal_error",
+    outcome: "retry",
+    retryAfterSeconds: null,
+  });
 });
 
 test("without a token the channel is not set up and sends nothing", async () => {
@@ -331,22 +598,7 @@ test("without a token the channel is not set up and sends nothing", async () => 
     directMessages: false,
     source: null,
   });
-  assert.equal(
-    (
-      await channel.send(
-        "C1",
-        {
-          fields: [],
-          headline: "x",
-          kind: "envelope_sent",
-          link: null,
-          text: "x",
-        },
-        context,
-      )
-    ).outcome,
-    "failed",
-  );
+  assert.equal((await channel.send("C1", sample(), context)).outcome, "failed");
   assert.equal(calls.length, 0);
 });
 
@@ -392,29 +644,56 @@ test("text is escaped so a title cannot become a mention or a link", () => {
     "&lt;!channel&gt; &amp; &lt;https://evil.example|click&gt;",
   );
 
-  const blocks = buildSlackBlocks({
-    fields: [],
-    headline: "<@U1>",
-    kind: "envelope_sent",
-    link: null,
-    text: "<@U1>",
+  const content = buildSlackMessage(
+    sample({ payload: { signerName: "<@U1> <!here>" } }),
+  );
+  const everything = JSON.stringify(content);
+
+  assert.doesNotMatch(everything, /<@U1>|<!here>/);
+  assert.match(everything, /&lt;@U1&gt; &lt;!here&gt;/);
+});
+
+test("previews show every kind, built like the real messages", () => {
+  const previews = buildSlackPreviews({
+    appUrl: "https://sign.example.com",
+    brand: { logoUrl: null, name: "Acme" },
   });
 
-  assert.equal(blocks.length, 1);
-  assert.deepEqual(blocks[0], {
-    text: { text: "*&lt;@U1&gt;*", type: "mrkdwn" },
-    type: "section",
-  });
+  assert.deepEqual(
+    previews.map((preview) => preview.kind),
+    [...notificationEventKinds],
+  );
+
+  for (const preview of previews) {
+    assert.equal(preview.message.blocks?.[0]?.type, "context");
+    assert.equal(
+      preview.reply === null,
+      preview.kind === "backup_failed",
+      preview.kind,
+    );
+  }
 });
 
 test("the manifest asks for the minimal scopes and names this site", () => {
   const manifest = buildSlackManifest({
-    appName: "Example Signing",
+    appName: "Example",
+    brandColor: "#0b5394",
     siteUrl: "https://sign.example.com",
   }) as {
-    display_information: { description: string; name: string };
+    display_information: {
+      background_color: string;
+      description: string;
+      long_description: string;
+      name: string;
+    };
     oauth_config: { scopes: { bot: string[] } };
   };
+
+  // Slack wants 175 to 4,000 characters here, and no more than 140 in the
+  // short description.
+  assert.ok(manifest.display_information.long_description.length >= 175);
+  assert.ok(manifest.display_information.long_description.length <= 4000);
+  assert.equal(manifest.display_information.background_color, "#0b5394");
 
   assert.deepEqual(manifest.oauth_config.scopes.bot, [...SLACK_BOT_SCOPES]);
   assert.deepEqual(manifest.oauth_config.scopes.bot, [
@@ -425,5 +704,12 @@ test("the manifest asks for the minimal scopes and names this site", () => {
   ]);
   assert.match(manifest.display_information.description, /sign\.example\.com/);
   assert.ok(manifest.display_information.description.length <= 140);
-  assert.equal(manifest.display_information.name, "Example Signing");
+  assert.equal(manifest.display_information.name, "Example");
+});
+
+test("the app's background is the organization's colour only when white text reads on it", () => {
+  assert.equal(slackBackgroundColor("#0B5394"), "#0b5394");
+  assert.equal(slackBackgroundColor("#ffe066"), "#5340d6");
+  assert.equal(slackBackgroundColor(null), "#5340d6");
+  assert.equal(slackBackgroundColor("not a colour"), "#5340d6");
 });

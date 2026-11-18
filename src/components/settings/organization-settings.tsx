@@ -23,6 +23,38 @@ const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 type OrganizationSettingsProps = {
   initialSettings: OrganizationSettingsView;
+  /**
+   * The part of these settings to show, each on its own page of Settings.
+   * Without it, all of them.
+   */
+  section?: OrganizationSettingsSection;
+};
+
+export type OrganizationSettingsSection =
+  "documents" | "organization" | "people";
+
+const SECTION_HEADINGS: Record<
+  OrganizationSettingsSection,
+  { description: string; id: string; title: string }
+> = {
+  documents: {
+    description:
+      "Regulated records, and what you do when a signer asks about the data you hold on them.",
+    id: "records",
+    title: "Records",
+  },
+  organization: {
+    description:
+      "These settings apply to everyone who uses this site. Only you, the administrator, can see and change them.",
+    id: "organization",
+    title: "Organization",
+  },
+  people: {
+    description:
+      "Everyone with an account here, and how they sign in: two-step sign-in and how long a session lasts.",
+    id: "people",
+    title: "People and security",
+  },
 };
 
 type FormErrors = Partial<Record<OrganizationSettingsField, string>>;
@@ -63,7 +95,11 @@ const signupModeOptions: Array<{
 
 export function OrganizationSettings({
   initialSettings,
+  section,
 }: OrganizationSettingsProps) {
+  const shows = (part: OrganizationSettingsSection) =>
+    section === undefined || section === part;
+  const heading = SECTION_HEADINGS[section ?? "organization"];
   const router = useRouter();
   const [values, setValues] = useState(initialSettings);
   const [errors, setErrors] = useState<FormErrors>({});
@@ -157,21 +193,20 @@ export function OrganizationSettings({
       className="panel scroll-mt-6 p-6 sm:p-8"
       data-animate="enter"
       data-animate-delay="2"
-      id="organization"
+      id={heading.id}
     >
       <div className="space-y-8">
         <div className="space-y-2">
           <p className="section-eyebrow">Administrator</p>
           <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-            Organization
+            {heading.title}
           </h2>
           <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-            These settings apply to everyone who uses this site. Only you, the
-            administrator, can see and change them.
+            {heading.description}
           </p>
         </div>
 
-        {feedback ? (
+        {shows("organization") && feedback ? (
           <p
             className={`notice ${
               feedback.tone === "success" ? "notice-success" : "notice-danger"
@@ -182,216 +217,221 @@ export function OrganizationSettings({
           </p>
         ) : null}
 
-        <form className="space-y-8" noValidate onSubmit={handleSubmit}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FieldShell
-              disabled={isSaving}
-              error={errors.organizationName}
-              helper="Shown in the header and in every email this site sends."
-              label="Organization name"
-              name="organization-name"
-              onChange={handleChange("organizationName")}
-              readOnly={false}
-              value={values.organizationName}
-            />
-          </div>
-
-          {/* The hosted service runs under its own name, mark and color. */}
-          {!values.hosted ? (
-            <BrandingPanel
-              brandColor={values.brandColor}
-              brandColorError={errors.brandColor}
-              disabled={isSaving}
-              logoUrl={values.logoUrl}
-              onBrandColorChange={handleBrandColorChange}
-              onLogoChange={(logoUrl) =>
-                setValues((currentValues) => ({ ...currentValues, logoUrl }))
-              }
-            />
-          ) : null}
-
-          <fieldset className="space-y-4 border-t border-(--border) pt-8">
-            <legend className="float-left mb-4 w-full text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-              Who can create an account
-            </legend>
-            <p className="clear-both max-w-2xl text-sm leading-6 text-(--secondary)">
-              This is about people who send documents. People who are sent a
-              document to sign never need an account.
-            </p>
-            <div className="space-y-3">
-              {signupModeOptions.map((option) => (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-2xl bg-(--surface) px-4 py-3.5 ring-2 ring-transparent transition has-[:checked]:bg-(--accent-softer) has-[:checked]:ring-(--accent)"
-                  key={option.value}
-                >
-                  <input
-                    checked={values.signupMode === option.value}
-                    className="mt-1 size-4 accent-(--accent)"
-                    disabled={isSaving}
-                    name="signup-mode"
-                    onChange={() => handleSignupModeChange(option.value)}
-                    type="radio"
-                    value={option.value}
-                  />
-                  <span className="space-y-1">
-                    <span className="block text-sm font-bold text-(--fg)">
-                      {option.label}
-                    </span>
-                    <span className="block text-sm leading-6 text-(--secondary)">
-                      {option.description}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            {values.signupMode === "domains" || errors.allowedEmailDomains ? (
-              <div className="max-w-xl">
-                <FieldShell
-                  disabled={isSaving}
-                  error={errors.allowedEmailDomains}
-                  helper="Separate several domains with commas."
-                  label="Email domains"
-                  name="allowed-email-domains"
-                  onChange={handleChange("allowedEmailDomains")}
-                  placeholder="yourcompany.com"
-                  readOnly={false}
-                  value={values.allowedEmailDomains}
-                />
-              </div>
-            ) : null}
-          </fieldset>
-
-          <div className="space-y-5 border-t border-(--border) pt-8">
-            <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-              Email addresses
-            </h3>
+        {shows("organization") ? (
+          <form className="space-y-8" noValidate onSubmit={handleSubmit}>
             <div className="grid gap-4 sm:grid-cols-2">
               <FieldShell
-                disabled={isSaving || values.senderAddressFromEnv}
-                error={errors.senderAddress}
-                helper={
-                  values.senderAddressFromEnv
-                    ? "Set by the RESEND_FROM_EMAIL environment variable."
-                    : "The address emails come from, at a domain you own. A subdomain such as notifications@sign.yourcompany.com keeps this site's mail apart from your everyday email."
-                }
-                label="Send email from"
-                name="sender-address"
-                onChange={handleChange("senderAddress")}
-                placeholder="sign@yourcompany.com"
-                readOnly={values.senderAddressFromEnv}
-                type="email"
-                value={values.senderAddress}
-              />
-              <FieldShell
-                disabled={isSaving || values.supportAddressFromEnv}
-                error={errors.supportAddress}
-                helper={
-                  values.supportAddressFromEnv
-                    ? "Set by the SUPPORT_EMAIL environment variable."
-                    : "Where replies and questions from signers go."
-                }
-                label="Support address"
-                name="support-address"
-                onChange={handleChange("supportAddress")}
-                placeholder="help@yourcompany.com"
-                readOnly={values.supportAddressFromEnv}
-                type="email"
-                value={values.supportAddress}
+                disabled={isSaving}
+                error={errors.organizationName}
+                helper="Shown in the header and in every email this site sends."
+                label="Organization name"
+                name="organization-name"
+                onChange={handleChange("organizationName")}
+                readOnly={false}
+                value={values.organizationName}
               />
             </div>
-          </div>
 
-          {!values.hosted ? (
+            {/* The hosted service runs under its own name, mark and color. */}
+            {!values.hosted ? (
+              <BrandingPanel
+                brandColor={values.brandColor}
+                brandColorError={errors.brandColor}
+                disabled={isSaving}
+                logoUrl={values.logoUrl}
+                onBrandColorChange={handleBrandColorChange}
+                onLogoChange={(logoUrl) =>
+                  setValues((currentValues) => ({ ...currentValues, logoUrl }))
+                }
+              />
+            ) : null}
+
+            <fieldset className="space-y-4 border-t border-(--border) pt-8">
+              <legend className="float-left mb-4 w-full text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
+                Who can create an account
+              </legend>
+              <p className="clear-both max-w-2xl text-sm leading-6 text-(--secondary)">
+                This is about people who send documents. People who are sent a
+                document to sign never need an account.
+              </p>
+              <div className="space-y-3">
+                {signupModeOptions.map((option) => (
+                  <label
+                    className="flex cursor-pointer items-start gap-3 rounded-2xl bg-(--surface) px-4 py-3.5 ring-2 ring-transparent transition has-[:checked]:bg-(--accent-softer) has-[:checked]:ring-(--accent)"
+                    key={option.value}
+                  >
+                    <input
+                      checked={values.signupMode === option.value}
+                      className="mt-1 size-4 accent-(--accent)"
+                      disabled={isSaving}
+                      name="signup-mode"
+                      onChange={() => handleSignupModeChange(option.value)}
+                      type="radio"
+                      value={option.value}
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-bold text-(--fg)">
+                        {option.label}
+                      </span>
+                      <span className="block text-sm leading-6 text-(--secondary)">
+                        {option.description}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {values.signupMode === "domains" || errors.allowedEmailDomains ? (
+                <div className="max-w-xl">
+                  <FieldShell
+                    disabled={isSaving}
+                    error={errors.allowedEmailDomains}
+                    helper="Separate several domains with commas."
+                    label="Email domains"
+                    name="allowed-email-domains"
+                    onChange={handleChange("allowedEmailDomains")}
+                    placeholder="yourcompany.com"
+                    readOnly={false}
+                    value={values.allowedEmailDomains}
+                  />
+                </div>
+              ) : null}
+            </fieldset>
+
+            <div className="space-y-5 border-t border-(--border) pt-8">
+              <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
+                Email addresses
+              </h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FieldShell
+                  disabled={isSaving || values.senderAddressFromEnv}
+                  error={errors.senderAddress}
+                  helper={
+                    values.senderAddressFromEnv
+                      ? "Set by the RESEND_FROM_EMAIL environment variable."
+                      : "The address emails come from, at a domain you own. A subdomain such as notifications@sign.yourcompany.com keeps this site's mail apart from your everyday email."
+                  }
+                  label="Send email from"
+                  name="sender-address"
+                  onChange={handleChange("senderAddress")}
+                  placeholder="sign@yourcompany.com"
+                  readOnly={values.senderAddressFromEnv}
+                  type="email"
+                  value={values.senderAddress}
+                />
+                <FieldShell
+                  disabled={isSaving || values.supportAddressFromEnv}
+                  error={errors.supportAddress}
+                  helper={
+                    values.supportAddressFromEnv
+                      ? "Set by the SUPPORT_EMAIL environment variable."
+                      : "Where replies and questions from signers go."
+                  }
+                  label="Support address"
+                  name="support-address"
+                  onChange={handleChange("supportAddress")}
+                  placeholder="help@yourcompany.com"
+                  readOnly={values.supportAddressFromEnv}
+                  type="email"
+                  value={values.supportAddress}
+                />
+              </div>
+            </div>
+
+            {!values.hosted ? (
+              <div className="space-y-5 border-t border-(--border) pt-8">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
+                    Your terms and privacy policy
+                  </h3>
+                  <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+                    Optional. Links to pages on your own website, shown in the
+                    footer of this site and of its emails.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FieldShell
+                    disabled={isSaving}
+                    error={errors.termsUrl}
+                    label="Terms link"
+                    name="terms-url"
+                    onChange={handleChange("termsUrl")}
+                    placeholder="https://yourcompany.com/terms"
+                    readOnly={false}
+                    value={values.termsUrl}
+                  />
+                  <FieldShell
+                    disabled={isSaving}
+                    error={errors.privacyUrl}
+                    label="Privacy policy link"
+                    name="privacy-url"
+                    onChange={handleChange("privacyUrl")}
+                    placeholder="https://yourcompany.com/privacy"
+                    readOnly={false}
+                    value={values.privacyUrl}
+                  />
+                </div>
+                <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+                  Without a privacy policy link, signers see{" "}
+                  <a
+                    className="font-semibold text-(--accent-ink) underline decoration-[rgb(var(--accent-rgb)/0.35)] underline-offset-4"
+                    href="/signer-privacy"
+                    target="_blank"
+                  >
+                    a notice built from these settings
+                  </a>
+                  . Check that it is right for your organization.
+                </p>
+              </div>
+            ) : null}
+
             <div className="space-y-5 border-t border-(--border) pt-8">
               <div className="space-y-2">
                 <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-                  Your terms and privacy policy
+                  How long to keep finished documents
                 </h3>
                 <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-                  Optional. Links to pages on your own website, shown in the
-                  footer of this site and of its emails.
+                  Optional. After this many days a completed, declined or voided
+                  envelope is deleted with its audit trail. Its sender is
+                  emailed 30 days before. Leave empty to keep them until someone
+                  deletes them. Many records must be kept for years, so check
+                  what applies to you before setting this.
                 </p>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="max-w-xs">
                 <FieldShell
-                  disabled={isSaving}
-                  error={errors.termsUrl}
-                  label="Terms link"
-                  name="terms-url"
-                  onChange={handleChange("termsUrl")}
-                  placeholder="https://yourcompany.com/terms"
+                  disabled={isSaving || values.part11Mode}
+                  error={errors.retentionDays}
+                  helper={
+                    values.part11Mode
+                      ? "Off while Part 11 mode is on: those records are deleted by hand only."
+                      : undefined
+                  }
+                  label="Days to keep"
+                  name="retention-days"
+                  onChange={handleChange("retentionDays")}
+                  placeholder="Keep until deleted"
                   readOnly={false}
-                  value={values.termsUrl}
-                />
-                <FieldShell
-                  disabled={isSaving}
-                  error={errors.privacyUrl}
-                  label="Privacy policy link"
-                  name="privacy-url"
-                  onChange={handleChange("privacyUrl")}
-                  placeholder="https://yourcompany.com/privacy"
-                  readOnly={false}
-                  value={values.privacyUrl}
+                  value={values.retentionDays}
                 />
               </div>
-              <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-                Without a privacy policy link, signers see{" "}
-                <a
-                  className="font-semibold text-(--accent-ink) underline decoration-[rgb(var(--accent-rgb)/0.35)] underline-offset-4"
-                  href="/signer-privacy"
-                  target="_blank"
-                >
-                  a notice built from these settings
-                </a>
-                . Check that it is right for your organization.
-              </p>
             </div>
-          ) : null}
 
-          <div className="space-y-5 border-t border-(--border) pt-8">
-            <div className="space-y-2">
-              <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-                How long to keep finished documents
-              </h3>
-              <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-                Optional. After this many days a completed, declined or voided
-                envelope is deleted with its audit trail. Its sender is emailed
-                30 days before. Leave empty to keep them until someone deletes
-                them. Many records must be kept for years, so check what applies
-                to you before setting this.
-              </p>
-            </div>
-            <div className="max-w-xs">
-              <FieldShell
-                disabled={isSaving || values.part11Mode}
-                error={errors.retentionDays}
-                helper={
-                  values.part11Mode
-                    ? "Off while Part 11 mode is on: those records are deleted by hand only."
-                    : undefined
-                }
-                label="Days to keep"
-                name="retention-days"
-                onChange={handleChange("retentionDays")}
-                placeholder="Keep until deleted"
-                readOnly={false}
-                value={values.retentionDays}
-              />
-            </div>
-          </div>
+            <ShellButton className="w-fit" loading={isSaving} type="submit">
+              {isSaving ? "Saving..." : "Save organization settings"}
+            </ShellButton>
+          </form>
+        ) : null}
 
-          <ShellButton className="w-fit" loading={isSaving} type="submit">
-            {isSaving ? "Saving..." : "Save organization settings"}
-          </ShellButton>
-        </form>
-
-        <EmailSetupPanel key={emailRevision} />
+        {/* Settings shows email under Integrations, on its own page. */}
+        {section === undefined ? <EmailSetupPanel key={emailRevision} /> : null}
 
         {/* The hosted service's accounts are strangers to each other, not
             one organization, so it has no list of them here. */}
-        {!values.hosted ? <PeoplePanel part11Mode={values.part11Mode} /> : null}
+        {shows("people") && !values.hosted ? (
+          <PeoplePanel part11Mode={values.part11Mode} />
+        ) : null}
 
-        {!values.hosted ? (
+        {shows("people") && !values.hosted ? (
           <SecurityPanel
             initialRequireTwoFactor={values.requireTwoFactor}
             initialSessionIdleMinutes={values.sessionIdleMinutes}
@@ -399,11 +439,11 @@ export function OrganizationSettings({
           />
         ) : null}
 
-        {!values.hosted ? (
+        {shows("documents") && !values.hosted ? (
           <Part11Panel initialEnabled={values.part11Mode} />
         ) : null}
 
-        <SignerDataPanel />
+        {shows("documents") ? <SignerDataPanel /> : null}
       </div>
     </section>
   );

@@ -56,12 +56,43 @@ export type SlackClient = {
     }>
   >;
   lookupUserByEmail(email: string): Promise<SlackResult<{ userId: string }>>;
-  postMessage(input: {
-    blocks?: SlackBlock[];
-    channel: string;
-    text: string;
-  }): Promise<SlackResult<{ channel: string; ts: string }>>;
+  postMessage(
+    input: SlackMessageContent & {
+      channel: string;
+      /** Replies in the thread of this message. */
+      threadTs?: string;
+    },
+  ): Promise<SlackResult<{ channel: string; ts: string }>>;
+  /** Edits a message the app posted (chat.update). */
+  updateMessage(
+    input: SlackMessageContent & { channel: string; ts: string },
+  ): Promise<SlackResult<{ channel: string; ts: string }>>;
 };
+
+/** What a message shows: blocks, coloured attachments, and the text fallback. */
+export type SlackMessageContent = {
+  attachments?: SlackAttachment[];
+  blocks?: SlackBlock[];
+  text: string;
+};
+
+export type SlackAttachment = {
+  blocks: SlackBlock[];
+  /** The bar down the left side, "#rrggbb". */
+  color: string;
+  fallback?: string;
+};
+
+/**
+ * Errors that mean the remembered message is gone (deleted, or the app can
+ * no longer edit it), so a new one is posted in its place.
+ */
+export const SLACK_MESSAGE_GONE_ERRORS: ReadonlySet<string> = new Set([
+  "cant_update_message",
+  "edit_window_closed",
+  "message_not_found",
+  "thread_not_found",
+]);
 
 const AUTH_ERRORS = new Set([
   "account_inactive",
@@ -304,30 +335,58 @@ export function createSlackClient({
       return { ok: true, userId };
     },
 
-    async postMessage({ blocks, channel, text }) {
+    async postMessage({ attachments, blocks, channel, text, threadTs }) {
       const result = await call(
         "chat.postMessage",
         {
+          attachments,
           blocks,
           channel,
           // Names in a title or a signer's name are text, never mentions.
           link_names: false,
           text,
+          thread_ts: threadTs,
           unfurl_links: false,
           unfurl_media: false,
         },
         "json",
       );
 
-      if (!result.ok) {
-        return result;
-      }
-
-      return {
-        channel: readString(result.body.channel) ?? channel,
-        ok: true,
-        ts: readString(result.body.ts) ?? "",
-      };
+      return messageResult(result, channel);
     },
+
+    async updateMessage({ attachments, blocks, channel, text, ts }) {
+      const result = await call(
+        "chat.update",
+        {
+          // An empty list clears what an earlier version had.
+          attachments: attachments ?? [],
+          blocks: blocks ?? [],
+          channel,
+          link_names: false,
+          text,
+          ts,
+        },
+        "json",
+      );
+
+      return messageResult(result, channel, ts);
+    },
+  };
+}
+
+function messageResult(
+  result: SlackResult<{ body: Record<string, unknown> }>,
+  channel: string,
+  ts = "",
+): SlackResult<{ channel: string; ts: string }> {
+  if (!result.ok) {
+    return result;
+  }
+
+  return {
+    channel: readString(result.body.channel) ?? channel,
+    ok: true,
+    ts: readString(result.body.ts) ?? ts,
   };
 }

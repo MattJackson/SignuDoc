@@ -44,6 +44,11 @@ async function ensureDatabaseExists(connectionString: string) {
 }
 
 export default async function globalSetup() {
+  // The screenshots run after the tests, on the install they left behind.
+  if (process.env.E2E_KEEP_DATABASE === "1") {
+    return;
+  }
+
   assertDisposableDatabase(e2eDatabaseUrl);
 
   if (isSqliteUrl(e2eDatabaseUrl)) {

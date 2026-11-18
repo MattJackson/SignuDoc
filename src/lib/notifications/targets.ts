@@ -1,4 +1,8 @@
-import { NOTIFICATION_EVENTS, type NotificationEventKind } from "./events.ts";
+import {
+  NOTIFICATION_EVENTS,
+  SELF_ACTION_KINDS,
+  type NotificationEventKind,
+} from "./events.ts";
 
 // Who an event goes to, worked out from what is already known about it.
 // No database and no chat tool here, so every case can be tested on its
@@ -15,6 +19,9 @@ import { NOTIFICATION_EVENTS, type NotificationEventKind } from "./events.ts";
 //   sender's.
 // * Every administrator gets the install's own events, unless they turned
 //   them off.
+// * Nobody hears about what they did themselves: a sender who signs their
+//   own envelope gets no "you signed" message. A person is matched to the
+//   event by email address. Channels still hear about it.
 
 export type NotificationRuleRecord = {
   channel: string;
@@ -60,6 +67,10 @@ export type TargetInput = {
   rules: NotificationRuleRecord[];
   /** People on a team with the sender, not the sender. */
   teammateIds: string[];
+  /** Who did it (the event's actor and signer), lower-case email addresses. */
+  actorEmails?: string[];
+  /** The email address of each person who might get a direct message, by id. */
+  userEmails?: Record<string, string>;
 };
 
 export function preferenceFor(
@@ -111,7 +122,25 @@ export function matchNotificationTargets(
   const definition = NOTIFICATION_EVENTS[input.kind];
   const targets = new Map<string, NotificationTarget>();
 
+  const actors = new Set(
+    (input.actorEmails ?? []).map((email) => email.trim().toLowerCase()),
+  );
+  const isActor = (userId: string) => {
+    const email = input.userEmails?.[userId]?.trim().toLowerCase();
+
+    return (
+      SELF_ACTION_KINDS.has(input.kind) &&
+      email !== undefined &&
+      email !== "" &&
+      actors.has(email)
+    );
+  };
+
   function add(target: NotificationTarget) {
+    if (target.targetKind === "user" && isActor(target.target)) {
+      return;
+    }
+
     const key = `${target.channel}\u0000${target.targetKind}\u0000${target.target}`;
 
     if (!targets.has(key)) {

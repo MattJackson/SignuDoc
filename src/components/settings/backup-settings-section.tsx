@@ -2,6 +2,10 @@
 
 import { useState } from "react";
 
+import {
+  BrandMark,
+  EnvLockedNotice,
+} from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   BackupRun,
@@ -266,28 +270,34 @@ export function BackupSettingsSection({
         ? "notice-danger"
         : "notice-warning";
 
+  // In onboarding (which passes onChange) the step around it has the
+  // title and the card.
+  const embedded = onChange !== undefined;
+
   return (
     <section
-      className="panel scroll-mt-6 p-6 sm:p-8"
-      data-animate="enter"
+      className={embedded ? undefined : "panel scroll-mt-6 p-6 sm:p-8"}
+      data-animate={embedded ? undefined : "enter"}
       data-animate-delay="2"
       data-testid="backup-settings"
       id="backups"
     >
       <div className="space-y-6">
-        <div className="space-y-2">
-          <p className="section-eyebrow">Administrator</p>
-          <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-            Backups
-          </h2>
-          <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-            Once a day the database and every stored document are copied to a
-            place kept apart from this install. Copies of deleted documents and
-            old database copies are removed after the number of days below. The
-            database&apos;s own backups (Cloud SQL or Neon) are separate; keep
-            those on too.
-          </p>
-        </div>
+        {embedded ? null : (
+          <div className="space-y-2">
+            <p className="section-eyebrow">Administrator</p>
+            <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
+              Backups
+            </h2>
+            <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+              Once a day the database and every stored document are copied to a
+              place kept apart from this install. Copies of deleted documents
+              and old database copies are removed after the number of days
+              below. The database&apos;s own backups (Cloud SQL or Neon) are
+              separate; keep those on too.
+            </p>
+          </div>
+        )}
 
         <p className={`notice ${statusTone}`} role="status">
           {view.status.message}
@@ -298,10 +308,9 @@ export function BackupSettingsSection({
             Where backups go
           </legend>
           {locked.destination ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (BACKUP_GCS_BUCKET or
-              BACKUP_BLOB_READ_WRITE_TOKEN), so it cannot be changed here.
-            </p>
+            <EnvLockedNotice
+              variables={["BACKUP_GCS_BUCKET", "BACKUP_BLOB_READ_WRITE_TOKEN"]}
+            />
           ) : null}
           {orderedOptions.map((option) => (
             <label
@@ -318,6 +327,12 @@ export function BackupSettingsSection({
                 type="radio"
                 value={option.value}
               />
+              {option.value === "gcs" || option.value === "blob" ? (
+                <BrandMark
+                  brand={option.value === "gcs" ? "google-cloud" : "vercel"}
+                  size="sm"
+                />
+              ) : null}
               <span className="space-y-1">
                 <span className="block text-sm font-bold text-(--fg)">
                   {option.label}

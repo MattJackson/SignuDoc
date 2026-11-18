@@ -9,7 +9,8 @@
 //
 // To announce a new kind of audit event, add
 // it to notificationEventKinds and NOTIFICATION_EVENTS with its
-// `auditEvent`, and a headline in message.ts. Nothing else changes: rules,
+// `auditEvent`, a headline and tone in message.ts, and an emoji in
+// slack/layout.ts. Nothing else changes: rules,
 // preferences and the pages list whatever is here.
 
 export const notificationEventKinds = [
@@ -179,6 +180,45 @@ export function notificationKindFor(
 
   return isNotificationEventKind(event) ? event : null;
 }
+
+/**
+ * Progress on an envelope. In a person's direct messages these edit one
+ * message per envelope instead of posting a new one each time; the rest
+ * (outcomes, and warnings that need someone to act) post a new message.
+ */
+export const IN_PLACE_KINDS: ReadonlySet<NotificationEventKind> = new Set([
+  "envelope_sent",
+  "envelope_viewed",
+  "envelope_signed",
+  "envelope_approved",
+  "envelope_voided",
+]);
+
+/**
+ * Events that come in bursts (several signers in a row). Their messages
+ * wait a minute, and only the newest of a burst for the same place is
+ * sent: every message shows the envelope as it is when sent, so the newest
+ * covers the rest.
+ */
+export const BURST_KINDS: ReadonlySet<NotificationEventKind> = new Set([
+  "envelope_viewed",
+  "envelope_signed",
+  "envelope_approved",
+]);
+
+/** How long a burst event waits for the next one. */
+export const BURST_HOLD_SECONDS = 60;
+
+/** Events a person caused themselves, so they never hear about them. */
+export const SELF_ACTION_KINDS: ReadonlySet<NotificationEventKind> = new Set([
+  "envelope_sent",
+  "envelope_viewed",
+  "envelope_signed",
+  "envelope_approved",
+  "envelope_rejected",
+  "envelope_declined",
+  "envelope_voided",
+]);
 
 /** The kinds in the order the pages list them. */
 export function listNotificationEvents(): NotificationEventDefinition[] {

@@ -2,6 +2,7 @@
 
 import { useRef, useState, type ChangeEvent } from "react";
 
+import { EnvLockedNotice } from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { SealSettingsView, TimestampTestResult } from "@/lib/seal-setup";
 import type { SealCertificateSummary } from "@/lib/seal-settings";
@@ -244,26 +245,33 @@ export function SealSettingsSection({
     },
   ];
 
+  // In onboarding (which passes onChange) the step around it has the
+  // title and the card.
+  const embedded = onChange !== undefined;
+
   return (
     <section
-      className="panel scroll-mt-6 p-6 sm:p-8"
-      data-animate="enter"
+      className={embedded ? undefined : "panel scroll-mt-6 p-6 sm:p-8"}
+      data-animate={embedded ? undefined : "enter"}
       data-animate-delay="2"
       data-testid="seal-settings"
       id="seal"
     >
       <div className="space-y-6">
-        <div className="space-y-2">
-          <p className="section-eyebrow">Administrator</p>
-          <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
-            Seal &amp; timestamp
-          </h2>
-          <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
-            Every finished document and certificate is sealed, so any later
-            change shows in a PDF reader. A timestamp server adds a trusted time
-            to the seal and keeps it checkable for years (long-term validation).
-          </p>
-        </div>
+        {embedded ? null : (
+          <div className="space-y-2">
+            <p className="section-eyebrow">Administrator</p>
+            <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-(--fg)">
+              Seal &amp; timestamp
+            </h2>
+            <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+              Every finished document and certificate is sealed, so any later
+              change shows in a PDF reader. A timestamp server adds a trusted
+              time to the seal and keeps it checkable for years (long-term
+              validation).
+            </p>
+          </div>
+        )}
 
         {view.part11Mode ? (
           <p className="notice notice-warning" role="status">
@@ -278,14 +286,14 @@ export function SealSettingsSection({
             Timestamp server
           </legend>
           {timestampLocked ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (SEAL_TIMESTAMP_URL), so it cannot be
-              changed here:{" "}
-              <code className="break-all text-(--fg)">
-                {view.timestamp.url ?? "off"}
-              </code>
-              .
-            </p>
+            <EnvLockedNotice variables={["SEAL_TIMESTAMP_URL"]}>
+              <p>
+                Timestamp server:{" "}
+                <code className="break-all text-(--fg)">
+                  {view.timestamp.url ?? "off"}
+                </code>
+              </p>
+            </EnvLockedNotice>
           ) : view.timestamp.source === "unset" ? (
             <p className="notice notice-warning" role="status">
               This install has sealed without a trusted time so far. Tick the
@@ -358,10 +366,9 @@ export function SealSettingsSection({
             Seal certificate
           </legend>
           {certificateLocked ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (SEAL_P12_BASE64 and SEAL_P12_PASSWORD), so
-              it cannot be changed here.
-            </p>
+            <EnvLockedNotice
+              variables={["SEAL_P12_BASE64", "SEAL_P12_PASSWORD"]}
+            />
           ) : null}
           {view.certificate.problem ? (
             <p className="notice notice-danger" role="alert">

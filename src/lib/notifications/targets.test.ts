@@ -260,3 +260,56 @@ test("two rules for the same channel make one delivery", () => {
 
   assert.deepEqual(describe(targets), ["channel:C0ALL", "user:owner"]);
 });
+
+test("nobody hears about what they did themselves, but channels still do", () => {
+  const people = {
+    owner: "Sam@Example.com",
+    teammate: "taylor@example.com",
+  };
+  const signedByOwner = input({
+    actorEmails: ["sam@example.com"],
+    kind: "envelope_signed",
+    preferences: [
+      {
+        channel: "slack",
+        enabled: true,
+        event: "envelope_signed",
+        scope: "team",
+        userId: "teammate",
+      },
+    ],
+    rules: [rule({ events: ["envelope_signed"] })],
+    userEmails: people,
+  });
+
+  assert.deepEqual(describe(matchNotificationTargets(signedByOwner)), [
+    "channel:C0ALL",
+    "user:teammate",
+  ]);
+
+  // Someone else signing: the sender hears about it.
+  assert.deepEqual(
+    describe(
+      matchNotificationTargets({
+        ...signedByOwner,
+        actorEmails: ["alex@example.com"],
+      }),
+    ),
+    ["channel:C0ALL", "user:owner", "user:teammate"],
+  );
+
+  // An outcome is news even to whoever finished it: the sender who signs
+  // last still hears that the envelope is complete.
+  assert.deepEqual(
+    describe(
+      matchNotificationTargets(
+        input({
+          actorEmails: ["sam@example.com"],
+          kind: "envelope_completed",
+          userEmails: people,
+        }),
+      ),
+    ),
+    ["user:owner"],
+  );
+});

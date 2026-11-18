@@ -1,7 +1,17 @@
 "use client";
 
+import { MessagesSquareIcon } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
+import {
+  BrandMark,
+  CopyButton,
+  EnvLockedNotice,
+  Notice as KitNotice,
+  SetupStep,
+  StatusBadge,
+} from "@/components/settings/integration-kit";
+import { SlackMessagePreview } from "@/components/settings/slack-message-preview";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { NotificationEventKind } from "@/lib/notifications/events";
 import type { NotificationRule } from "@/lib/notifications/rules";
@@ -15,6 +25,8 @@ import type { NotificationsAdminView } from "@/lib/notifications/settings";
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 const SLACK_NEW_APP_URL = "https://api.slack.com/apps?new_app=1";
+// The app icon to upload to Slack; also the picture in the previews.
+const SLACK_ICON_URL = "/api/admin/notifications/slack-icon";
 
 type Feedback = { message: string; tone: "error" | "success" } | null;
 
@@ -64,14 +76,7 @@ function Notice({ feedback }: { feedback: Feedback }) {
     return null;
   }
 
-  return (
-    <p
-      className={`notice ${feedback.tone === "success" ? "notice-success" : "notice-danger"}`}
-      role={feedback.tone === "error" ? "alert" : "status"}
-    >
-      {feedback.message}
-    </p>
-  );
+  return <KitNotice tone={feedback.tone}>{feedback.message}</KitNotice>;
 }
 
 function StatusPill({
@@ -94,35 +99,9 @@ function Step({
   title: string;
 }) {
   return (
-    <li className="space-y-3 rounded-2xl bg-(--surface) px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-bold text-(--fg)">{title}</span>
-        {done === null ? null : (
-          <StatusPill tone={done ? "success" : "warning"}>
-            {done ? "Done" : "To do"}
-          </StatusPill>
-        )}
-      </div>
-      <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <button
-      className="btn-quiet"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value).then(() => setCopied(true));
-      }}
-      type="button"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <SetupStep ok={done} title={title}>
+      {children}
+    </SetupStep>
   );
 }
 
@@ -154,37 +133,49 @@ export function NotificationsAdminPanel({
       </div>
 
       <ul className="grid gap-3 sm:grid-cols-2">
-        <li className="space-y-2 rounded-2xl bg-(--surface) px-5 py-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm font-bold text-(--fg)">Slack</span>
-            <StatusPill tone={view.slack.configured ? "success" : "warning"}>
-              {view.slack.configured ? "Connected" : "Not set up"}
-            </StatusPill>
+        <li className="flex items-start gap-4 rounded-2xl bg-(--surface) px-5 py-4">
+          <BrandMark brand="slack" size="sm" />
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                className="text-sm font-bold text-(--fg) hover:underline"
+                href="#slack"
+              >
+                Slack
+              </a>
+              <StatusBadge
+                status={view.slack.configured ? "connected" : "not_set_up"}
+              />
+            </div>
+            <p className="text-sm leading-6 text-(--secondary)">
+              Direct messages to the people involved, and posts in the channels
+              you choose.
+            </p>
           </div>
-          <p className="text-sm leading-6 text-(--secondary)">
-            Direct messages to the people involved, and posts in the channels
-            you choose.
-          </p>
         </li>
         {view.planned.map((channel) => (
           <li
-            className="space-y-2 rounded-2xl bg-(--surface) px-5 py-4"
+            className="flex items-start gap-4 rounded-2xl border border-dashed border-(--border-strong) px-5 py-4"
             key={channel.id}
           >
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-sm font-bold text-(--fg)">
-                {channel.name}
-              </span>
-              <StatusPill tone="neutral">Coming later</StatusPill>
+            <BrandMark icon={MessagesSquareIcon} size="sm" />
+            <div className="min-w-0 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-bold text-(--fg)">
+                  {channel.name}
+                </span>
+                <StatusPill tone="neutral">Coming later</StatusPill>
+              </div>
+              <p className="text-sm leading-6 text-(--secondary)">
+                {channel.description}
+              </p>
             </div>
-            <p className="text-sm leading-6 text-(--secondary)">
-              {channel.description}
-            </p>
           </li>
         ))}
       </ul>
 
       <SlackSetup onView={setView} view={view} />
+      <MessagePreviews view={view} />
       <RulesSection onView={setView} view={view} />
       <ThresholdsSection onView={setView} view={view} />
       <DeliveryStatus view={view} />
@@ -274,14 +265,16 @@ function SlackSetup({ onView, view }: SectionProps) {
   }
 
   return (
-    <div className="space-y-5 border-t border-(--border) pt-8" id="slack">
+    <div
+      className="scroll-mt-6 space-y-5 border-t border-(--border) pt-8"
+      id="slack"
+    >
       <div className="flex flex-wrap items-center gap-3">
+        <BrandMark brand="slack" size="sm" />
         <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
           Slack
         </h3>
-        <StatusPill tone={slack.configured ? "success" : "warning"}>
-          {slack.configured ? "Connected" : "Not set up"}
-        </StatusPill>
+        <StatusBadge status={slack.configured ? "connected" : "not_set_up"} />
       </div>
 
       <Notice feedback={feedback} />
@@ -308,7 +301,20 @@ function SlackSetup({ onView, view }: SectionProps) {
             <pre className="max-h-72 overflow-auto rounded-xl bg-white p-3 font-mono text-[0.75rem] text-(--fg)">
               {slack.manifest}
             </pre>
-            <CopyButton value={slack.manifest} />
+            <CopyButton label="app manifest" value={slack.manifest} />
+          </div>
+          <div className="space-y-1">
+            <a
+              className="font-semibold text-(--accent-ink) underline underline-offset-4"
+              download="slack-app-icon.png"
+              href={`${SLACK_ICON_URL}?download=1`}
+            >
+              Download app icon (512×512)
+            </a>
+            <p>
+              In Slack, open your app&apos;s Basic Information page, then
+              Display Information, and upload this icon.
+            </p>
           </div>
           <p>
             It asks for only what notifications need:{" "}
@@ -337,10 +343,7 @@ function SlackSetup({ onView, view }: SectionProps) {
             <code>xoxb-</code>).
           </p>
           {locked ? (
-            <p>
-              The token is set by the SLACK_BOT_TOKEN environment variable where
-              this site runs, so it is changed there.
-            </p>
+            <EnvLockedNotice variables={["SLACK_BOT_TOKEN"]} />
           ) : (
             <form className="space-y-4" noValidate onSubmit={saveToken}>
               <div className="max-w-md">
@@ -472,6 +475,70 @@ function SlackSetup({ onView, view }: SectionProps) {
   );
 }
 
+function MessagePreviews({ view }: { view: NotificationsAdminView }) {
+  const { previews } = view.slack;
+  const [kind, setKind] = useState(previews[0]?.kind ?? null);
+  const preview = previews.find((item) => item.kind === kind) ?? previews[0];
+
+  if (!preview) {
+    return null;
+  }
+
+  return (
+    <div
+      className="space-y-5 border-t border-(--border) pt-8"
+      id="slack-previews"
+    >
+      <div className="space-y-2">
+        <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
+          What the messages look like
+        </h3>
+        <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+          Each envelope gets one message per channel. The first post starts a
+          thread, later events reply in it, and the first post is updated to
+          show where things stand. In direct messages, progress updates one
+          message; a new one arrives when something needs the sender. Signatures
+          wait a minute, so several in a row become one message.
+        </p>
+      </div>
+
+      <div aria-label="Message type" className="segmented" role="group">
+        {previews.map((item) => (
+          <button
+            aria-pressed={item.kind === preview.kind}
+            className="segmented-item"
+            key={item.kind}
+            onClick={() => setKind(item.kind)}
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="well space-y-3 p-4">
+        <SlackMessagePreview
+          appName={view.slack.appName}
+          content={preview.message}
+          iconUrl={SLACK_ICON_URL}
+        />
+        {preview.reply ? (
+          <>
+            <p className="px-1 text-xs font-semibold text-(--secondary)">
+              As a reply in a channel&apos;s thread
+            </p>
+            <SlackMessagePreview
+              appName={view.slack.appName}
+              content={preview.reply}
+              iconUrl={SLACK_ICON_URL}
+            />
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 type RuleDraft = {
   destination: string;
   destinationName: string;
@@ -494,6 +561,8 @@ function RulesSection({ onView, view }: SectionProps) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [channels, setChannels] = useState<SlackChannelOption[] | null>(null);
+  // Each rule's last "Send test", shown under the rule.
+  const [tests, setTests] = useState<Record<string, CheckResult>>({});
   const eventLabels = new Map<string, string>(
     view.events.map((event) => [event.kind, event.label]),
   );
@@ -624,11 +693,17 @@ function RulesSection({ onView, view }: SectionProps) {
 
   async function testRule(rule: NotificationRule) {
     setPending(`test-${rule.id}`);
+    setTests((current) => {
+      const next = { ...current };
+
+      delete next[rule.id];
+
+      return next;
+    });
 
     const result = await send<{ result: CheckResult }>(
-      "/api/admin/notifications",
+      `/api/admin/notifications/rules/${encodeURIComponent(rule.id)}/test`,
       "POST",
-      { action: "test_slack_message", channel: rule.destination },
     );
 
     setPending(null);
@@ -638,10 +713,7 @@ function RulesSection({ onView, view }: SectionProps) {
       ok: false,
     };
 
-    setFeedback({
-      message: outcome.message,
-      tone: outcome.ok ? "success" : "error",
-    });
+    setTests((current) => ({ ...current, [rule.id]: outcome }));
   }
 
   function toggleEvent(kind: NotificationEventKind, checked: boolean) {
@@ -727,7 +799,7 @@ function RulesSection({ onView, view }: SectionProps) {
                   onClick={() => void testRule(rule)}
                   type="button"
                 >
-                  {pending === `test-${rule.id}` ? "Sending..." : "Send a test"}
+                  {pending === `test-${rule.id}` ? "Sending..." : "Send test"}
                 </button>
                 <button
                   className="btn-quiet"
@@ -746,6 +818,14 @@ function RulesSection({ onView, view }: SectionProps) {
                   Delete
                 </button>
               </div>
+              {tests[rule.id] ? (
+                <p
+                  className={`notice ${tests[rule.id]?.ok ? "notice-success" : "notice-danger"}`}
+                  role={tests[rule.id]?.ok ? "status" : "alert"}
+                >
+                  {tests[rule.id]?.message}
+                </p>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -1095,7 +1175,8 @@ function DeliveryStatus({ view }: { view: NotificationsAdminView }) {
       <p className="text-sm leading-6 text-(--secondary)">
         {deliveries.sentLastWeek} sent, {deliveries.pending} waiting,{" "}
         {deliveries.failedLastWeek} failed, {deliveries.skippedLastWeek} skipped
-        (usually someone with no Slack account at their email address).
+        (usually someone with no Slack account at their email address),{" "}
+        {deliveries.combinedLastWeek} combined into a later message.
       </p>
       {deliveries.recentProblems.length > 0 ? (
         <ul className="space-y-1 text-sm text-(--secondary)">
