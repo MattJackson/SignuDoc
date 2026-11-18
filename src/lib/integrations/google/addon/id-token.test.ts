@@ -305,3 +305,58 @@ test("the user must be a verified account in the Workspace, for this client", as
     "ok",
   );
 });
+
+test("a failure reading Google's keys is not reported as a forged request", async () => {
+  const failures: (typeof fetch)[] = [
+    (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+    (async () => new Response("unavailable", { status: 500 })) as typeof fetch,
+    (async () => new Response("not json", { status: 200 })) as typeof fetch,
+  ];
+
+  for (const fetchImpl of failures) {
+    await assert.rejects(
+      authenticate({ jwks: createJwksCache({ fetchImpl, now: () => NOW_MS }) }),
+      (error) =>
+        error instanceof IdTokenError && error.problem === "keys_unavailable",
+    );
+  }
+});
+
+test("a key request with no answer is given up on, and the next call asks again", async () => {
+  let requests = 0;
+  const jwks = createJwksCache({
+    fetchImpl: ((_url: RequestInfo | URL, init?: RequestInit) => {
+      requests += 1;
+
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason);
+        });
+      });
+    }) as typeof fetch,
+    now: () => NOW_MS,
+    timeoutMs: 20,
+  });
+  const within = <T>(promise: Promise<T>) => {
+    let timer: NodeJS.Timeout | undefined;
+
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("Still waiting after the deadline."));
+        }, 2000);
+      }),
+    ]).finally(() => {
+      clearTimeout(timer);
+    });
+  };
+  const unavailable = (error: unknown) =>
+    error instanceof IdTokenError && error.problem === "keys_unavailable";
+
+  await assert.rejects(within(jwks.getKey("key-1")), unavailable);
+  await assert.rejects(within(jwks.getKey("key-1")), unavailable);
+  assert.equal(requests, 2);
+});

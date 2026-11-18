@@ -11,6 +11,7 @@ import {
 } from "./drive-config.ts";
 import {
   afterFailedAttempt,
+  ensureFolderPath,
   MAX_DRIVE_EXPORT_ATTEMPTS,
   nextAttemptDelaySeconds,
   uploadExecutedCopies,
@@ -270,4 +271,54 @@ test("a label field mapping keeps known values only", () => {
   );
   assert.deepEqual(parseLabelFieldMapping("not json"), {});
   assert.deepEqual(parseLabelFieldMapping("[]"), {});
+});
+
+test("a folder that exists twice resolves to the oldest one", async () => {
+  const urls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+
+    return json({ files: [{ id: "oldest" }, { id: "newer" }] });
+  }) as typeof fetch;
+
+  assert.equal(
+    await ensureFolderPath({
+      accessToken: "t",
+      driveId: "drive-1",
+      fetchImpl,
+      folders: ["2026"],
+    }),
+    "oldest",
+  );
+  assert.equal(
+    new URL(urls[0] ?? "").searchParams.get("orderBy"),
+    "createdTime",
+  );
+});
+
+test("a folder made at the same moment by another export loses to the older one", async () => {
+  let lists = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+
+    if (method === "POST") {
+      return json({ id: "mine" });
+    }
+
+    lists += 1;
+
+    return json({
+      files: lists === 1 ? [] : [{ id: "older" }, { id: "mine" }],
+    });
+  }) as typeof fetch;
+
+  assert.equal(
+    await ensureFolderPath({
+      accessToken: "t",
+      driveId: "drive-1",
+      fetchImpl,
+      folders: ["2026"],
+    }),
+    "older",
+  );
 });
