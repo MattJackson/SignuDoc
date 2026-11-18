@@ -750,3 +750,37 @@ test("a stream is gathered without copying what is held again for every chunk", 
     `${String(copied)} bytes copied for ${String(bytes.byteLength)}`,
   );
 });
+
+test("a body that stops arriving after the headers fails a buffered read by the deadline", async () => {
+  // Headers at once, then a body that never ends unless the request is
+  // given up on.
+  const fetchImpl = (async (_url: unknown, init?: RequestInit) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () =>
+            controller.error(init.signal?.reason),
+          );
+        },
+      }),
+      { headers: { "content-type": "application/pdf" }, status: 200 },
+    )) as typeof fetch;
+  const client = createGcsClient({
+    bucket: BUCKET,
+    credentials,
+    fetchImpl,
+    requestTimeoutMs: 100,
+  } as Parameters<typeof createGcsClient>[0]);
+  const storage = createGcsStorageService({
+    client,
+    env: { GCS_BUCKET: BUCKET },
+  });
+  const unbounded = new Promise<never>((_resolve, reject) =>
+    setTimeout(() => reject(new Error("the read was never bounded")), 1_500),
+  );
+
+  await assert.rejects(
+    Promise.race([storage.getObject(KEY), unbounded]),
+    GcsRequestError,
+  );
+});

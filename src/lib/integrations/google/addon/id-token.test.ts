@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createSign, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 
+import { resolveWorkspaceDomains } from "../../../auth/sso.ts";
 import type { AddonConfig } from "./config.ts";
 import {
   createJwksCache,
@@ -303,5 +304,21 @@ test("the user must be a verified account in the Workspace, for this client", as
       workspaceDomains: [],
     }),
     "ok",
+  );
+});
+
+test("a configured but invalid Workspace domain list lets no add-on caller in", async () => {
+  const invalid = resolveWorkspaceDomains({
+    env: { GOOGLE_WORKSPACE_DOMAINS: "acme" },
+    signupDomains: [],
+    stored: null,
+  });
+
+  assert.equal(
+    await rejection({
+      userIdToken: sign(userClaims({ hd: "other.example" })),
+      workspaceDomains: invalid as never,
+    }),
+    "outside_workspace",
   );
 });
