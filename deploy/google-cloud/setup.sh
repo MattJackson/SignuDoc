@@ -36,8 +36,10 @@
 #                       optional. Stored as secrets and given to the app.
 #                       Both can instead be set up in the app after sign-in.
 #   EXTRA_ENV_VARS      optional, KEY=value,KEY=value. More app settings.
-#   FREQUENT_SCHEDULE   */15 * * * *. When the Drive export and notification
-#                       jobs run. Each run starts an instance if none is up.
+#   FREQUENT_SCHEDULE   45 7 * * *. Retries for the Drive export and notification
+#                       jobs, which already run right after each request. Each
+#                       run starts an instance; every 15 minutes keeps one up
+#                       all day (about $40-50 a month instead of about $0).
 #   MIN_INSTANCES       0. 1 keeps one instance warm (no cold starts, costs more).
 #   MAX_INSTANCES       4 for postgres. Always 1 for sqlite.
 #   IMAGE               optional. Deploy this image instead of building one.
@@ -294,7 +296,7 @@ schedule() {
     --time-zone=UTC --uri="${SERVICE_URL}${path}" --http-method=POST --attempt-deadline=600s \
     "${headers_flag}=Authorization=Bearer ${JOB_SECRET}" >/dev/null
 }
-FREQUENT_SCHEDULE="${FREQUENT_SCHEDULE:-*/15 * * * *}"
+FREQUENT_SCHEDULE="${FREQUENT_SCHEDULE:-45 7 * * *}"
 schedule "${SERVICE}-retention" /api/internal/retention "0 9 * * *"
 [[ -n "${BACKUP_REGION:-}" ]] && schedule "${SERVICE}-backup" /api/internal/backup "0 8 * * *"
 schedule "${SERVICE}-drive-export" /api/internal/drive-export "${FREQUENT_SCHEDULE}"
