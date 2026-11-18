@@ -126,11 +126,10 @@ export function NotificationPreferencesPanel({
   }
 
   function checkbox(
-    event: PreferenceChoice["event"],
-    label: string,
+    event: { kind: PreferenceChoice["event"]; label: string },
     scope: "own" | "team",
   ) {
-    const key = choiceKey({ event, scope });
+    const key = choiceKey({ event: event.kind, scope });
 
     if (!available.has(key)) {
       return <span className="text-(--secondary)">-</span>;
@@ -138,7 +137,7 @@ export function NotificationPreferencesPanel({
 
     return (
       <input
-        aria-label={preferenceCheckboxLabel(label, scope)}
+        aria-label={preferenceCheckboxLabel(event, scope)}
         checked={choices[key] ?? false}
         className="size-4 accent-(--accent)"
         disabled={pending !== null}
@@ -213,13 +212,9 @@ export function NotificationPreferencesPanel({
                     {event.audience === "admin" ? " (administrators)" : ""}
                   </span>
                 </td>
-                <td className="py-3 pr-4">
-                  {checkbox(event.kind, event.label, "own")}
-                </td>
+                <td className="py-3 pr-4">{checkbox(event, "own")}</td>
                 {view.onTeam ? (
-                  <td className="py-3 pr-4">
-                    {checkbox(event.kind, event.label, "team")}
-                  </td>
+                  <td className="py-3 pr-4">{checkbox(event, "team")}</td>
                 ) : null}
               </tr>
             ))}

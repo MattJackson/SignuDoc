@@ -6,7 +6,6 @@ export type RuleDraft = {
   destination: string;
   destinationName: string;
   events: NotificationEventKind[];
-  enabled: boolean;
   id: string | null;
   teamId: string;
 };
@@ -14,7 +13,6 @@ export type RuleDraft = {
 export const EMPTY_RULE: RuleDraft = {
   destination: "",
   destinationName: "",
-  enabled: true,
   events: ["envelope_completed", "envelope_declined"],
   id: null,
   teamId: "",
@@ -23,7 +21,6 @@ export const EMPTY_RULE: RuleDraft = {
 export function draftFromRule(rule: {
   destination: string;
   destinationName: string | null;
-  enabled?: boolean;
   events: NotificationEventKind[];
   id: string;
   teamId: string | null;
@@ -31,7 +28,6 @@ export function draftFromRule(rule: {
   return {
     destination: rule.destination,
     destinationName: rule.destinationName ?? "",
-    enabled: rule.enabled ?? true,
     events: rule.events,
     id: rule.id,
     teamId: rule.teamId ?? "",
@@ -39,11 +35,13 @@ export function draftFromRule(rule: {
 }
 
 export function ruleBody(draft: RuleDraft) {
+  // An update leaves enabled out so the rule keeps the state it has now: it
+  // may have been paused or resumed since the form was opened.
   return {
+    ...(draft.id === null ? { enabled: true } : {}),
     channel: "slack",
     destination: draft.destination,
     destinationName: draft.destinationName || null,
-    enabled: draft.enabled,
     events: draft.events,
     teamId: draft.teamId || null,
   };

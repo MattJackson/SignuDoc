@@ -11,7 +11,7 @@ import {
   SetupSteps,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
-import { readExports } from "@/components/settings/drive-exports";
+import { exportsView, readExports } from "@/components/settings/drive-exports";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   GoogleDriveView,
@@ -175,6 +175,7 @@ export function GoogleDriveSection({
   );
   const [labels, setLabels] = useState<LabelListResult | null>(null);
   const [exportList, setExports] = useState<DriveExportListItem[] | null>(null);
+  const [exportsFailed, setExportsFailed] = useState(false);
   const exportsEnabled = view.export.driveId !== null;
 
   function change(field: keyof typeof values) {
@@ -221,6 +222,8 @@ export function GoogleDriveSection({
   }
 
   function applyExports(list: DriveExportListItem[] | null) {
+    setExportsFailed(list === null);
+
     if (list === null) {
       setNotice({ message: "Could not load the export list.", tone: "error" });
     } else {
@@ -873,9 +876,13 @@ export function GoogleDriveSection({
               Refresh
             </button>
           </div>
-          {exportList === null ? (
+          {exportsView(exportList, exportsFailed) === "loading" ? (
             <p className="text-sm text-(--secondary)">Loading...</p>
-          ) : exportList.length === 0 ? (
+          ) : exportsView(exportList, exportsFailed) === "failed" ? (
+            <p className="text-sm text-(--secondary)">
+              Could not load the list. Use Refresh to try again.
+            </p>
+          ) : exportList === null || exportList.length === 0 ? (
             <p className="text-sm text-(--secondary)">
               Nothing exported yet. Envelopes completed from now on show here.
             </p>

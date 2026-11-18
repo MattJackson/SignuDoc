@@ -14,10 +14,8 @@ export function exportsView(
   list: unknown[] | null,
   failed: boolean,
 ): "empty" | "failed" | "list" | "loading" {
-  void failed;
-
   if (list === null) {
-    return "loading";
+    return failed ? "failed" : "loading";
   }
 
   return list.length === 0 ? "empty" : "list";
