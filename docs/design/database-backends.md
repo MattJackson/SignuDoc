@@ -39,7 +39,7 @@ The backend is chosen by the connection string, nothing else:
 | `sqlite:relative/path/file.db`                 | SQLite, from cwd   |
 | `sqlite:///absolute/path/file.db`              | SQLite             |
 
-`db/sqlite/open.mjs` parses it and opens the file. It is plain JavaScript so that `db/migrate.mjs`, the container's start script and the app share it, as they already share `db/database-url.mjs`.
+`db/sqlite/open.mjs` parses it and opens the file, for `db/migrate.mjs` and the container's start script, which run as plain JavaScript. The app has a TypeScript copy, `src/lib/db/sqlite/open.ts`, because the end-to-end tests load the pool through Playwright, which cannot load `.mjs` files; `db/sqlite/migrations.test.mjs` checks the two agree.
 
 SQLite is Node 24's built-in [`node:sqlite`](https://nodejs.org/docs/latest-v24.x/api/sqlite.html) (`DatabaseSync`, release candidate since 24.15). There is no native npm dependency. The parts of its API used, all present in Node 24: `new DatabaseSync(path, { timeout, readOnly, enableForeignKeyConstraints })`, `prepare()`, `StatementSync.all()/run()/columns()` (declared types of result columns, v23.11), numbered parameters `?NNN`, `database.function()` for user-defined SQL functions (v23.5), and `isTransaction`.
 

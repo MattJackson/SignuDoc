@@ -4,7 +4,7 @@
 // docs/design/database-backends.md, "Backups".
 import type { DatabaseSync } from "node:sqlite";
 
-import { openSqliteDatabase } from "../../../../db/sqlite/open.mjs";
+import { openSqliteDatabase } from "./open.ts";
 import { triggerFilledTablesFirst } from "../../backup-order.ts";
 import { formatTimestamp } from "./functions.ts";
 import type { SqlitePool } from "./pool.ts";

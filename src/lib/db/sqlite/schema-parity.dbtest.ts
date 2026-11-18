@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { runMigrations } from "../../../../db/migrate.mjs";
-import { openSqliteDatabase } from "../../../../db/sqlite/open.mjs";
+import { openSqliteDatabase } from "./open.ts";
 import { openTestDatabase } from "../test-database.ts";
 import { isSqliteUrl } from "./pool.ts";
 
