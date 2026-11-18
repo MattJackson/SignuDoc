@@ -106,6 +106,7 @@ type IntegrationSettingsCache = {
 
 declare global {
   var __signudocIntegrationSettings: IntegrationSettingsCache | undefined;
+  var __signudocIntegrationGeneration: number | undefined;
 }
 
 function isKnownKey(key: string): key is IntegrationSettingKey {
@@ -179,12 +180,17 @@ export async function getIntegrationSettings(
     return cached.value;
   }
 
+  const generation = globalThis.__signudocIntegrationGeneration ?? 0;
   const value = await readIntegrationSettings(getDb(), env);
 
-  globalThis.__signudocIntegrationSettings = {
-    expiresAt: Date.now() + CACHE_MS,
-    value,
-  };
+  // A save or a clear happened while this was reading, so what was read may
+  // be from before it.
+  if ((globalThis.__signudocIntegrationGeneration ?? 0) === generation) {
+    globalThis.__signudocIntegrationSettings = {
+      expiresAt: Date.now() + CACHE_MS,
+      value,
+    };
+  }
 
   return value;
 }
@@ -233,6 +239,8 @@ export async function primeIntegrationSettings(
 }
 
 export function invalidateIntegrationSettingsCache() {
+  globalThis.__signudocIntegrationGeneration =
+    (globalThis.__signudocIntegrationGeneration ?? 0) + 1;
   globalThis.__signudocIntegrationSettings = undefined;
 }
 
@@ -336,6 +344,10 @@ export async function saveIntegrationSettings(
   }, database);
 
   // This instance sees the change at once; others within the cache time.
+  // The number moves on so a read that began before the commit cannot
+  // overwrite this with the old values.
+  globalThis.__signudocIntegrationGeneration =
+    (globalThis.__signudocIntegrationGeneration ?? 0) + 1;
   globalThis.__signudocIntegrationSettings = {
     expiresAt: Date.now() + CACHE_MS,
     value: saved,

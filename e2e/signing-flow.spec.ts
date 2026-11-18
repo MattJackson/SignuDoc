@@ -172,14 +172,18 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
 
     // The organization puts its own logo and color on the site. The logo
     // is saved the moment it is chosen, the color with the form.
-    await adminPage.getByLabel("Logo image").setInputFiles({
-      buffer: LOGO_PNG,
-      mimeType: "image/png",
-      name: "logo.png",
-    });
-    await expect(
-      adminPage.getByRole("button", { name: "Replace logo" }),
-    ).toBeVisible();
+    // A file chosen before the page has hydrated is never uploaded, so
+    // choose it again until the upload shows.
+    await expect(async () => {
+      await adminPage.getByLabel("Logo image").setInputFiles({
+        buffer: LOGO_PNG,
+        mimeType: "image/png",
+        name: "logo.png",
+      });
+      await expect(
+        adminPage.getByRole("button", { name: "Replace logo" }),
+      ).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
     await adminPage.getByLabel("Brand color").fill(BRAND_COLOR);
     await adminPage
       .getByRole("button", { name: "Save organization settings" })
