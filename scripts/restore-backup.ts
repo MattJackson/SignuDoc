@@ -2,6 +2,7 @@
 // a new, empty database and file store. See docs/backup-and-restore.md.
 //
 //   DATABASE_URL=postgres://...            the new, empty database
+//     (or sqlite:/path/file.db for the SQLite backend)
 //
 //   Where the backup is, one of:
 //   BACKUP_GCS_BUCKET=...                  a Cloud Storage bucket
@@ -45,6 +46,7 @@ import {
 import { getGoogleCredentials } from "../src/lib/integrations/google/credentials.ts";
 import { type GcsTokenSource } from "../src/lib/services/storage/gcs.ts";
 import { runMigrations } from "../db/migrate.mjs";
+import { isSqliteUrl, SqlitePool } from "../src/lib/db/sqlite/pool.ts";
 
 // A token from gcloud, so a restore from a laptop needs no service account
 // key. It lasts an hour, which is enough for most restores; for a larger
@@ -135,7 +137,10 @@ async function main() {
     console.log("Applying migrations…");
     await runMigrations({ connectionString });
 
-    const database = new pg.Pool({ connectionString, max: 2 });
+    // A sqlite: URL restores into a SQLite file (docs/design/database-backends.md).
+    const database = isSqliteUrl(connectionString)
+      ? (new SqlitePool(connectionString) as unknown as pg.Pool)
+      : new pg.Pool({ connectionString, max: 2 });
 
     try {
       console.log(`Restoring ${backupPath}…`);

@@ -6,6 +6,8 @@ import {
   recordAuditEvent,
   type RecordAuditEventInput,
 } from "../services/audit.ts";
+import { isSqliteUrl, SqlitePool } from "./sqlite/pool.ts";
+import { openSqliteTestDatabase } from "./sqlite/test-database.ts";
 
 // For the tests that need a real Postgres (npm run test:db). They use the
 // same disposable database as the end-to-end test and bring its schema up
@@ -46,6 +48,11 @@ async function ensureDatabaseExists(connectionString: string, name: string) {
 export async function openTestDatabase(): Promise<pg.Pool> {
   const connectionString =
     process.env.E2E_DATABASE_URL ?? DEFAULT_TEST_DATABASE_URL;
+
+  // A fresh SQLite file per test file (sqlite/test-database.ts).
+  if (isSqliteUrl(connectionString)) {
+    return openSqliteTestDatabase(connectionString);
+  }
   const name = new URL(connectionString).pathname.replace(/^\//, "");
 
   if (!name.toLowerCase().includes("e2e")) {
@@ -58,6 +65,28 @@ export async function openTestDatabase(): Promise<pg.Pool> {
   await runMigrations({ connectionString, log: () => undefined });
 
   return new pg.Pool({ connectionString, max: 12 });
+}
+
+/**
+ * Another pool on the same test database, for a test that needs one of its
+ * own. On SQLite it shares the database's one write lock, and
+ * `connectionTimeoutMillis` is how long it waits for it.
+ */
+export function openAnotherPool(
+  database: pg.Pool,
+  options: { connectionTimeoutMillis: number; max: number },
+): pg.Pool {
+  const { connectionString } = (
+    database as unknown as { options: pg.PoolConfig }
+  ).options;
+
+  if (connectionString && isSqliteUrl(connectionString)) {
+    return new SqlitePool(connectionString, {
+      lockTimeoutMs: options.connectionTimeoutMillis,
+    }) as unknown as pg.Pool;
+  }
+
+  return new pg.Pool({ connectionString, ...options });
 }
 
 type QueryFunction = (text: unknown, values?: unknown[]) => unknown;
