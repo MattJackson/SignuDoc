@@ -1217,10 +1217,14 @@ async function syncAccounts({
           break;
         }
 
-        used += 1;
+        // Only a real change uses a slot; work that stayed with an account
+        // that was already blocked is reported but does not count.
+        if (outcome.blocked || outcome.envelopes.length > 0) {
+          used += 1;
 
-        if (dryRun) {
-          imaginedBlocked.push(account.id);
+          if (dryRun) {
+            imaginedBlocked.push(account.id);
+          }
         }
 
         results.push({

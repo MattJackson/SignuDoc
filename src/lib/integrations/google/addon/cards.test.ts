@@ -6,6 +6,7 @@ import {
   driveItemsCard,
   gmailMessageCard,
   pushCard,
+  rateLimitedResponse,
   requestFileScope,
   signInCard,
   updateCard,
@@ -347,4 +348,22 @@ test("the deployment names this site's URLs, its scopes and the system ID token"
       ),
     ),
   );
+});
+
+test("a rate-limited person gets a card from every trigger but an action", () => {
+  for (const trigger of ["homepage", "gmail-message", "drive-items"] as const) {
+    const actions = rateLimitedResponse(trigger).renderActions as {
+      action: { navigations?: { pushCard: Card }[]; notification?: unknown };
+    };
+
+    assert.equal(actions.action.navigations?.length, 1);
+    assert.ok(actions.action.navigations?.[0]?.pushCard);
+    assert.equal(actions.action.notification, undefined);
+  }
+
+  const action = rateLimitedResponse("action").renderActions as {
+    action: { notification?: { text: string } };
+  };
+
+  assert.match(action.action.notification?.text ?? "", /Too many requests/);
 });

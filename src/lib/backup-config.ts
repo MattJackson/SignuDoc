@@ -222,9 +222,21 @@ export type BackupConfigInput = {
   keepDays: number;
 };
 
-// Bucket names: 3 to 63 lowercase letters, digits, dashes, underscores and
-// dots, starting and ending with a letter or digit.
+// Bucket names: lowercase letters, digits, dashes, underscores and dots,
+// starting and ending with a letter or digit. 3 to 63 characters; a name
+// with dots can run to 222 as long as each dotted part is 63 or fewer.
 const BUCKET_NAME = /^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/;
+const DOTTED_BUCKET_NAME = /^[a-z0-9][a-z0-9._-]*[a-z0-9]$/;
+
+function isBucketName(name: string): boolean {
+  return (
+    BUCKET_NAME.test(name) ||
+    (name.includes(".") &&
+      name.length <= 222 &&
+      DOTTED_BUCKET_NAME.test(name) &&
+      name.split(".").every((part) => part.length >= 1 && part.length <= 63))
+  );
+}
 
 /** Reads the form in Settings, or says what is wrong with it. */
 export function parseBackupConfigInput(body: unknown): BackupConfigInput {
@@ -258,7 +270,7 @@ export function parseBackupConfigInput(body: unknown): BackupConfigInput {
               .replace(/\/+$/, "")
           : "";
 
-      if (!BUCKET_NAME.test(bucket)) {
+      if (!isBucketName(bucket)) {
         throw new BackupConfigError(
           "Enter the bucket's name, such as my-signudoc-backups.",
         );

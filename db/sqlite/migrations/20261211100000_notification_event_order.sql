@@ -1,4 +1,4 @@
--- SQLite version of db/migrations/20261211090000_notification_event_order.sql.
+-- SQLite version of db/migrations/20261211100000_notification_event_order.sql.
 -- SQLite has no serial column, so a trigger gives each new event the next
 -- number. There is one writer, and writes are serialized, so the numbers
 -- cannot repeat. Events already there are numbered by when they were added.

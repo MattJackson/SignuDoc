@@ -642,3 +642,98 @@ test("in suggest mode the review page offers the manager without blocking the se
     await clearManagerPolicy();
   }
 });
+
+/** Corrects the approver at `step`'s address with require mode on. */
+async function correctApproverUnderRequire(
+  draft: { envelopeId: string; senderEmail: string; userId: string },
+  approverEmail: string,
+  directory: DirectoryClient,
+) {
+  const approver = await database.query<{ id: string }>(
+    `select id from signers where envelope_id = $1 and lower(email) = $2`,
+    [draft.envelopeId, approverEmail.toLowerCase()],
+  );
+  const previous = process.env.MANAGER_APPROVAL;
+
+  process.env.MANAGER_APPROVAL = "require";
+
+  try {
+    await correctSentEnvelopeSigner(
+      draft.userId,
+      draft.envelopeId,
+      approver.rows[0]!.id,
+      { email: `fixed-${randomUUID()}@example.test` },
+      { senderEmail: draft.senderEmail, senderName: "Sam Sender" },
+      { database, directory },
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MANAGER_APPROVAL;
+    } else {
+      process.env.MANAGER_APPROVAL = previous;
+    }
+  }
+
+  return approver.rows[0]!.id;
+}
+
+test("correcting an approver on an envelope the rule did not cover when it was sent is allowed", async () => {
+  const manager = `boss-${randomUUID()}@example.test`;
+  const other = `other-${randomUUID()}@example.test`;
+  // Sent while the rule was off, so the manager is not in the order.
+  const draft = await createDraft([
+    { email: other, role: "approver", step: 1 },
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 2 },
+  ]);
+
+  await sendDraftEnvelope(draft.userId, draft.envelopeId, send, {
+    database,
+    directory: directoryFor(draft.senderEmail, manager),
+    managerPolicy: { mode: "off", source: "default", teamIds: [] },
+  });
+
+  const signerId = await correctApproverUnderRequire(
+    draft,
+    other,
+    directoryFor(draft.senderEmail, manager),
+  );
+  const after = await database.query<{ email: string }>(
+    `select email from signers where id = $1`,
+    [signerId],
+  );
+
+  assert.match(after.rows[0]!.email, /^fixed-/);
+});
+
+test("correcting an approver is refused, to try again, while the directory cannot be asked", async () => {
+  const manager = `boss-${randomUUID()}@example.test`;
+  const draft = await createDraft([
+    { email: manager, role: "approver", step: 1 },
+    { email: `client-${randomUUID()}@example.test`, role: "signer", step: 2 },
+  ]);
+
+  await sendDraftEnvelope(draft.userId, draft.envelopeId, send, {
+    database,
+    directory: directoryFor(draft.senderEmail, manager),
+    managerPolicy: requireForEveryone,
+  });
+
+  const unreachable: DirectoryClient = {
+    ...directoryFor(draft.senderEmail, manager),
+    getUser: async () => {
+      throw new Error("directory unreachable");
+    },
+  };
+  await assert.rejects(
+    correctApproverUnderRequire(draft, manager, unreachable),
+    (error: unknown) =>
+      error instanceof EnvelopeMutationError && error.statusCode === 503,
+  );
+
+  const after = await database.query<{ email: string }>(
+    `select email from signers where envelope_id = $1 and role = 'approver'`,
+    [draft.envelopeId],
+  );
+
+  assert.equal(after.rows[0]?.email, manager);
+});

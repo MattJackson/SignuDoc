@@ -124,7 +124,7 @@ export async function GET(request: Request) {
   const download = new URL(request.url).searchParams.get("download") === "1";
 
   try {
-    return new ImageResponse(await iconContent(), {
+    const image = new ImageResponse(await iconContent(), {
       headers: {
         "cache-control": "private, max-age=300",
         "content-disposition": download
@@ -134,6 +134,12 @@ export async function GET(request: Request) {
       height: SIZE,
       width: SIZE,
     });
+
+    // The picture is drawn while its body is read, after a 200 would have gone
+    // out. Reading it here lets a drawing failure reach the catch below.
+    const body = await image.arrayBuffer();
+
+    return new Response(body, { headers: image.headers, status: 200 });
   } catch (error) {
     logRouteError(error, {
       category: "notification_settings_failure",

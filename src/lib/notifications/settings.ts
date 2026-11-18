@@ -343,28 +343,29 @@ export async function saveNotificationSettings(
   }
 
   const tokenChange = update[SLACK_TOKEN_SETTING];
-  const previousToken =
+
+  await saveIntegrationSettings(
     tokenChange === undefined
-      ? undefined
-      : (await getIntegrationSettings(env))[SLACK_TOKEN_SETTING];
+      ? update
+      : async (before, tx) => {
+          // The people and messages remembered belong to the workspace the
+          // old token was for; a new token may be for another one. Judged from
+          // the locked row and wiped in the same transaction, so the token and
+          // the wipe stand or fall together.
+          if ((tokenChange ?? undefined) !== before[SLACK_TOKEN_SETTING]) {
+            await tx.query(
+              `DELETE FROM notification_identities WHERE channel = 'slack'`,
+            );
+            await tx.query(
+              `DELETE FROM notification_threads WHERE channel = 'slack'`,
+            );
+          }
 
-  await saveIntegrationSettings(update, actor, { area: "notifications", env });
-
-  // The people and messages remembered belong to the workspace the old
-  // token was for; a new token may be for another one.
-  if (
-    tokenChange !== undefined &&
-    (tokenChange ?? undefined) !== previousToken
-  ) {
-    const database = getDb();
-
-    await database.query(
-      `DELETE FROM notification_identities WHERE channel = 'slack'`,
-    );
-    await database.query(
-      `DELETE FROM notification_threads WHERE channel = 'slack'`,
-    );
-  }
+          return update;
+        },
+    actor,
+    { area: "notifications", env },
+  );
 
   return getNotificationsAdminView(env);
 }
