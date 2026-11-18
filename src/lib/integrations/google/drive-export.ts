@@ -156,7 +156,7 @@ export async function claimDueDriveExports(
     database,
     `
       UPDATE drive_exports
-      SET attempts = attempts + 1, locked_until = $1 + $3, updated_at = $1
+      SET attempts = attempts + 1, locked_until = $1::bigint + $3::bigint, updated_at = $1
       WHERE envelope_id IN (
         SELECT envelope_id FROM drive_exports
         WHERE status = 'pending'
@@ -182,7 +182,7 @@ export async function claimDriveExport(
     database,
     `
       UPDATE drive_exports
-      SET attempts = attempts + 1, locked_until = $2 + $3, updated_at = $2
+      SET attempts = attempts + 1, locked_until = $2::bigint + $3::bigint, updated_at = $2
       WHERE envelope_id = $1
         AND status = 'pending'
         AND (locked_until IS NULL OR locked_until < $2)
