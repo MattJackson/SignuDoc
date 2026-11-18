@@ -178,7 +178,7 @@ export function OnboardingShell({
       <div className="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)] lg:items-start">
         <nav
           aria-label="Setup steps"
-          className="panel space-y-4 p-4 lg:sticky lg:top-6"
+          className="panel min-w-0 space-y-4 p-4 lg:sticky lg:top-6"
           data-animate="enter"
         >
           <div className="space-y-2 px-1">

@@ -2,6 +2,7 @@
 
 import { useRef, useState, type ChangeEvent } from "react";
 
+import { EnvLockedNotice } from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { SealSettingsView, TimestampTestResult } from "@/lib/seal-setup";
 import type { SealCertificateSummary } from "@/lib/seal-settings";
@@ -285,14 +286,14 @@ export function SealSettingsSection({
             Timestamp server
           </legend>
           {timestampLocked ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (SEAL_TIMESTAMP_URL), so it cannot be
-              changed here:{" "}
-              <code className="break-all text-(--fg)">
-                {view.timestamp.url ?? "off"}
-              </code>
-              .
-            </p>
+            <EnvLockedNotice variables={["SEAL_TIMESTAMP_URL"]}>
+              <p>
+                Timestamp server:{" "}
+                <code className="break-all text-(--fg)">
+                  {view.timestamp.url ?? "off"}
+                </code>
+              </p>
+            </EnvLockedNotice>
           ) : view.timestamp.source === "unset" ? (
             <p className="notice notice-warning" role="status">
               This install has sealed without a trusted time so far. Tick the
@@ -365,10 +366,9 @@ export function SealSettingsSection({
             Seal certificate
           </legend>
           {certificateLocked ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (SEAL_P12_BASE64 and SEAL_P12_PASSWORD), so
-              it cannot be changed here.
-            </p>
+            <EnvLockedNotice
+              variables={["SEAL_P12_BASE64", "SEAL_P12_PASSWORD"]}
+            />
           ) : null}
           {view.certificate.problem ? (
             <p className="notice notice-danger" role="alert">

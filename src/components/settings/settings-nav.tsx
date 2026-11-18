@@ -155,7 +155,7 @@ export function SettingsNav({
   return (
     <nav
       aria-label="Settings"
-      className="panel p-2 lg:sticky lg:top-6 lg:p-3"
+      className="panel min-w-0 p-2 lg:sticky lg:top-6 lg:p-3"
       data-animate="enter"
     >
       <div className="flex gap-1 overflow-x-auto lg:block lg:space-y-4 lg:overflow-visible">

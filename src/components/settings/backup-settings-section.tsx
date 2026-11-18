@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { EnvLockedNotice } from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   BackupRun,
@@ -304,10 +305,9 @@ export function BackupSettingsSection({
             Where backups go
           </legend>
           {locked.destination ? (
-            <p className="text-sm leading-6 text-(--secondary)">
-              Set by the deployment (BACKUP_GCS_BUCKET or
-              BACKUP_BLOB_READ_WRITE_TOKEN), so it cannot be changed here.
-            </p>
+            <EnvLockedNotice
+              variables={["BACKUP_GCS_BUCKET", "BACKUP_BLOB_READ_WRITE_TOKEN"]}
+            />
           ) : null}
           {orderedOptions.map((option) => (
             <label
