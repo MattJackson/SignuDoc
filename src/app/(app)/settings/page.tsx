@@ -1,6 +1,7 @@
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
+import { PeopleSettingsPanel } from "@/components/settings/people-settings-panel";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { SetupChecklist } from "@/components/settings/setup-checklist";
 import { TeamsPanel } from "@/components/settings/teams-panel";
@@ -56,6 +57,7 @@ export default async function SettingsPage() {
       ) : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <TeamsPanel /> : null}
+      {isAdmin && !settings.hosted ? <PeopleSettingsPanel /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );

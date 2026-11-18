@@ -9,6 +9,7 @@ import {
   GoogleSignInSection,
   useGoogleWorkspace,
 } from "@/components/settings/google-workspace-panel";
+import { PeopleSettingsForm } from "@/components/settings/people-settings-panel";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -303,6 +304,18 @@ function StorageStep({ data }: StepFormProps) {
   );
 }
 
+function PeopleStep({ onChanged }: StepFormProps) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm leading-6 text-(--secondary)">
+        Each of these is optional and off until you turn it on. To leave them
+        all off, choose &quot;Mark as done&quot;.
+      </p>
+      <PeopleSettingsForm onSaved={onChanged} />
+    </div>
+  );
+}
+
 function BackupsStep() {
   return (
     <div className="space-y-3 text-sm leading-6 text-(--secondary)">
@@ -392,6 +405,7 @@ export const STEP_FORMS: Record<
   "google-directory": GoogleDirectoryStep,
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
+  people: PeopleStep,
   retention: RetentionStep,
   storage: StorageStep,
 };

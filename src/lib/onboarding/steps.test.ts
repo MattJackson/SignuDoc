@@ -58,10 +58,35 @@ test("the steps come in the order onboarding walks them", () => {
       "email",
       "google-sign-in",
       "google-directory",
+      "people",
       "storage",
       "backups",
       "retention",
     ],
+  );
+});
+
+test("the people step is done once something is on, or it is confirmed off", async () => {
+  assert.equal(await check("people", context()), "not_started");
+  assert.equal(
+    await check("people", context({ marks: { people: "confirmed" } })),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "people",
+      context({ stored: { "people.managerPolicy": "require" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "people",
+      context({
+        env: { GOOGLE_SIGNING: "offer", RESEND_API_KEY: "re_environmentkey1" },
+      }),
+    ),
+    "done",
   );
 });
 
