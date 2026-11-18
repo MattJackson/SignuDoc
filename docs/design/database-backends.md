@@ -88,28 +88,35 @@ Registered on every SQLite connection the app opens:
 
 A small tokenizer (string literals, quoted identifiers, comments and dollar-free SQL; the app never uses `$$` in queries) and a handful of token-level rewrites. Output is cached by SQL text, so each distinct statement is rewritten once per process.
 
-| Postgres                                                                     | SQLite                                                                    |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `$1`                                                                         | `?1` (numbered, so a parameter used twice binds once)                     |
-| `x::int`, `x::bigint`, `x::integer`                                          | `pg_int(x)`                                                               |
-| `x::text`                                                                    | `CAST(x AS TEXT)`                                                         |
-| `x::numeric`, `x::float8`, `x::real`, `x::double precision`                  | `CAST(x AS REAL)`                                                         |
-| `x::jsonb`, `x::json`, `x::text[]`, `x::timestamptz`, …                      | `x` (stored representation is already right)                              |
-| `public.table`                                                               | `table`                                                                   |
-| `FOR UPDATE [OF …] [SKIP LOCKED / NOWAIT]`, `FOR SHARE`, `FOR NO KEY UPDATE` | removed: the whole transaction holds the write lock (below)               |
-| `x = ANY($n)`, `x = ANY(expr)`                                               | `x IN (SELECT value FROM json_each(expr))`, arrays travel as JSON         |
-| `x <> ALL($n)`                                                               | `x NOT IN (SELECT value FROM json_each(expr))`                            |
-| `unnest($n) AS a`                                                            | `(SELECT value AS a FROM json_each(?n)) AS a`                             |
-| `ARRAY(SELECT e FROM …)`                                                     | `(SELECT json_group_array(e) FROM …)`, ORDER BY kept inside the aggregate |
-| `ARRAY[a, b]`                                                                | `json_array(a, b)`                                                        |
-| `EXTRACT(EPOCH FROM x)`                                                      | `pg_epoch(x)`                                                             |
-| `x ± interval 'n unit'`                                                      | `pg_interval_add(x, '±n unit')`                                           |
-| `position(a IN b)`                                                           | `instr(b, a)`                                                             |
-| `substring(s FROM 'regex')`                                                  | `pg_regexp_substring(s, 'regex')`                                         |
-| `generate_series(a, b) AS n`                                                 | a recursive CTE subquery named `n` with column `n`                        |
-| `row_to_json(alias)`                                                         | `json_object('col', alias.col, …)` from the table's columns               |
-| `jsonb_build_object(…)`                                                      | `json_object(…)`                                                          |
-| `BEGIN ISOLATION LEVEL …`, `BEGIN READ ONLY`                                 | `BEGIN` (see below)                                                       |
+| Postgres                                                                     | SQLite                                                                                             |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `$1`                                                                         | `?1` (numbered, so a parameter used twice binds once)                                              |
+| `x::int`, `x::bigint`, `x::integer`                                          | `pg_int(x)`                                                                                        |
+| `x::text`                                                                    | `CAST(x AS TEXT)`                                                                                  |
+| `x::numeric`, `x::float8`, `x::real`, `x::double precision`                  | `CAST(x AS REAL)`                                                                                  |
+| `x::jsonb`, `x::json`, `x::text[]`, `x::timestamptz`, …                      | `x` (stored representation is already right)                                                       |
+| `public.table`                                                               | `table`                                                                                            |
+| `FOR UPDATE [OF …] [SKIP LOCKED / NOWAIT]`, `FOR SHARE`, `FOR NO KEY UPDATE` | removed: the whole transaction holds the write lock (below)                                        |
+| `x = ANY($n)`, `x = ANY(expr)`                                               | `x IN (SELECT value FROM json_each(expr))`, arrays travel as JSON                                  |
+| `x <> ALL($n)`                                                               | `x NOT IN (SELECT value FROM json_each(expr))`                                                     |
+| `unnest($n) AS a`                                                            | `(SELECT value AS a FROM json_each(?n)) AS a`                                                      |
+| `ARRAY(SELECT e FROM …)`                                                     | `(SELECT json_group_array(e) FROM …)`, ORDER BY kept inside the aggregate                          |
+| `ARRAY[a, b]`                                                                | `json_array(a, b)`                                                                                 |
+| `EXTRACT(EPOCH FROM x)`                                                      | `pg_epoch(x)`                                                                                      |
+| `x ± interval 'n unit'`                                                      | `pg_interval_add(x, '±n unit')`                                                                    |
+| `position(a IN b)`                                                           | `instr(b, a)`                                                                                      |
+| `substring(s FROM 'regex')`                                                  | `pg_regexp_substring(s, 'regex')`                                                                  |
+| `generate_series(a, b) AS n`                                                 | a recursive CTE subquery named `n` with column `n`                                                 |
+| `row_to_json(alias)`                                                         | `json_object('col', alias.col, …)` from the table's columns                                        |
+| `jsonb_build_object(…)`                                                      | `json_object(…)`                                                                                   |
+| `BEGIN ISOLATION LEVEL …`, `BEGIN READ ONLY`                                 | `BEGIN` (see below)                                                                                |
+| `TRUNCATE t [CASCADE]`                                                       | `DELETE FROM t` (the foreign keys cascade)                                                         |
+| `UPDATE t x …`, `DELETE FROM t x …`                                          | `… t AS x …` (SQLite needs the `AS`)                                                               |
+| `RETURNING x.col` on an aliased `UPDATE`/`DELETE`                            | `RETURNING t.col` (inside RETURNING SQLite knows the table by name only)                           |
+| `UPDATE … FROM f … RETURNING f.col`                                          | `RETURNING (SELECT f.col FROM f WHERE <the WHERE's join conditions>)`                              |
+| `ON CONFLICT ON CONSTRAINT name`                                             | `ON CONFLICT (its columns)`, read from the schema                                                  |
+| `INSERT … SELECT … ON CONFLICT` with no `WHERE`                              | `… WHERE true ON CONFLICT` (SQLite's grammar needs it)                                             |
+| `WITH n AS (DELETE … RETURNING …) SELECT … FROM n`                           | two statements in one transaction: the DML, then the SELECT reading its rows from a JSON parameter |
 
 Left as they are because SQLite (3.49+ in Node 24) has them: `RETURNING`, `ON CONFLICT … DO UPDATE/NOTHING` with `EXCLUDED`, `UPDATE … FROM`, CTEs, `count(*) FILTER (WHERE …)`, `string_agg(x, sep ORDER BY …)`, `IS [NOT] DISTINCT FROM`, `NULLS FIRST/LAST`, `TRUE/FALSE`, `->` and `->>` on JSON text, `||`, `COALESCE`, `NULLIF`, `lower`, `round`, `floor`, `ceil`.
 
@@ -194,8 +201,8 @@ This adds `kysely` as a direct dependency. It is already installed (Better Auth 
 
 - `npm test` (unit, no database) adds: the rewriter against every SQL string in the app (above), the rewriter's rules one by one, the functions, type round trips (including that ISO timestamps sort as times, and `Date` → text → `Date` is exact to the millisecond), the mutex under many concurrent async transactions (no interleaving, FIFO, timeout), advisory lock semantics and deadlock detection, the migrations list check, and the GCS lease (against a fake).
 - `npm run test:db` runs on both backends. `openTestDatabase()` (`src/lib/db/test-database.ts`) returns a fresh SQLite file in a temporary directory per call when `E2E_DATABASE_URL` is a `sqlite:` URL (or `TEST_DB_BACKEND=sqlite`). The race tests ask Postgres who is waiting (`pg_locks`, `pg_stat_activity`); on SQLite those two names are views over the pool's own lock table (`pg_lock_waiters()`), so the same tests run unchanged.
-- The e2e test (Playwright) runs on both: the server gets `DATABASE_URL=sqlite:…`, and the specs open the same file through `e2e/support/database.ts` instead of `new pg.Pool`. The SQLite file is shared by two processes there (server and test runner), which SQLite's own file locking handles.
-- `.github/workflows/ci.yml`: the `e2e` job becomes a matrix over `postgres` and `sqlite` (the Postgres service only matters to the first); the Docker job also starts the image with a SQLite database and checks it migrates itself at start and answers.
+- The e2e test (Playwright) runs on both: the server gets `DATABASE_URL=sqlite:…`, and the specs open the same file through `e2e/support/database.ts` (`openE2ePool`, `openE2eClient`) instead of `new pg.Pool`/`new pg.Client`. The SQLite file is shared by two processes there (server and test runner), which SQLite's own file locking handles.
+- `.github/workflows/ci.yml`: the `e2e` job becomes a matrix over `postgres` and `sqlite` (the Postgres service only matters to the first); the Docker job also starts the image with a SQLite database and a Litestream replica on disk, writes a row, stops the container (SIGTERM), starts a fresh one and checks the row was restored.
 
 ## Durability on Cloud Run with Litestream
 
@@ -235,30 +242,30 @@ Two layers on SQLite:
 
 ## Switching backends later
 
-SQLite to Postgres (or back) is a backup and a restore, with the tools that already exist:
+`scripts/transfer-database.ts` (`npm run transfer-database -- --from <URL> --to <URL>`) copies every row from one database into another, empty one, of either kind. It is the backup's export piped straight into the backup's restore, so it checks what a restore checks: the target is migrated first, must have no accounts, and gets everything in one transaction or nothing. Tried both ways locally against Postgres 17 (SQLite → Postgres → SQLite gives back the same rows; only the key order inside JSON values differs, which Postgres normalizes).
 
-1. Make sure a SignuDoc backup is configured, and run one (Settings, Backups, Run now, or `POST /api/internal/backup`). Stop writes: scale the service to zero or put it in maintenance (`--max-instances=0` is enough on Cloud Run) after the backup.
-2. Create the Postgres database and run the migrations against it (`DATABASE_URL=postgres://… npm run db:migrate`).
-3. `DATABASE_URL=postgres://… BACKUP_GCS_BUCKET=… npm run restore-backup` (see docs/backup-and-restore.md). It refuses a database that already has accounts, checks the migrations match, and loads every table in one transaction.
-4. Point the deployment at Postgres: `DB_BACKEND=postgres ./deploy/google-cloud/setup.sh`.
+On Cloud Run, SQLite to Postgres: close the service to outside traffic (`--ingress=internal`), `litestream restore` the latest copy to a local file, remove the SQLite environment variables, run `setup.sh` with `DB_BACKEND=postgres` (Cloud SQL, its secret, the migrate job, a deploy), `transfer-database` from the file to Cloud SQL through the Auth Proxy, open the service again. `docs/google-cloud-run.md` has the exact commands, and the way back.
 
-`docs/google-cloud-run.md` has the exact commands.
+While doing this, a bug in the existing backup showed up and is fixed: a restore inserted `audit_events` before `notification_events`, so the notification trigger queued a copy of each event first and the backup's own row then broke the unique `dedupe_key`. Any restore of an install with notifications would have failed, on Postgres too. Tables a trigger fills (`notification_events`) are now ordered first among those ready at the same time (`src/lib/backup-order.ts`), so the trigger's `ON CONFLICT DO NOTHING` skips them instead.
 
 ## Merge friction
 
 Application code: **no SQL call site is changed.** Upstream-owned files touched, and why:
 
-| File                                                                               | Change                                                                                                                        |
-| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `src/lib/db/connection.ts`                                                         | `getDb()` opens a `SqlitePool` for a `sqlite:` URL (a few lines at the top of the function). Nothing else.                    |
-| `src/lib/db/test-database.ts`                                                      | `openTestDatabase()` returns a fresh SQLite database on the SQLite backend (a few lines at the top).                          |
-| `db/migrate.mjs`                                                                   | `runMigrations()` hands a `sqlite:` URL to `db/sqlite/migrate.mjs` (three lines).                                             |
-| `src/lib/auth/server.ts`                                                           | `database` passed to Better Auth through `betterAuthDatabase(database)` (one line plus an import).                            |
-| `e2e/global-setup.ts`                                                              | Wipes and migrates a SQLite file instead of a Postgres schema when the URL is `sqlite:`.                                      |
-| `e2e/platform.spec.ts`, `e2e/signing-flow.spec.ts`, `e2e/google-workspace.spec.ts` | `new pg.Pool/Client({ connectionString })` → `openE2eDatabase()` (one line each place; the specs use `query` and `end` only). |
-| `package.json`, `package-lock.json`                                                | `kysely` declared.                                                                                                            |
+| File                                                                               | Change                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/lib/db/connection.ts`                                                         | `getDb()` opens a `SqlitePool` for a `sqlite:` URL (a few lines at the top of the function). Nothing else.                                                                                                                                                                                                               |
+| `src/lib/db/test-database.ts`                                                      | `openTestDatabase()` returns a fresh SQLite database on the SQLite backend (a few lines at the top).                                                                                                                                                                                                                     |
+| `db/migrate.mjs`                                                                   | `runMigrations()` hands a `sqlite:` URL to `db/sqlite/migrate.mjs` (three lines).                                                                                                                                                                                                                                        |
+| `src/lib/auth/server.ts`                                                           | `database` passed to Better Auth through `betterAuthDatabase(database)` (one line plus an import).                                                                                                                                                                                                                       |
+| `e2e/global-setup.ts`                                                              | Wipes and migrates a SQLite file instead of a Postgres schema when the URL is `sqlite:`.                                                                                                                                                                                                                                 |
+| `e2e/platform.spec.ts`, `e2e/signing-flow.spec.ts`, `e2e/google-workspace.spec.ts` | `new pg.Pool({ connectionString })` → `openE2ePool(…)`, `new pg.Client(…)` → `openE2eClient(…)` (one line each place, plus the import).                                                                                                                                                                                  |
+| `src/lib/provider-signing.dbtest.ts`                                               | Its "pool of one connection" was `new pg.Pool({ connectionString: database.options.connectionString })`, which cannot open SQLite; now `openAnotherPool(database, …)` from test-database.ts (one call, plus the import). The test's meaning is the same on SQLite: the second pool waits at most 3 s for the write lock. |
+| `package.json`, `package-lock.json`                                                | `kysely` declared; `transfer-database` script.                                                                                                                                                                                                                                                                           |
 
-Fork-owned files touched: `src/lib/backup.ts` (dispatch to the SQLite export/restore), `scripts/restore-backup.ts`, `scripts/copy-migrate-packages.mjs` (none needed: `node:sqlite` is built in), `Dockerfile`, `.github/workflows/ci.yml`, `.github/workflows/deploy-cloud-run.yml`, `deploy/google-cloud/*`, `docs/*`. Everything else is new files under `src/lib/db/sqlite/`, `db/sqlite/` and `e2e/support/`.
+Fork-owned files touched: `src/lib/backup.ts` (dispatch to the SQLite export/restore, and the restore-order fix below), `scripts/restore-backup.ts`, `Dockerfile`, `.github/workflows/ci.yml`, `.github/workflows/deploy-cloud-run.yml`, `deploy/google-cloud/*`, `.env.example`, `docs/*`. Everything else is new files: `src/lib/db/sqlite/`, `db/sqlite/`, `e2e/support/database.ts`, `src/lib/backup-order.ts`, `scripts/transfer-database.ts`.
+
+Application call sites edited: **none.** Every statement in `src/` and `scripts/` runs unchanged.
 
 When upstream adds a query, nothing needs doing unless CI's corpus test fails, in which case the fix goes in the rewriter or the functions, not at the call site. When upstream adds a migration, the SQLite counterpart is the only new file.
 
@@ -270,6 +277,8 @@ When upstream adds a query, nothing needs doing unless CI's corpus test fails, i
 - **Computed column types are inferred** by the rewriter rather than by an alias-suffix convention, which would have meant editing call sites.
 - **A GCS lease** guards against two instances during a deploy. `--max-instances=1` alone does not prevent it, and losing writes made to the old revision would break priority 1.
 - **`kysely` becomes a declared dependency** for Better Auth (above).
+- **The service is public through `--no-invoker-iam-check`**, not an `allUsers` binding, for both backends: the deployment's organization restricts sharing to its domain.
+- **The 15-minute jobs cost money on SQLite.** As asked, Cloud Scheduler calls the Drive export and notification jobs every 15 minutes. With `--no-cpu-throttling` an instance is billed for as long as it is up, up to about 15 minutes after its last request, so those calls alone keep an instance up around the clock (about $40 to $50 a month at 1 vCPU, 1 GiB), which defeats "$0 idle". `FREQUENT_SCHEDULE` in `setup.sh` changes it (hourly, or working hours only); the docs say so. The default follows the request; whether to change it is the owner's call.
 
 ## Further simplification, not done
 

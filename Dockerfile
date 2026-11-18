@@ -27,6 +27,26 @@ COPY . .
 RUN npm run build \
   && node scripts/copy-migrate-packages.mjs .next/standalone
 
+# Litestream, which replicates a SQLite database to Cloud Storage
+# (docs/design/database-backends.md). A pinned release, checked against
+# its published SHA-256 before it is used.
+FROM node:${NODE_VERSION}-bookworm-slim AS litestream
+ARG TARGETARCH
+ARG LITESTREAM_VERSION=0.5.18
+ARG LITESTREAM_SHA256_AMD64=d3687b9fd0f2e9426bbd3da828429ff3f1dfc5c9b74d54fdf028e4ee510e7dea
+ARG LITESTREAM_SHA256_ARM64=922a09e6a7ac67f2095571894dc6382e94e1dd4cdd9674883ddf1a8e74ab982d
+RUN set -eu; \
+  case "${TARGETARCH:-amd64}" in \
+    amd64) arch=x86_64; sum="${LITESTREAM_SHA256_AMD64}" ;; \
+    arm64) arch=arm64; sum="${LITESTREAM_SHA256_ARM64}" ;; \
+    *) echo "No Litestream build for ${TARGETARCH}" >&2; exit 1 ;; \
+  esac; \
+  url="https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-${arch}.tar.gz"; \
+  node -e 'fetch(process.argv[1]).then(async (r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); require("node:fs").writeFileSync("/tmp/litestream.tar.gz", Buffer.from(await r.arrayBuffer())); })' "${url}"; \
+  echo "${sum}  /tmp/litestream.tar.gz" | sha256sum -c -; \
+  tar -xzf /tmp/litestream.tar.gz -C /usr/local/bin litestream; \
+  /usr/local/bin/litestream version
+
 FROM node:${NODE_VERSION}-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -51,10 +71,15 @@ COPY --from=builder /app/node_modules/harfbuzzjs/dist/harfbuzz-subset.wasm ./nod
 # For `node db/migrate.mjs`, run as a Cloud Run job from this same image.
 COPY --from=builder /app/db/migrate.mjs /app/db/database-url.mjs ./db/
 COPY --from=builder /app/db/migrations ./db/migrations
+# The SQLite backend: its schema, migrations and start script.
+COPY --from=builder /app/db/sqlite ./db/sqlite
+COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 
 RUN mkdir -p /data .next/cache \
   && chown node:node /data .next/cache
 
 USER node
 EXPOSE 8080
-CMD ["node", "server.js"]
+# `node server.js` for Postgres, as before; for a sqlite: DATABASE_URL,
+# migrations at start and Litestream when LITESTREAM_REPLICA_URL is set.
+CMD ["sh", "db/sqlite/entrypoint.sh"]
