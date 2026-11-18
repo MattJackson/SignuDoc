@@ -358,12 +358,17 @@ test("an event becomes one delivery per place, once, and a team's channel only h
   const expanded = await expandQueuedEvents(database, deps);
 
   assert.equal(expanded.events, 2);
-  assert.deepEqual(places(await deliveriesFor(salesEnvelope)), [
-    "channel:C0EVERY1",
-    "channel:C0SALES1",
-    `user:${owner.id}`,
-    `user:${teammate.id}`,
-  ]);
+  // places() sorts, and the two user ids are random, so the expected list
+  // is sorted the same way.
+  assert.deepEqual(
+    places(await deliveriesFor(salesEnvelope)),
+    [
+      "channel:C0EVERY1",
+      "channel:C0SALES1",
+      `user:${owner.id}`,
+      `user:${teammate.id}`,
+    ].sort(),
+  );
   assert.deepEqual(places(await deliveriesFor(legalEnvelope)), [
     "channel:C0EVERY1",
     "channel:C0LEGAL1",

@@ -1,6 +1,7 @@
 import { type DbExecutor, getDb, queryOne } from "./db/connection.ts";
 import {
   getIntegrationSettings,
+  readIntegrationSettings,
   type IntegrationSettings,
 } from "./integration-settings.ts";
 import {
@@ -89,10 +90,21 @@ export function readManagerPolicy(
   return { mode: "off", source: "default", teamIds };
 }
 
+/**
+ * The rule in force. With a database, its settings are read from that
+ * database (the one the caller is working in); without one, from the
+ * short-lived cache of this site's own.
+ */
 export async function loadManagerPolicy(
   env: EnvSource = process.env,
+  database?: DbExecutor,
 ): Promise<ManagerPolicy> {
-  return readManagerPolicy(env, await getIntegrationSettings(env));
+  return readManagerPolicy(
+    env,
+    database
+      ? await readIntegrationSettings(database, env)
+      : await getIntegrationSettings(env),
+  );
 }
 
 /** Whether the rule covers this sender: everyone, or a chosen team's member. */
@@ -256,7 +268,7 @@ export async function checkManagerPolicy(
   sender: { email: string; id: string },
   signers: readonly SigningOrderEntry[],
   {
-    database = getDb(),
+    database,
     directory,
     part11 = false,
     policy,
@@ -267,12 +279,12 @@ export async function checkManagerPolicy(
     policy?: ManagerPolicy;
   } = {},
 ): Promise<ManagerPolicyCheck> {
-  const current = policy ?? (await loadManagerPolicy());
+  const current = policy ?? (await loadManagerPolicy(process.env, database));
 
   if (
     current.mode === "off" ||
     part11 ||
-    !(await managerPolicyAppliesTo(sender.id, current, database))
+    !(await managerPolicyAppliesTo(sender.id, current, database ?? getDb()))
   ) {
     return { status: "not_applicable" };
   }

@@ -494,7 +494,7 @@ function RulesSection({ onView, view }: SectionProps) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [channels, setChannels] = useState<SlackChannelOption[] | null>(null);
-  const eventLabels = new Map(
+  const eventLabels = new Map<string, string>(
     view.events.map((event) => [event.kind, event.label]),
   );
 
