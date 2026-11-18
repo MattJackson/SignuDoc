@@ -48,6 +48,7 @@ function runScript(
       encoding: "utf8",
       env: {
         HOME: dir,
+        NODE_ENV: "test",
         IMAGE: "registry/signudoc@sha256:abc",
         PATH: `${dir}:${process.env.PATH ?? ""}`,
         PROJECT_ID: "test-project",
