@@ -15,15 +15,14 @@ const rule = {
   teamId: null,
 };
 
-test("editing a paused rule and saving keeps it paused", () => {
-  const body = ruleBody(draftFromRule({ ...rule, enabled: false }));
+test("saving an edit does not send enabled, so the stored state is kept", () => {
+  // A rule paused while its edit form is open must stay paused: the draft
+  // was taken when it was active and must not put that back.
+  const body = ruleBody(draftFromRule({ ...rule }));
 
-  assert.equal((body as { enabled?: boolean }).enabled, false);
+  assert.equal("enabled" in body, false);
 });
 
-test("editing an active rule keeps it active, and a new rule starts active", () => {
-  const body = ruleBody(draftFromRule({ ...rule, enabled: true }));
-
-  assert.equal((body as { enabled?: boolean }).enabled, true);
+test("a new rule is created enabled", () => {
   assert.equal((ruleBody(EMPTY_RULE) as { enabled?: boolean }).enabled, true);
 });

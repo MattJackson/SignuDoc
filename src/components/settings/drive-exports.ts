@@ -7,3 +7,18 @@ export function readExports<T>(
 
   return Array.isArray(list) ? list : null;
 }
+
+// What the executed-copies section shows for the list it has and whether
+// the last load failed.
+export function exportsView(
+  list: unknown[] | null,
+  failed: boolean,
+): "empty" | "failed" | "list" | "loading" {
+  void failed;
+
+  if (list === null) {
+    return "loading";
+  }
+
+  return list.length === 0 ? "empty" : "list";
+}

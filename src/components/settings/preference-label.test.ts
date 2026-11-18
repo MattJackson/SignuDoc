@@ -3,13 +3,22 @@ import test from "node:test";
 
 import { preferenceCheckboxLabel } from "./preference-label.ts";
 
-test("the checkbox is named by the visible label, then the scope", () => {
+const row = { kind: "envelope_completed", label: "Envelope completed" };
+
+test("the checkbox is named by the row's visible label, never its id", () => {
+  for (const scope of ["own", "team"] as const) {
+    const name = preferenceCheckboxLabel(row, scope);
+
+    assert.ok(name.startsWith("Envelope completed, "), name);
+    assert.ok(!name.includes("envelope_completed"), name);
+  }
+
   assert.equal(
-    preferenceCheckboxLabel("Envelope completed", "own"),
+    preferenceCheckboxLabel(row, "own"),
     "Envelope completed, for my envelopes",
   );
   assert.equal(
-    preferenceCheckboxLabel("Envelope completed", "team"),
+    preferenceCheckboxLabel(row, "team"),
     "Envelope completed, for my teams' envelopes",
   );
 });
