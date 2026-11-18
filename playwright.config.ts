@@ -68,6 +68,9 @@ export default defineConfig({
         NEXT_TELEMETRY_DISABLED: "1",
         // The breach check calls an outside service; the test must not.
         PASSWORD_BREACH_CHECK: "off",
+        // A new install timestamps its seals with DigiCert's server; the
+        // test must not depend on reaching it.
+        SEAL_TIMESTAMP_URL: "off",
         SETUP_TOKEN: e2eSetupToken,
         // "local" unless E2E_STORAGE_DRIVER says otherwise. With "blob" and a
         // BLOB_READ_WRITE_TOKEN in the environment, the same test runs against

@@ -23,6 +23,7 @@ import {
   type StoredPageSize,
 } from "./pdf-page-geometry.ts";
 import { sha256Hex } from "./pdf-seal.ts";
+import { getSealTimestampUrl } from "../seal-settings.ts";
 import { getBranding } from "../settings.ts";
 import {
   finishSignerSignedPdf,
@@ -66,18 +67,32 @@ export type PdfSealer = (
 const defaultSealer: PdfSealer = (pdfDocument, purpose) =>
   saveInstallSealedPdf(pdfDocument, purpose);
 
+// The timestamp server each loaded sealer read, so a document the signers
+// signed themselves (finishSignerSignedPdf) uses it too without asking the
+// database again inside the caller's transaction.
+const loadedTimestampUrls = new WeakMap<PdfSealer, string | null>();
+
 /**
- * The install's sealer, with what it reads from the database (the seal key
- * and the install's name) read now. Sealing with it then needs no database
- * connection, so a caller can seal while it holds one in a transaction
- * without waiting on a pool that its own concurrent requests have filled.
+ * The install's sealer, with what it reads from the database (the seal key,
+ * the timestamp server and the install's name) read now. Sealing with it
+ * then needs no database connection, so a caller can seal while it holds
+ * one in a transaction without waiting on a pool that its own concurrent
+ * requests have filled.
  */
 export async function loadInstallSealer(): Promise<PdfSealer> {
   const identity = await getSealIdentity();
   const branding = await getBranding();
+  const timestampUrl = await getSealTimestampUrl();
+  const sealer: PdfSealer = (pdfDocument, purpose) =>
+    saveInstallSealedPdf(pdfDocument, purpose, {
+      branding,
+      identity,
+      timestampUrl,
+    });
 
-  return (pdfDocument, purpose) =>
-    saveInstallSealedPdf(pdfDocument, purpose, { branding, identity });
+  loadedTimestampUrls.set(sealer, timestampUrl);
+
+  return sealer;
 }
 
 const CERTIFICATE_FINGERPRINT_VERSION = 1;
@@ -1531,7 +1546,9 @@ export async function finalizeEnvelope(
     userId: input.envelope.userId,
   };
   const signedPdfBytes = signedRevision
-    ? await finishSignerSignedPdf(signedRevision)
+    ? await finishSignerSignedPdf(signedRevision, {
+        timestampUrl: seal ? loadedTimestampUrls.get(seal) : undefined,
+      })
     : await renderFinalizedEnvelopePdf(
         {
           auditEvents: input.auditEvents,
