@@ -12,4 +12,11 @@ export async function register() {
     await import("@/lib/integration-settings");
 
   await primeIntegrationSettings();
+
+  // Notifications go out soon after the audit event they are about, not
+  // only on the scheduled run. See notifications/kick.ts.
+  const { registerNotificationDelivery } =
+    await import("@/lib/notifications/kick");
+
+  registerNotificationDelivery();
 }
