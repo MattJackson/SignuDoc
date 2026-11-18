@@ -43,6 +43,8 @@ export const systemAuditEventTypes = [
   "logo_changed",
   "email_domain_changed",
   "envelope_deleted",
+  "backup_settings_changed",
+  "backup_run_requested",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];

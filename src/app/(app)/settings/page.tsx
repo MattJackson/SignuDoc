@@ -1,7 +1,9 @@
+import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { UpdatesPanel } from "@/components/settings/updates-panel";
 import { isAdminUser } from "@/lib/auth/admin";
+import { getBackupSettingsView } from "@/lib/backup-config";
 import { getAuthSession } from "@/lib/auth/server";
 import { toOrganizationSettingsView } from "@/lib/organization-settings";
 import {
@@ -16,6 +18,7 @@ export default async function SettingsPage() {
   const session = await getAuthSession();
   const isAdmin = session ? await isAdminUser(session.user.id) : false;
   const settings = await getSettings();
+  const backupView = isAdmin ? await getBackupSettingsView() : null;
 
   return (
     <div className="space-y-8">
@@ -38,6 +41,7 @@ export default async function SettingsPage() {
           )}
         />
       ) : null}
+      {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );

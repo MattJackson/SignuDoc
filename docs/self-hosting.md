@@ -128,23 +128,24 @@ The graft only lives in your local clone. The merge itself is a normal commit th
 
 A deployment made with the button needs no environment variables. These are there if you want them, under Settings, Environment Variables in the Vercel project. Deploy again after changing one.
 
-| Variable                                            | What it does                                                                                                                                                                                           |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SETUP_TOKEN`                                       | A secret the setup page asks for. See [Lock down a new install](#lock-down-a-new-install).                                                                                                             |
-| `CRON_SECRET`                                       | Closes the daily cleanup route to everyone but Vercel's own cron call. See [Daily cleanup](#daily-cleanup).                                                                                            |
-| `BOTID`                                             | `1` turns on Vercel BotID for sign-in, sign-up and setup. See [Bot protection](#bot-protection).                                                                                                       |
-| `RESEND_FROM_EMAIL`, `SUPPORT_EMAIL`                | Fix the sender and support addresses from the environment instead of in Settings.                                                                                                                      |
-| `BETTER_AUTH_SECRET`                                | Your own secret for signing sessions. Without it one is derived from the database password, so changing that password signs everyone out.                                                              |
-| `APP_URL`                                           | The site's public address, if it should not be the project's production domain.                                                                                                                        |
-| `HOSTED_MODE`                                       | `1` runs SignuDoc as a public service under its own name. See [Hosted mode](#hosted-mode).                                                                                                             |
-| `RESEND_REGION`                                     | Where Resend sends from when the app adds your domain, for example `eu-west-1`. See [Running in the EU](#running-in-the-eu).                                                                           |
-| `SEAL_P12_BASE64`, `SEAL_P12_PASSWORD`              | Seal finished PDFs with a certificate from a certificate authority instead of the install's own. See [Signed PDFs and the seal](#signed-pdfs-and-the-seal).                                            |
-| `SEAL_TIMESTAMP_URL`                                | An RFC 3161 timestamp server that adds a trusted time to each seal, and long-term validation. See [Long-term validation](#long-term-validation).                                                       |
-| `EIDEASY_CLIENT_ID`, `EIDEASY_SECRET`               | Let senders ask for advanced or qualified signatures in the signers' own names, through eID Easy. See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes). |
-| `CSC_API_URL`, `CSC_CLIENT_ID`, `CSC_CLIENT_SECRET` | The same through a trust service provider's remote signing service (CSC API v2). See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).                  |
-| `BACKUP_BLOB_READ_WRITE_TOKEN`, `BACKUP_KEEP_DAYS`  | A daily backup of the database and files to a second Blob store. See [Backup and restore](backup-and-restore.md).                                                                                      |
-| `AUDIT_LOG`                                         | `off` keeps audit rows out of the function logs. See [Send the audit trail to your SIEM](#send-the-audit-trail-to-your-siem).                                                                          |
-| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`  | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. See [Single sign-on](#single-sign-on).                      |
+| Variable                                            | What it does                                                                                                                                                                                                      |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SETUP_TOKEN`                                       | A secret the setup page asks for. See [Lock down a new install](#lock-down-a-new-install).                                                                                                                        |
+| `CRON_SECRET`                                       | Closes the daily cleanup route to everyone but Vercel's own cron call. See [Daily cleanup](#daily-cleanup).                                                                                                       |
+| `BOTID`                                             | `1` turns on Vercel BotID for sign-in, sign-up and setup. See [Bot protection](#bot-protection).                                                                                                                  |
+| `RESEND_FROM_EMAIL`, `SUPPORT_EMAIL`                | Fix the sender and support addresses from the environment instead of in Settings.                                                                                                                                 |
+| `BETTER_AUTH_SECRET`                                | Your own secret for signing sessions. Without it one is derived from the database password, so changing that password signs everyone out.                                                                         |
+| `APP_URL`                                           | The site's public address, if it should not be the project's production domain.                                                                                                                                   |
+| `HOSTED_MODE`                                       | `1` runs SignuDoc as a public service under its own name. See [Hosted mode](#hosted-mode).                                                                                                                        |
+| `RESEND_REGION`                                     | Where Resend sends from when the app adds your domain, for example `eu-west-1`. See [Running in the EU](#running-in-the-eu).                                                                                      |
+| `SEAL_P12_BASE64`, `SEAL_P12_PASSWORD`              | Seal finished PDFs with a certificate from a certificate authority instead of the install's own. See [Signed PDFs and the seal](#signed-pdfs-and-the-seal).                                                       |
+| `SEAL_TIMESTAMP_URL`                                | An RFC 3161 timestamp server that adds a trusted time to each seal, and long-term validation. See [Long-term validation](#long-term-validation).                                                                  |
+| `EIDEASY_CLIENT_ID`, `EIDEASY_SECRET`               | Let senders ask for advanced or qualified signatures in the signers' own names, through eID Easy. See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).            |
+| `CSC_API_URL`, `CSC_CLIENT_ID`, `CSC_CLIENT_SECRET` | The same through a trust service provider's remote signing service (CSC API v2). See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).                             |
+| `BACKUP_BLOB_READ_WRITE_TOKEN`, `BACKUP_KEEP_DAYS`  | A daily backup of the database and files to a second Blob store. Usually set in Settings, Backups instead; set here, they win and Settings shows them as locked. See [Backup and restore](backup-and-restore.md). |
+| `BACKUP_GCS_BUCKET`, `BACKUP_GCS_PREFIX`            | The same backup to a Google Cloud Storage bucket. See [Backup and restore](backup-and-restore.md#back-up-to-google-cloud-storage).                                                                                |
+| `AUDIT_LOG`                                         | `off` keeps audit rows out of the function logs. See [Send the audit trail to your SIEM](#send-the-audit-trail-to-your-siem).                                                                                     |
+| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`  | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. See [Single sign-on](#single-sign-on).                                 |
 
 ## Set the site up
 
@@ -290,7 +291,13 @@ Some data still leaves the EU: Vercel's and Resend's account metadata and logs, 
 
 ## Backups
 
-Turn on the daily backup to a second Blob store, and learn the restore steps, in [Backup and restore](backup-and-restore.md).
+An administrator turns on the daily backup under Settings, Backups: a second Blob store, or a Google Cloud Storage bucket. [Backup and restore](backup-and-restore.md) has the steps, what to keep on at the database, and how to restore.
+
+## How long documents are kept
+
+By default finished documents are kept forever: until someone deletes them. To delete them after a time instead, an administrator enters a number of days under Settings, Organization, "How long to keep finished documents". A completed, declined or voided envelope is then deleted with its audit trail that many days after it finished, and its sender is emailed 30 days before. Emptying the field goes back to keeping them forever. While Part 11 mode is on the setting is off, and records are deleted by hand only.
+
+The daily backup keeps the copy of a deleted document for its own `BACKUP_KEEP_DAYS` (or the days set in Settings, Backups) more, so plan that into your retention rules.
 
 ## Daily cleanup
 
@@ -344,8 +351,34 @@ Away from Vercel, a few things Vercel does for you are yours to set:
 - `APP_URL`, the site's public HTTPS address.
 - `BETTER_AUTH_SECRET`, at least 32 characters (`openssl rand -hex 32`). Without it a secret is derived from the database password, which must then be at least 12 characters long.
 - `RESEND_API_KEY`, from your Resend account.
-- Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`.
+- Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`. On Google Cloud, use a Cloud Storage bucket (below).
 - Leave `EMAIL_DRIVER` unset. The capture driver is for development only.
+- Schedule the daily backup, if you use it: have your scheduler call `/api/internal/backup` once a day, with the same secret as the [daily cleanup](#daily-cleanup).
+
+### Files in Google Cloud Storage
+
+On Cloud Run (or anywhere else on Google Cloud), keep the files in a Cloud Storage bucket:
+
+| Variable         | What it does                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------ |
+| `STORAGE_DRIVER` | `gcs`. A bucket name alone does not switch storage over; this does.                              |
+| `GCS_BUCKET`     | The bucket, for example `acme-signudoc-files`. Required.                                         |
+| `GCS_PREFIX`     | Optional. A folder in the bucket to keep everything under, so one bucket can hold more installs. |
+
+1. Make the bucket, in the region the app runs in, with **uniform bucket-level access** and **public access prevention** on. Nothing in it is ever given a public URL; every download goes through the app, which checks who is asking first.
+2. Give the service account the app runs as `roles/storage.objectAdmin` on that bucket (not on the project):
+
+   ```sh
+   gcloud storage buckets add-iam-policy-binding gs://acme-signudoc-files \
+     --member=serviceAccount:signudoc@your-project.iam.gserviceaccount.com \
+     --role=roles/storage.objectAdmin
+   ```
+
+3. Set the variables above and deploy.
+
+On Cloud Run the app gets its access tokens from the metadata server, as that service account, so there is no key to store. Anywhere else, set `GOOGLE_SERVICE_ACCOUNT_KEY` to a key for a service account with the same role (the JSON, or the same in base64).
+
+**Uploads.** On Vercel the browser sends a PDF straight to Blob, because Vercel stops a request to the app at 4.5 MB. With Cloud Storage the PDF goes through the app instead, and Cloud Run takes a request of up to 32 MB, which is more than the 20 MB upload limit with the form around it. The app itself is set to accept a request body of up to 25 MB (`proxyClientMaxBodySize` in `next.config.ts`); past that Next.js would quietly hand the upload route a cut-off file. If you put a load balancer or proxy of your own in front of the app, let it pass requests of 25 MB.
 
 Self-hosted operators are responsible for:
 
