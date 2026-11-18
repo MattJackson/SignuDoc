@@ -1,10 +1,14 @@
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
+import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
+import { SetupChecklist } from "@/components/settings/setup-checklist";
 import { UpdatesPanel } from "@/components/settings/updates-panel";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getBackupSettingsView } from "@/lib/backup-config";
 import { getAuthSession } from "@/lib/auth/server";
+import { getGoogleWorkspaceView } from "@/lib/google-workspace";
+import { getOnboardingState } from "@/lib/onboarding/steps";
 import { toOrganizationSettingsView } from "@/lib/organization-settings";
 import {
   getSettings,
@@ -19,6 +23,10 @@ export default async function SettingsPage() {
   const isAdmin = session ? await isAdminUser(session.user.id) : false;
   const settings = await getSettings();
   const backupView = isAdmin ? await getBackupSettingsView() : null;
+  const [onboarding, googleWorkspace] =
+    isAdmin && !settings.hosted
+      ? await Promise.all([getOnboardingState(), getGoogleWorkspaceView()])
+      : [null, null];
 
   return (
     <div className="space-y-8">
@@ -32,6 +40,7 @@ export default async function SettingsPage() {
           required: settings.requireTwoFactor,
         }}
       />
+      {onboarding ? <SetupChecklist steps={onboarding} /> : null}
       {isAdmin ? (
         <OrganizationSettings
           // Read fresh, not from the short-lived cache, so the form never
@@ -40,6 +49,9 @@ export default async function SettingsPage() {
             resolveSettings(await readStoredSettings()),
           )}
         />
+      ) : null}
+      {googleWorkspace ? (
+        <GoogleWorkspacePanel initialView={googleWorkspace} />
       ) : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}

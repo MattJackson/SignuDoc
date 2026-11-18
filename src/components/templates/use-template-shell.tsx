@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 
+import { DirectoryEmailInput } from "@/components/envelopes/directory-email-input";
 import { getSignerPalette } from "@/components/envelopes/signer-palette";
 import { ShellButton } from "@/components/shared/form-shell";
 import { PageHeader } from "@/components/shared/page-header";
@@ -245,17 +246,23 @@ export function UseTemplateShell({
                       <span className="text-[0.8125rem] font-semibold text-(--secondary)">
                         Email
                       </span>
-                      <input
+                      <DirectoryEmailInput
                         aria-invalid={emailError ? true : undefined}
                         aria-label={`${role.name} email`}
-                        className="field-input"
                         disabled={isSubmitting}
                         maxLength={320}
-                        onChange={(event) =>
-                          updatePerson(index, { email: event.target.value })
+                        onChange={(value) =>
+                          updatePerson(index, { email: value })
+                        }
+                        onPick={(picked) =>
+                          updatePerson(index, {
+                            email: picked.email,
+                            ...(person.name.trim() || !picked.name
+                              ? {}
+                              : { name: picked.name }),
+                          })
                         }
                         placeholder="jane@company.com"
-                        type="email"
                         value={person.email}
                       />
                       {emailError ? (

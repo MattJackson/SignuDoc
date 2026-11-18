@@ -23,6 +23,7 @@ import {
   signatureMeanings,
   type SignatureMeaning,
 } from "@/lib/types/domain";
+import { DirectoryEmailInput } from "./directory-email-input";
 import { getSignerPalette } from "./signer-palette";
 
 const envelopeSteps = ["Upload", "Signers", "Place fields", "Review"];
@@ -480,17 +481,20 @@ function SignerCard({
             <span className="text-[0.8125rem] font-semibold text-(--secondary)">
               Email
             </span>
-            <input
+            <DirectoryEmailInput
               aria-invalid={emailError ? true : undefined}
               aria-label={`Signer ${order} email`}
-              className="field-input"
               disabled={disabled}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                onChange("email", event.target.value)
-              }
               onBlur={() => onBlur("email")}
+              onChange={(value) => onChange("email", value)}
+              onPick={(person) => {
+                onChange("email", person.email);
+
+                if (!signer.name.trim() && person.name) {
+                  onChange("name", person.name);
+                }
+              }}
               placeholder="jane@company.com"
-              type="email"
               value={signer.email}
             />
             <span
@@ -690,17 +694,20 @@ function CopyRecipientCard({
             <span className="text-[0.8125rem] font-semibold text-(--secondary)">
               Email
             </span>
-            <input
+            <DirectoryEmailInput
               aria-invalid={emailError ? true : undefined}
               aria-label={`Copy recipient ${position} email`}
-              className="field-input"
               disabled={disabled}
               onBlur={() => onBlur("email")}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                onChange("email", event.target.value)
-              }
+              onChange={(value) => onChange("email", value)}
+              onPick={(person) => {
+                onChange("email", person.email);
+
+                if (!recipient.name.trim() && person.name) {
+                  onChange("name", person.name);
+                }
+              }}
               placeholder="alex@company.com"
-              type="email"
               value={recipient.email}
             />
             <span

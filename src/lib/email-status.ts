@@ -6,13 +6,13 @@ import {
   getAddressDomain,
   isResendTestSender,
 } from "./services/email-addresses.ts";
-import { resolveEmailDriver } from "./services/email.ts";
+import { resolveEmailDriver, resolveResendApiKey } from "./services/email.ts";
 import {
   getSettings,
   markEmailReady,
   type ResolvedSettings,
 } from "./settings.ts";
-import { getEnv, readEnv, type EnvSource } from "./utils/env.ts";
+import { readEnv, type EnvSource } from "./utils/env.ts";
 
 // Whether this install can send email to anyone, and what is left to do if
 // it cannot. Shown to the administrator in Settings.
@@ -94,6 +94,11 @@ export type ResendDomainsClient = Pick<
 >;
 
 type EmailStatusOptions = {
+  /**
+   * The Resend key to use. Left out, it is RESEND_API_KEY or the key saved
+   * in the app; null means there is none (for tests).
+   */
+  apiKey?: string | null;
   domainsClient?: ResendDomainsClient;
   env?: EnvSource;
   /** Called once Resend has created the domain, so the change can be audited. */
@@ -169,10 +174,15 @@ function toDnsRecords(records: readonly unknown[]): EmailDnsRecord[] {
   return dnsRecords;
 }
 
-function createDomainsClient(env: EnvSource): ResendDomainsClient | null {
-  const apiKey = getEnv(env).email.apiKey;
+async function createDomainsClient(
+  env: EnvSource,
+  apiKey: string | null | undefined,
+): Promise<ResendDomainsClient | null> {
+  // RESEND_API_KEY, or the key saved in the app (resend-key.ts).
+  const key =
+    apiKey === undefined ? (await resolveResendApiKey(env))?.key : apiKey;
 
-  return apiKey ? new Resend(apiKey).domains : null;
+  return key ? new Resend(key).domains : null;
 }
 
 async function defaultRecordReady(
@@ -373,6 +383,7 @@ async function findDomain(
 // Finds out everything short of the domain's DNS records, which cost one
 // more request and are fetched by whoever needs them.
 async function inspectEmail({
+  apiKey,
   domainsClient,
   env = process.env,
   recordReady,
@@ -389,7 +400,7 @@ async function inspectEmail({
     };
   }
 
-  const client = domainsClient ?? createDomainsClient(env);
+  const client = domainsClient ?? (await createDomainsClient(env, apiKey));
 
   if (!client) {
     return {

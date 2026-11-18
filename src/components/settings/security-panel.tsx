@@ -71,7 +71,7 @@ function describeEvent(event: SystemAuditEvent): string {
     case "two_factor_requirement_changed":
       return metadata.to === true ? "Turned on" : "Turned off";
     case "role_changed":
-      return `${target ?? "Account"}: ${String(metadata.from)} to ${String(metadata.to)}`;
+      return `${target ?? "Account"}: ${String(metadata.from)} to ${String(metadata.to)}${typeof metadata.group === "string" ? ` (group ${metadata.group})` : ""}`;
     case "settings_changed":
       return typeof metadata.changes === "object" && metadata.changes
         ? Object.keys(metadata.changes).join(", ")

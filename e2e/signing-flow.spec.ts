@@ -125,8 +125,14 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
     await adminPage.getByLabel("Setup token").fill(e2eSetupToken);
     await adminPage.getByRole("button", { name: "Finish setup" }).click();
 
-    // Setup ends signed in, on the administrator's settings.
-    await expect(adminPage).toHaveURL(/\/settings#organization$/);
+    // Setup ends signed in, on the onboarding that walks through the rest.
+    await expect(adminPage).toHaveURL(/\/onboarding$/);
+    await expect(
+      adminPage.getByRole("heading", { name: "Set up this site" }),
+    ).toBeVisible();
+
+    // Everything onboarding sets is also in Settings.
+    await adminPage.goto("/settings#organization");
     await expect(
       adminPage.getByRole("link", { exact: true, name: ORGANIZATION_NAME }),
     ).toBeVisible();

@@ -7,6 +7,7 @@ import {
 } from "better-auth/api";
 
 import { getDb, queryOne } from "../db/connection.ts";
+import { syncAdminRoleFromGroup } from "../google-admin-group.ts";
 import { logSecurityEvent } from "../security/logging.ts";
 import { enforceSessionLimits } from "../session-controls.ts";
 import { getSettings, isMissingSchemaError } from "../settings.ts";
@@ -484,6 +485,12 @@ async function afterProviderSignIn(ctx: HookContext, returned: unknown) {
       event: "sign_in_succeeded",
       metadata: { method: "sso", provider },
       targetUserId: session.user.id,
+    });
+    // An administrator group in the Workspace directory decides who is an
+    // administrator (google-admin-group.ts). It never refuses the sign-in.
+    await syncAdminRoleFromGroup({
+      email: session.user.email,
+      id: session.user.id,
     });
     return;
   }

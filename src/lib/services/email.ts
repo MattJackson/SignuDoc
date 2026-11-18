@@ -4,6 +4,10 @@ import path from "node:path";
 
 import { Resend } from "resend";
 
+import {
+  getIntegrationSettings,
+  peekIntegrationSettings,
+} from "../integration-settings.ts";
 import { getSettings } from "../settings.ts";
 import { type EmailTemplateKind } from "../types/domain.ts";
 import { getEnv, isLocalDeployment, type EnvSource } from "../utils/env.ts";
@@ -314,6 +318,30 @@ export function isEmailNotConnectedError(error: unknown): boolean {
   );
 }
 
+export type ResendApiKey = { key: string; source: "env" | "settings" };
+
+/**
+ * The Resend API key: RESEND_API_KEY when it is set (the Resend integration
+ * on Vercel sets it), otherwise the one an administrator saved in the app.
+ */
+export async function resolveResendApiKey(
+  env: EnvSource = process.env,
+): Promise<ResendApiKey | null> {
+  const fromEnv = getEnv(env).email.apiKey;
+
+  if (fromEnv) {
+    return { key: fromEnv, source: "env" };
+  }
+
+  const stored = (await getIntegrationSettings(env))["resend.apiKey"];
+
+  return stored ? { key: stored, source: "settings" } : null;
+}
+
+function notConnected(): ServiceConfigurationError {
+  return new ServiceConfigurationError("email", EMAIL_ENV_KEYS);
+}
+
 export function createEmailService({
   env = process.env,
   resolveAddresses = () => resolveEmailAddresses(env),
@@ -324,14 +352,56 @@ export function createEmailService({
     return createCaptureEmailService(env, resolveAddresses);
   }
 
-  if (!resendClient) {
-    assertServiceConfig("email", EMAIL_ENV_KEYS, env);
+  const envKey = getEnv(env).email.apiKey;
+
+  // Without RESEND_API_KEY the key may be one saved in the app. Whether
+  // there is one has to be known now, so that a send with no email set up
+  // is refused before anything about it changes: it is taken from the
+  // settings this process last read (loaded at startup, instrumentation.ts,
+  // and again on every signed-in request). The key itself is read fresh
+  // when the first message goes out.
+  if (!resendClient && !envKey) {
+    const known = peekIntegrationSettings();
+
+    if (!known?.["resend.apiKey"]) {
+      // Look again, so a key saved since on another instance is seen by
+      // the next send.
+      if (known) {
+        void getIntegrationSettings(env).catch(() => undefined);
+      }
+
+      assertServiceConfig("email", EMAIL_ENV_KEYS, env);
+    }
   }
 
-  const client = resendClient ?? new Resend(getEnv(env).email.apiKey!);
+  let pendingClient: Promise<Resend> | null = null;
+  const getClient = (): Promise<Resend> => {
+    if (resendClient) {
+      return Promise.resolve(resendClient);
+    }
+
+    if (envKey) {
+      pendingClient ??= Promise.resolve(new Resend(envKey));
+    }
+
+    pendingClient ??= resolveResendApiKey(env).then((resolved) => {
+      if (!resolved) {
+        throw notConnected();
+      }
+
+      return new Resend(resolved.key);
+    });
+    // A failed lookup is not remembered: the next message asks again.
+    pendingClient.catch(() => {
+      pendingClient = null;
+    });
+
+    return pendingClient;
+  };
 
   return {
     async send(message, options) {
+      const client = await getClient();
       const config = await resolveAddresses();
       const { data, error } = await sendWithinRateLimit(
         () =>
@@ -362,6 +432,7 @@ export function createEmailService({
         throw new Error("Messages with attachments must be sent one by one.");
       }
 
+      const client = await getClient();
       const config = await resolveAddresses();
       const { data, error } = await sendWithinRateLimit(
         () =>
