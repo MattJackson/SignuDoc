@@ -133,6 +133,18 @@ private_bucket() {
     --member="serviceAccount:${RUNTIME_SA}" --role=roles/storage.objectAdmin >/dev/null
 }
 
+# Versioning keeps every copy Litestream or the backup clean-up deletes, so a
+# rule removes those noncurrent versions after <days>. This replaces the
+# bucket's lifecycle config, so running setup again leaves the same rule.
+noncurrent_lifecycle() {
+  local bucket="$1" days="$2" rules
+
+  rules="$(mktemp)"
+  printf '{"rule":[{"action":{"type":"Delete"},"condition":{"isLive":false,"daysSinceNoncurrentTime":%s}}]}' "${days}" >"${rules}"
+  cmd storage buckets update "gs://${bucket}" --lifecycle-file="${rules}" >/dev/null
+  rm -f "${rules}"
+}
+
 step "Enabling APIs"
 APIS=(run.googleapis.com secretmanager.googleapis.com artifactregistry.googleapis.com
   cloudbuild.googleapis.com cloudscheduler.googleapis.com iam.googleapis.com
@@ -195,6 +207,7 @@ else
   # what it replaces, so a mistake in the bucket can be undone too.
   private_bucket "${DB_BUCKET}" "${REGION}"
   cmd storage buckets update "gs://${DB_BUCKET}" --versioning >/dev/null
+  noncurrent_lifecycle "${DB_BUCKET}" 7
   ENV_VARS+=",DATABASE_URL=sqlite:${SQLITE_PATH},LITESTREAM_REPLICA_URL=gs://${DB_BUCKET}/db"
 fi
 
@@ -205,6 +218,7 @@ if [[ -n "${BACKUP_REGION:-}" ]]; then
   step "Backup bucket gs://${BACKUP_BUCKET} in ${BACKUP_REGION}"
   private_bucket "${BACKUP_BUCKET}" "${BACKUP_REGION}"
   cmd storage buckets update "gs://${BACKUP_BUCKET}" --versioning >/dev/null
+  noncurrent_lifecycle "${BACKUP_BUCKET}" 30
   ENV_VARS+=",BACKUP_GCS_BUCKET=${BACKUP_BUCKET}"
 fi
 

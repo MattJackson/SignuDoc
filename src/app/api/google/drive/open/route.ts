@@ -1,11 +1,15 @@
 import { getAuthSessionFromHeaders } from "@/lib/auth/server";
-import { seeOther, withDriveProblem } from "@/lib/drive-routes";
+import { describeDriveProblem } from "@/lib/drive-problems";
+import {
+  driveOpenFailure,
+  seeOther,
+  withDriveProblem,
+} from "@/lib/drive-routes";
 import { DocumentConversionError } from "@/lib/integrations/google/convert";
 import {
   importDriveFileAsDraft,
   parseDriveOpenState,
 } from "@/lib/integrations/google/drive-import";
-import { DriveAuthorizationError } from "@/lib/integrations/google/drive-oauth";
 import { getDriveConnection } from "@/lib/integrations/google/drive-tokens";
 import { DocumentImportError } from "@/lib/services/document-import";
 import { logRouteError } from "@/lib/security/logging";
@@ -29,6 +33,14 @@ const NEW_ENVELOPE = "/envelopes/new";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const here = `${url.pathname}${url.search}`;
+  // A problem already on the address means the last try failed; show it
+  // rather than try again and loop.
+  const earlier = url.searchParams.get("drive");
+
+  if (describeDriveProblem(earlier) !== null && earlier) {
+    return seeOther(withDriveProblem(NEW_ENVELOPE, earlier), request);
+  }
+
   const state = parseDriveOpenState(url.searchParams.get("state"));
 
   if (!state) {
@@ -88,13 +100,15 @@ export async function GET(request: Request) {
       return seeOther(withDriveProblem(NEW_ENVELOPE, error.code), request);
     }
 
-    if (error instanceof DriveAuthorizationError) {
-      return error.code === "not_configured"
-        ? seeOther(withDriveProblem(NEW_ENVELOPE, "not_configured"), request)
-        : seeOther(
-            `/api/google/drive/connect?returnTo=${encodeURIComponent(here)}`,
-            request,
-          );
+    const failure = driveOpenFailure(error);
+
+    if (failure) {
+      return seeOther(
+        "problem" in failure
+          ? withDriveProblem(NEW_ENVELOPE, failure.problem)
+          : `/api/google/drive/connect?returnTo=${encodeURIComponent(here)}`,
+        request,
+      );
     }
 
     logRouteError(error, {

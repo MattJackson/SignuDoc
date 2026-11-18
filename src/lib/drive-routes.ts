@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { DocumentConversionError } from "./integrations/google/convert.ts";
-import { DriveAuthorizationError } from "./integrations/google/drive-oauth.ts";
-import { ImportDraftAccountError } from "./integrations/google/import-draft.ts";
-import { DocumentImportError } from "./services/document-import.ts";
 import { resolveAuthUrl, type EnvSource } from "./utils/env.ts";
 
 // Small pieces shared by the Google Drive routes under /api/google/drive.
@@ -49,33 +45,8 @@ export function withDriveProblem(path: string, problem: string): string {
   return `${url.pathname}${url.search}`;
 }
 
-export type DraftFailure = { message: string; status: number };
-
-/** How an import that went wrong is told to the person. */
-export function describeImportFailure(error: unknown): DraftFailure | null {
-  if (
-    error instanceof DocumentImportError ||
-    error instanceof DocumentConversionError
-  ) {
-    return { message: error.message, status: 400 };
-  }
-
-  if (error instanceof ImportDraftAccountError) {
-    return {
-      message: "Verify your email address before continuing.",
-      status: 403,
-    };
-  }
-
-  if (error instanceof DriveAuthorizationError) {
-    return {
-      message:
-        error.code === "not_configured"
-          ? "Google Drive is not set up on this site."
-          : "Connect Google Drive, then try again.",
-      status: 409,
-    };
-  }
-
-  return null;
-}
+export {
+  describeImportFailure,
+  driveOpenFailure,
+  type DraftFailure,
+} from "./drive-failures.ts";

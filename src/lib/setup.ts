@@ -512,6 +512,7 @@ export async function completeSetup(
   }
 }
 
-export function firstRunDestination(_env: EnvSource = process.env): string {
-  return "/onboarding";
+/** Where the first administrator goes after setup: hosted installs have no onboarding. */
+export function firstRunDestination(env: EnvSource = process.env): string {
+  return isHostedMode(env) ? "/settings" : "/onboarding";
 }

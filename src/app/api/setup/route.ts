@@ -11,7 +11,7 @@ import {
   buildRateLimitKey,
 } from "@/lib/security/route-controls";
 import { getClientIpAddress, getRequestPathname } from "@/lib/security/request";
-import { completeSetup, SetupError } from "@/lib/setup";
+import { completeSetup, firstRunDestination, SetupError } from "@/lib/setup";
 
 // First-run setup. Open to anyone who reaches it while the install has no
 // administrator, which is the point: there is nobody to sign in as yet.
@@ -174,7 +174,10 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ redirectTo: "/onboarding" }, { status: 201 });
+    return NextResponse.json(
+      { redirectTo: firstRunDestination() },
+      { status: 201 },
+    );
   } catch (error) {
     if (error instanceof SetupError) {
       if (error.statusCode === 403) {

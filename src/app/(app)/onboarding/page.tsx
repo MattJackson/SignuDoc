@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
 
+import { requireSettingsAdmin } from "@/app/(app)/settings/require-admin";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
-import { isAdminUser } from "@/lib/auth/admin";
-import { getAuthSession } from "@/lib/auth/server";
 import { getBackupSettingsView } from "@/lib/backup-config";
 import { getGoogleDriveView } from "@/lib/google-drive";
 import { getGoogleAddonView } from "@/lib/google-addon";
@@ -31,15 +29,7 @@ type OnboardingPageProps = {
 export default async function OnboardingPage({
   searchParams,
 }: OnboardingPageProps) {
-  const session = await getAuthSession();
-
-  if (!session) {
-    redirect("/login");
-  }
-
-  if (!(await isAdminUser(session.user.id))) {
-    redirect("/dashboard");
-  }
+  await requireSettingsAdmin({ selfHostedOnly: true });
 
   const { step: rawStep } = await searchParams;
   const requested = Array.isArray(rawStep) ? rawStep[0] : rawStep;

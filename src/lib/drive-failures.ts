@@ -25,6 +25,11 @@ export function describeImportFailure(error: unknown): DraftFailure | null {
   }
 
   if (error instanceof DriveAuthorizationError) {
+    // Google could not be reached: the connection is fine, so the route says so.
+    if (error.code === "failed") {
+      return null;
+    }
+
     return {
       message:
         error.code === "not_configured"
@@ -49,7 +54,13 @@ export function driveOpenFailure(
     return null;
   }
 
-  return error.code === "not_configured"
-    ? { problem: "not_configured" }
+  if (error.code === "not_configured") {
+    return { problem: "not_configured" };
+  }
+
+  // Only a missing connection is fixed by connecting; a Google outage is
+  // not, and sending it to connect would loop.
+  return error.code === "failed"
+    ? { problem: "import_failed" }
     : { connect: true };
 }

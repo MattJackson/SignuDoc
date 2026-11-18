@@ -127,7 +127,7 @@ What a restore brings back: everything in the database at the time of the backup
 ## In a security review
 
 - **Backup frequency:** daily, at 08:00 UTC on Vercel, or on the deployer's own schedule elsewhere. The database also has its provider's own backups (Neon's history, or Cloud SQL's automated backups and point-in-time recovery).
-- **Retention:** `BACKUP_KEEP_DAYS` (30 by default) for database copies and deleted files, plus the backup bucket's noncurrent versions, if versioning is on.
+- **Retention:** `BACKUP_KEEP_DAYS` (30 by default) for database copies and deleted files, plus the backup bucket's noncurrent versions, if versioning is on (the Google Cloud Run setup script deletes them after 30 days).
 - **Location and access:** a private Vercel Blob store or Cloud Storage bucket chosen by the deployer, ideally in another Vercel team or Google Cloud project. A Blob store can be read only with its read-write token; a bucket only by the accounts granted access to it (the app's service account needs `roles/storage.objectAdmin` on that bucket alone).
 - **Encryption:** Vercel Blob and Cloud Storage encrypt stored data at rest (see their security documentation). The database copy holds the same data as the database, including password hashes and the encrypted two-step sign-in keys, so treat access to the backup like the database password. A Blob token saved in Settings is stored encrypted with a key derived from `BETTER_AUTH_SECRET`.
 - **Changes:** every change to the backup settings, and every backup started by hand, is recorded in the site audit trail.
