@@ -382,7 +382,10 @@ export type DirectorySyncAccountResult = {
       /** False when the account was already blocked by an earlier run. */
       blocked: boolean;
       envelopes: HandedOverEnvelope[];
-      /** Open envelopes nobody could take: no manager, no administrator. */
+      /**
+       * Open envelopes nobody could take: no manager and no administrator,
+       * or waiting for a manager who could not be looked up.
+       */
       envelopesKept: number;
       reason: DirectorySyncReason;
       sessionsEnded: number;

@@ -526,9 +526,9 @@ test("correcting a sent approver asks the directory before any row is locked", a
     getUser: async (email) => {
       asked += 1;
 
-      // A row another transaction holds is skipped by SKIP LOCKED; on
-      // SQLite the write lock makes this query wait, which the timeout
-      // counts as held too.
+      // A row another transaction holds is skipped by SKIP LOCKED. This
+      // proves the defect on Postgres only: SQLite treats a locking read
+      // outside a transaction as a plain read, so it cannot see the lock.
       const free = await Promise.race([
         database.query(
           `select id from envelopes where id = $1 for update skip locked`,

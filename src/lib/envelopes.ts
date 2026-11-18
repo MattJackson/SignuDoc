@@ -3451,7 +3451,11 @@ async function lookUpManagerForApproverCorrection(
     [userId],
   );
 
-  if (policy.mode === "off" || !sender) {
+  if (
+    policy.mode === "off" ||
+    !sender ||
+    !(await managerPolicyAppliesTo(userId, policy, database))
+  ) {
     return null;
   }
 
