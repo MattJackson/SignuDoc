@@ -496,7 +496,18 @@ async function startRun(
   return withTransaction(async (tx) => {
     await tx.query(`SELECT pg_advisory_xact_lock($1)`, [BACKUP_RUN_LOCK_ID]);
 
-    const startedAt = now();
+    // Runs never overlap (the lock above), so each one starts after the
+    // one before. Two in the same second would tie on started_at, which
+    // every list is ordered by, so the later one is recorded a second on
+    // and the newest run always comes first.
+    const previous = await queryOne<{ startedAt: string | null }>(
+      tx,
+      `SELECT max(started_at)::text AS "startedAt" FROM backup_runs`,
+    );
+    const startedAt = Math.max(
+      now(),
+      previous?.startedAt ? Number(previous.startedAt) + 1 : 0,
+    );
 
     await tx.query(
       `

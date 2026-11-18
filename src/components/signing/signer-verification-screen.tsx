@@ -128,7 +128,8 @@ function GoogleCheck({
     autoChecked.current = true;
 
     if (new URLSearchParams(window.location.search).get("google") === "1") {
-      void check();
+      // After this render, not during the effect: check() sets state.
+      void Promise.resolve().then(() => check());
     }
     // Only on arriving: later checks are the buttons'.
     // eslint-disable-next-line react-hooks/exhaustive-deps
