@@ -321,6 +321,7 @@ function faulty(storage) {
   const faults = {
     calls: { read: 0, remove: 0, write: 0 },
     failWriteAt: 0,
+    gate: null,
     inflight: 0,
     loseResponse: false,
     maxInflight: 0,
@@ -333,6 +334,10 @@ function faulty(storage) {
     faults.maxInflight = Math.max(faults.maxInflight, faults.inflight);
 
     try {
+      if (faults.gate) {
+        await faults.gate;
+      }
+
       const failNow =
         faults[kind] === "reject" ||
         (kind === "write" && faults.failWriteAt === faults.calls.write);
@@ -830,9 +835,16 @@ test("a migration that blocks the loop past the ttl does not stop a start nobody
     log: () => {},
     migrate: async () => {
       // The loop was blocked for 40 s, so the fence timer is overdue and runs
-      // as soon as the loop is free again.
+      // as soon as the loop is free again, while a refresh is still in flight.
+      let release = () => {};
+
+      rig.storage.faults.gate = new Promise((resolve) => {
+        release = resolve;
+      });
       rig.time.advance(40_000);
       await rig.timers.advance(0);
+      rig.storage.faults.gate = null;
+      release();
     },
     replicate: () => {
       order.push("replicate");
