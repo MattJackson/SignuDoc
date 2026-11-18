@@ -73,13 +73,16 @@ import {
 import { getBranding, readStoredSettings } from "./settings.ts";
 import {
   checkManagerPolicy,
+  type ManagerPolicy,
   type ManagerPolicyCheck,
 } from "./manager-policy.ts";
 import {
   googleSigningFor,
   isWorkspaceAddress,
   loadGoogleSigningPolicy,
+  type GoogleSigningPolicy,
 } from "./google-signing.ts";
+import { type DirectoryClient } from "./integrations/google/directory.ts";
 import { type RecipientRole, type SignatureMeaning } from "./types/domain.ts";
 import { importPdfDocument } from "./services/document-import.ts";
 import {
@@ -209,6 +212,12 @@ type CorrectSentEnvelopeSignerOptions = {
 
 type SendDraftEnvelopeOptions = {
   database?: DbPool;
+  /** Replaced in tests: the Workspace directory, null when it is off. */
+  directory?: DirectoryClient | null;
+  /** Replaced in tests; read from the settings otherwise. */
+  googleSigningPolicy?: GoogleSigningPolicy;
+  /** Replaced in tests; read from the settings otherwise. */
+  managerPolicy?: ManagerPolicy;
 };
 
 type VoidEnvelopeOptions = {
@@ -1699,7 +1708,17 @@ const PART11_APPROVER_MESSAGE =
 async function checkManagerPolicyForSender(
   userId: string,
   signers: readonly PersistedSignerRecord[],
-  { database, part11 }: { database: DbExecutor; part11: boolean },
+  {
+    database,
+    directory,
+    part11,
+    policy,
+  }: {
+    database: DbExecutor;
+    directory?: DirectoryClient | null;
+    part11: boolean;
+    policy?: ManagerPolicy;
+  },
 ): Promise<ManagerPolicyCheck> {
   const sender = await queryOne<{ email: string }>(
     database,
@@ -1713,7 +1732,9 @@ async function checkManagerPolicyForSender(
 
   return checkManagerPolicy({ email: sender.email, id: userId }, signers, {
     database,
+    directory,
     part11,
+    policy,
   });
 }
 
@@ -2693,7 +2714,12 @@ export async function sendDraftEnvelope(
   userId: string,
   envelopeId: string,
   input: SendDraftEnvelopeInput,
-  { database = getDb() }: SendDraftEnvelopeOptions = {},
+  {
+    database = getDb(),
+    directory,
+    googleSigningPolicy,
+    managerPolicy,
+  }: SendDraftEnvelopeOptions = {},
 ): Promise<SendDraftEnvelopeResult> {
   const envelope = await getEnvelopeByIdForUser(userId, envelopeId, database);
 
@@ -2769,7 +2795,9 @@ export async function sendDraftEnvelope(
   // whatever the review page showed: the directory may have changed since.
   const managerCheck = await checkManagerPolicyForSender(userId, signers, {
     database,
+    directory,
     part11,
+    policy: managerPolicy,
   });
 
   if (managerCheck.status === "blocked") {
@@ -2780,7 +2808,8 @@ export async function sendDraftEnvelope(
   // it (google-signing.ts), decided now and kept with each signer.
   const googleSigning = part11
     ? null
-    : await loadGoogleSigningPolicy().catch((error: unknown) => {
+    : (googleSigningPolicy ??
+      (await loadGoogleSigningPolicy().catch((error: unknown) => {
         // The setting could not be read. Sending without the check would
         // quietly drop a requirement, so the send stops instead.
         console.error("Could not read the Google signing setting:", error);
@@ -2788,7 +2817,7 @@ export async function sendDraftEnvelope(
           "The site's settings could not be read just now. Try again in a moment.",
           503,
         );
-      });
+      })));
   const googleRequiredSignerIds = signers
     .filter(
       (signer) =>
