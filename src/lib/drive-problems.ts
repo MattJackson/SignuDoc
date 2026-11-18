@@ -1,3 +1,5 @@
+import { FILE_TOO_LARGE_TO_CONVERT_MESSAGE } from "./types/domain.ts";
+
 // What the new-envelope page says when a Google Drive step sent someone
 // back with ?drive=<problem>. Only these codes are shown, so the address
 // cannot be used to put words on the page.
@@ -16,7 +18,7 @@ const DRIVE_PROBLEMS: Record<string, string> = {
     "The file could not be brought in from Google Drive. Please try again.",
   invalid_type: "Only PDF files and documents that convert to PDF work here.",
   not_configured: "Google Drive is not set up on this site.",
-  too_large: "This file exceeds the 20 MB limit.",
+  too_large: FILE_TOO_LARGE_TO_CONVERT_MESSAGE,
   unreadable_pdf: "We couldn't read this PDF. Please choose a valid file.",
   unsupported_type:
     "This kind of file cannot be turned into a PDF. Use a PDF, a Word, OpenDocument or RTF document, or a Google Doc, Sheet or Slides file.",

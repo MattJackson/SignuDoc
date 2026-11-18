@@ -318,7 +318,7 @@ test("a directory request with no answer is given up on", async () => {
         });
       })) as typeof fetch,
     timeoutMs: 20,
-  } as Parameters<typeof createDirectoryClient>[0]);
+  });
   let timer: NodeJS.Timeout | undefined;
   const hung = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {

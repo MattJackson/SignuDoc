@@ -578,7 +578,7 @@ test("a token request with no answer ends as a could-not-be-reached error", asyn
         fetchImpl: hangingFetch(),
         refreshToken: "refresh-1",
         timeoutMs: 20,
-      } as Parameters<typeof refreshAccessToken>[0]),
+      }),
     ),
     (error) =>
       error instanceof DriveAuthorizationError && error.code === "failed",
@@ -586,9 +586,8 @@ test("a token request with no answer ends as a could-not-be-reached error", asyn
 });
 
 test("a revoke request with no answer is given up on and reports false", async () => {
-  const revoke = revokeToken as (
-    ...args: [...Parameters<typeof revokeToken>, number]
-  ) => Promise<boolean>;
-
-  assert.equal(await within(revoke("refresh-1", hangingFetch(), 20)), false);
+  assert.equal(
+    await within(revokeToken("refresh-1", hangingFetch(), 20)),
+    false,
+  );
 });

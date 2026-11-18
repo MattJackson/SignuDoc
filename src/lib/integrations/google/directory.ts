@@ -4,7 +4,11 @@ import {
   GOOGLE_SCOPES,
   type GoogleCredentials,
 } from "./credentials.ts";
-import { googleUrl } from "./endpoints.ts";
+import {
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "./endpoints.ts";
 
 // The organization's Google Workspace directory, read through the Admin SDK
 // Directory API with plain fetch and the shared credentials (credentials.ts):
@@ -134,6 +138,8 @@ type CreateDirectoryClientOptions = {
   env?: EnvSource;
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** How long a request to Google may take, in milliseconds. */
+  timeoutMs?: number;
 };
 
 /** What a status means, for the administrator testing access. */
@@ -254,6 +260,7 @@ export function createDirectoryClient({
   env = process.env,
   fetchImpl = fetch,
   now = Date.now,
+  timeoutMs = GOOGLE_REQUEST_TIMEOUT_MS,
 }: CreateDirectoryClientOptions): DirectoryClient {
   const cache = new Map<string, { expiresAt: number; value: unknown }>();
 
@@ -289,6 +296,7 @@ export function createDirectoryClient({
         googleUrl(`${DIRECTORY_BASE_URL}${path}`, env),
         {
           headers: { authorization: `Bearer ${token}` },
+          signal: googleTimeoutSignal(timeoutMs),
         },
       );
     } catch {

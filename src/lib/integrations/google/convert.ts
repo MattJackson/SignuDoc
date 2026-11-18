@@ -1,4 +1,8 @@
-import { MAX_UPLOAD_SIZE_BYTES } from "../../types/domain.ts";
+import {
+  FILE_TOO_LARGE_TO_CONVERT_MESSAGE,
+  MAX_CONVERT_SOURCE_BYTES,
+  MAX_UPLOAD_SIZE_BYTES,
+} from "../../types/domain.ts";
 import {
   DRIVE_API_BASE_URL,
   DriveApiError,
@@ -30,7 +34,7 @@ export type ConvertedPdf = { bytes: Uint8Array; fileName: string };
 export type ConvertOptions = { fetchImpl?: FetchLike };
 
 /** Largest file sent to Drive for converting. Google's own limit is 50 MB. */
-export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
+export { MAX_CONVERT_SOURCE_BYTES };
 
 export const PDF_MIME_TYPE = "application/pdf";
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
@@ -104,7 +108,7 @@ export type DocumentConversionErrorCode =
 const CONVERSION_MESSAGES: Record<DocumentConversionErrorCode, string> = {
   drive_failed:
     "Google Drive could not turn this file into a PDF. Try again, or save it as a PDF and upload that.",
-  too_large: `This file is too large: PDFs can be up to ${String(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB, and other documents up to ${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB before conversion.`,
+  too_large: FILE_TOO_LARGE_TO_CONVERT_MESSAGE,
   unsupported_type:
     "This kind of file cannot be turned into a PDF. Use a PDF, a Word, OpenDocument or RTF document, or a Google Doc, Sheet or Slides file.",
 };

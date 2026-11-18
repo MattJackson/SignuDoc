@@ -10,7 +10,11 @@ import {
 import { resolveAuthUrl, type EnvSource } from "../../utils/env.ts";
 import { GOOGLE_SCOPES } from "./credentials.ts";
 import type { FetchLike } from "./drive-api.ts";
-import { googleUrl } from "./endpoints.ts";
+import {
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "./endpoints.ts";
 
 // Each person's own permission for Google Drive, asked for on top of
 // Google sign-in (incremental authorization), with the same OAuth client.
@@ -199,6 +203,7 @@ export type TokenResponse = {
 async function postToken(
   fetchImpl: FetchLike,
   body: URLSearchParams,
+  timeoutMs: number,
 ): Promise<TokenResponse> {
   let response: Response;
 
@@ -207,6 +212,7 @@ async function postToken(
       body,
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
+      signal: googleTimeoutSignal(timeoutMs),
     });
   } catch {
     throw new DriveAuthorizationError("failed", "Google could not be reached.");
@@ -254,6 +260,7 @@ export function exchangeAuthorizationCode(input: {
   codeVerifier: string;
   fetchImpl?: FetchLike;
   redirectUri: string;
+  timeoutMs?: number;
 }): Promise<TokenResponse> {
   return postToken(
     input.fetchImpl ?? fetch,
@@ -265,6 +272,7 @@ export function exchangeAuthorizationCode(input: {
       grant_type: "authorization_code",
       redirect_uri: input.redirectUri,
     }),
+    input.timeoutMs ?? GOOGLE_REQUEST_TIMEOUT_MS,
   );
 }
 
@@ -272,6 +280,7 @@ export function refreshAccessToken(input: {
   client: DriveOAuthClient;
   fetchImpl?: FetchLike;
   refreshToken: string;
+  timeoutMs?: number;
 }): Promise<TokenResponse> {
   return postToken(
     input.fetchImpl ?? fetch,
@@ -281,6 +290,7 @@ export function refreshAccessToken(input: {
       grant_type: "refresh_token",
       refresh_token: input.refreshToken,
     }),
+    input.timeoutMs ?? GOOGLE_REQUEST_TIMEOUT_MS,
   );
 }
 
@@ -288,12 +298,14 @@ export function refreshAccessToken(input: {
 export async function revokeToken(
   token: string,
   fetchImpl: FetchLike = fetch,
+  timeoutMs: number = GOOGLE_REQUEST_TIMEOUT_MS,
 ): Promise<boolean> {
   try {
     const response = await fetchImpl(googleUrl(GOOGLE_REVOKE_URL), {
       body: new URLSearchParams({ token }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
+      signal: googleTimeoutSignal(timeoutMs),
     });
 
     // 400 means Google already does not know the token: as good as revoked.

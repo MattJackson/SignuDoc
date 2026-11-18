@@ -561,8 +561,7 @@ export async function retryExportForSettings(
 
   if (!requeued) {
     return {
-      message:
-        "There is no Drive export for this envelope, or it is being tried right now.",
+      message: "There is no Drive export for this envelope.",
       ok: false,
     };
   }
