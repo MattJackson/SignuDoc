@@ -10,6 +10,7 @@ import {
 import type { FieldRecord } from "../schemas/field.ts";
 import type { SignerRecord } from "../schemas/signer.ts";
 import { buildSignatureManifestation } from "../signature-meanings.ts";
+import { hasSharedSigningStep, signingStepOf } from "../signing-steps.ts";
 import { describeSignerCorrectedEvent } from "./audit.ts";
 import { canonicalJson } from "../utils/canonical-json.ts";
 import { normalizedRectToPdfRect } from "../utils/pdf-coords.ts";
@@ -794,11 +795,24 @@ function buildAuditLines(input: {
     gapAfter: 4,
   });
 
+  // Each signer is numbered by their step of the signing order. With every
+  // signer in a step of their own that is their place in the list, as it
+  // always was; signers who share a number were asked to sign at the same
+  // time, and the line below says so.
+  if (hasSharedSigningStep(input.signers)) {
+    pushParagraph(
+      "Signers with the same number were asked to sign at the same time. Each number started once everyone with the number before it had signed.",
+      input.fonts.regular,
+      bodyFontSize,
+    );
+  }
+
   for (const signer of input.signers) {
     const actionLabel = getSignerCertificateActionLabel(input.envelope, signer);
+    const step = signingStepOf(signer);
     const signerLabel = input.redactForRecipients
-      ? `${signer.signOrder}. ${signer.name} | ${actionLabel}`
-      : `${signer.signOrder}. ${signer.name} <${signer.email}> | ${actionLabel}`;
+      ? `${step}. ${signer.name} | ${actionLabel}`
+      : `${step}. ${signer.name} <${signer.email}> | ${actionLabel}`;
 
     pushParagraph(signerLabel, input.fonts.regular, bodyFontSize);
 

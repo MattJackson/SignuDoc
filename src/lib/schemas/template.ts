@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { MAX_SIGNERS_PER_ENVELOPE } from "../types/domain.ts";
+import { MAX_SIGNERS_CEILING } from "../types/domain.ts";
 import {
   emailSchema,
   envelopeTitleSchema,
@@ -23,13 +23,17 @@ export const duplicateRoleNameMessage =
 export const templateRoleSchema = z.object({
   id: idSchema,
   name: templateRoleNameSchema,
+  // The step of the signing order the role is in; roles that share one
+  // sign at the same time. Templates saved before steps existed have none,
+  // and their roles sign one after the other.
+  step: z.number().int().positive().max(MAX_SIGNERS_CEILING).optional(),
 });
 
 /** A template's roles, in the order their people will sign. */
 export const templateRolesSchema = z
   .array(templateRoleSchema)
   .min(1)
-  .max(MAX_SIGNERS_PER_ENVELOPE)
+  .max(MAX_SIGNERS_CEILING)
   .superRefine((roles, ctx) => {
     const ids = new Set<string>();
     const names = new Set<string>();
@@ -66,7 +70,7 @@ export const saveTemplateSchema = z.object({
   roleNames: z
     .array(templateRoleNameSchema)
     .min(1)
-    .max(MAX_SIGNERS_PER_ENVELOPE)
+    .max(MAX_SIGNERS_CEILING)
     .optional(),
 });
 
@@ -75,7 +79,7 @@ export const useTemplateSchema = z.object({
   signers: z
     .array(z.object({ email: emailSchema, name: nameSchema }))
     .min(1)
-    .max(MAX_SIGNERS_PER_ENVELOPE)
+    .max(MAX_SIGNERS_CEILING)
     .superRefine((signers, ctx) => {
       const emails = new Set<string>();
 

@@ -1,5 +1,6 @@
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
+import { TeamsPanel } from "@/components/settings/teams-panel";
 import { UpdatesPanel } from "@/components/settings/updates-panel";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getAuthSession } from "@/lib/auth/server";
@@ -38,6 +39,7 @@ export default async function SettingsPage() {
           )}
         />
       ) : null}
+      {isAdmin ? <TeamsPanel /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );

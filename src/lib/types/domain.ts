@@ -1,4 +1,12 @@
-export const MAX_SIGNERS_PER_ENVELOPE = 10;
+/**
+ * The most signers an install can allow on one envelope. The number an
+ * install allows is set with MAX_SIGNERS_PER_ENVELOPE, up to this, and is
+ * DEFAULT_MAX_SIGNERS_PER_ENVELOPE when it is not set (see signer-limit.ts).
+ * Copy recipients are stored after the signers, from 501 on, so this has to
+ * stay well under that.
+ */
+export const MAX_SIGNERS_CEILING = 100;
+export const DEFAULT_MAX_SIGNERS_PER_ENVELOPE = 25;
 /** People who get a copy of the finished document without signing. */
 export const MAX_COPY_RECIPIENTS_PER_ENVELOPE = 10;
 export const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
