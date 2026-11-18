@@ -68,6 +68,8 @@ type Account = { email: string; id: string };
 let owner: Account;
 let teammate: Account;
 let outsider: Account;
+// On a team of their own, which is not the sender's.
+let otherTeam: Account;
 let admin: Account;
 let teamId: string;
 // A word only these envelopes have in their titles, so the lists can be
@@ -183,6 +185,7 @@ before(async () => {
   owner = await createAccount("user");
   teammate = await createAccount("user");
   outsider = await createAccount("user");
+  otherTeam = await createAccount("user");
   admin = await createAccount("admin");
 
   envelopes.draft = (await createEnvelope(owner.id, "draft")).envelopeId;
@@ -213,6 +216,20 @@ before(async () => {
     { email: admin.email, userId: admin.id },
     teamId,
     { email: teammate.email },
+    database,
+  );
+
+  const legal = await createTeam(
+    { email: admin.email, userId: admin.id },
+    { name: `Support ${marker}` },
+    database,
+  );
+
+  createdTeams.push(legal.id);
+  await addTeamMember(
+    { email: admin.email, userId: admin.id },
+    legal.id,
+    { email: otherTeam.email },
     database,
   );
 });
@@ -265,6 +282,8 @@ test("each scope lists what its viewer may see, and drafts only for their sender
   );
   assert.deepEqual(await listed(outsider, "team"), []);
   assert.deepEqual(await listed(outsider, "all"), []);
+  assert.deepEqual(await listed(otherTeam, "team"), []);
+  assert.deepEqual(await listed(otherTeam, "all"), []);
   assert.deepEqual(await listed(admin, "mine"), []);
   assert.deepEqual(await listed(admin, "team"), []);
   assert.deepEqual(
@@ -583,4 +602,28 @@ test("taking someone off the team takes away what they could see", async () => {
   } finally {
     await addTeamMember(actor, teamId, { email: teammate.email }, database);
   }
+});
+
+test("someone on another team sees none of this team's envelopes", async () => {
+  assert.deepEqual(await listed(otherTeam, "mine"), []);
+  assert.deepEqual(await listed(otherTeam, "team"), []);
+  assert.deepEqual(await listed(otherTeam, "all"), []);
+
+  for (const envelopeId of [envelopes.sent, envelopes.completed]) {
+    assert.equal(
+      await getEnvelopeDetailDataForUser(otherTeam.id, envelopeId, database),
+      null,
+    );
+  }
+
+  await assert.rejects(
+    getSenderEnvelopeDownload(otherTeam.id, envelopes.completed, "signed", {
+      database,
+    }),
+    refusedAsNotFound,
+  );
+  await assert.rejects(
+    exportEnvelopeAuditCsv(otherTeam.id, envelopes.sent, database),
+    refusedAsNotFound,
+  );
 });

@@ -250,6 +250,66 @@ test("a refresh token Google no longer accepts is forgotten", async () => {
   assert.equal(repository.rows.has("user-2"), false);
 });
 
+test("a refresh that fails for a while keeps the connection", async () => {
+  const outages: { name: string; fetchImpl: typeof fetch }[] = [
+    {
+      fetchImpl: fakeGoogle(
+        () =>
+          new Response(JSON.stringify({ error: "backend_error" }), {
+            headers: { "content-type": "application/json" },
+            status: 503,
+          }),
+      ).fetchImpl,
+      name: "503",
+    },
+    {
+      fetchImpl: fakeGoogle(
+        () =>
+          new Response(JSON.stringify({ error: "rate_limit_exceeded" }), {
+            headers: { "content-type": "application/json" },
+            status: 429,
+          }),
+      ).fetchImpl,
+      name: "429",
+    },
+    {
+      fetchImpl: (async () => {
+        throw new TypeError("fetch failed");
+      }) as typeof fetch,
+      name: "network error",
+    },
+  ];
+
+  for (const outage of outages) {
+    const repository = memoryRepository();
+    const store = createDriveTokenStore({
+      env,
+      fetchImpl: outage.fetchImpl,
+      loadClient: async () => client,
+      repository,
+    });
+
+    await store.save({
+      googleEmail: "sam@example.com",
+      googleSubject: "1234",
+      refreshToken: "refresh-kept",
+      scope: "drive.file",
+      userId: "user-outage",
+    });
+
+    await assert.rejects(
+      store.getAccessToken("user-outage"),
+      (error) =>
+        !(
+          error instanceof DriveAuthorizationError &&
+          error.code === "not_connected"
+        ),
+      outage.name,
+    );
+    assert.equal(repository.rows.has("user-outage"), true, outage.name);
+  }
+});
+
 test("no connection, no token", async () => {
   const store = createDriveTokenStore({
     env,

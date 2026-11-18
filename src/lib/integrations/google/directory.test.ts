@@ -278,6 +278,42 @@ test("a user's entry gives their state and the manager relation", async () => {
   assert.equal(await client.getUser("gone@example.com"), null);
 });
 
+test("archived people are not suggested, and getUser says they are archived", async () => {
+  const { credentials } = fakeCredentials();
+  const { fetchImpl } = fakeFetch((url) =>
+    url.pathname === "/admin/directory/v1/users"
+      ? {
+          body: {
+            users: [
+              { name: { fullName: "Jo Park" }, primaryEmail: "jo@example.com" },
+              {
+                archived: true,
+                name: { fullName: "Jo Archived" },
+                primaryEmail: "archived@example.com",
+              },
+            ],
+          },
+        }
+      : {
+          body: {
+            archived: true,
+            name: { fullName: "Jo Archived" },
+            primaryEmail: "archived@example.com",
+          },
+        },
+  );
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl,
+  });
+
+  assert.deepEqual(await client.searchUsers("jo"), [
+    { email: "jo@example.com", name: "Jo Park" },
+  ]);
+  assert.equal((await client.getUser("archived@example.com"))?.archived, true);
+});
+
 test("a failed lookup of a user is an error, never a missing user", async () => {
   const { credentials } = fakeCredentials();
   const { fetchImpl } = fakeFetch(() => ({ status: 503 }));

@@ -23,6 +23,7 @@ import {
   createStorageService,
   type StorageService,
 } from "./services/storage.ts";
+import { saveSettings } from "./settings.ts";
 import {
   declineSigningForToken,
   recordSignerConsent,
@@ -675,5 +676,52 @@ test("advanced or qualified signatures are not sent to signers at the same time"
       error.statusCode === 400 &&
       /one after another/.test(error.message),
   );
+  assert.equal(await envelopeStatusOf(draft.envelopeId), "draft");
+});
+
+test("qualified signatures are not sent to signers at the same time either", async () => {
+  const draft = await createDraft([1, 1, 2]);
+
+  await assert.rejects(
+    sendDraftEnvelope(
+      draft.userId,
+      draft.envelopeId,
+      {
+        senderEmail: "sam@example.test",
+        senderName: "Sam Sender",
+        signatureLevel: "qualified",
+      },
+      { database },
+    ),
+    (error: unknown) =>
+      error instanceof EnvelopeMutationError &&
+      error.statusCode === 400 &&
+      /one after another/.test(error.message),
+  );
+  assert.equal(await envelopeStatusOf(draft.envelopeId), "draft");
+});
+
+test("Part 11 envelopes are not sent to signers at the same time", async () => {
+  const draft = await createDraft([1, 1, 2]);
+
+  await saveSettings({ part11Mode: true }, database);
+
+  try {
+    await assert.rejects(
+      sendDraftEnvelope(
+        draft.userId,
+        draft.envelopeId,
+        { senderEmail: "sam@example.test", senderName: "Sam Sender" },
+        { database },
+      ),
+      (error: unknown) =>
+        error instanceof EnvelopeMutationError &&
+        error.statusCode === 400 &&
+        /Part 11 mode signs one signer after another/.test(error.message),
+    );
+  } finally {
+    await saveSettings({ part11Mode: false }, database);
+  }
+
   assert.equal(await envelopeStatusOf(draft.envelopeId), "draft");
 });

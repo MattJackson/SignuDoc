@@ -220,6 +220,73 @@ test("a Google Doc in Drive is exported straight to PDF", async () => {
   assert.match(calls[0]!.url, /supportsAllDrives=true/);
 });
 
+test("a shortcut is followed to its target", async () => {
+  const { calls, fetchImpl } = fakeDrive((call) => {
+    if (call.url.startsWith(`${DRIVE_API_BASE_URL}/files/shortcut-1?`)) {
+      return json({
+        id: "shortcut-1",
+        mimeType: "application/vnd.google-apps.shortcut",
+        name: "Link to MSA",
+        shortcutDetails: { targetId: "doc-9" },
+      });
+    }
+
+    if (call.url.startsWith(`${DRIVE_API_BASE_URL}/files/doc-9?`)) {
+      return json({
+        id: "doc-9",
+        mimeType: "application/vnd.google-apps.document",
+        name: "MSA",
+      });
+    }
+
+    if (call.url.startsWith(`${DRIVE_API_BASE_URL}/files/doc-9/export?`)) {
+      return new Response(PDF_BYTES);
+    }
+
+    return undefined;
+  });
+  const result = await exportGoogleFileToPdf(
+    { accessToken: "t", fileId: "shortcut-1" },
+    { fetchImpl },
+  );
+
+  assert.equal(result.fileName, "MSA.pdf");
+  assert.ok(calls.some((call) => call.url.includes("/files/doc-9/export?")));
+});
+
+test("a shortcut without a target, and other Google file types, are refused", async () => {
+  const answers: Record<string, unknown> = {
+    "no-target": {
+      id: "no-target",
+      mimeType: "application/vnd.google-apps.shortcut",
+      name: "Broken",
+    },
+    "a-form": {
+      id: "a-form",
+      mimeType: "application/vnd.google-apps.form",
+      name: "Survey",
+    },
+  };
+  const { fetchImpl } = fakeDrive((call) => {
+    for (const [id, body] of Object.entries(answers)) {
+      if (call.url.startsWith(`${DRIVE_API_BASE_URL}/files/${id}?`)) {
+        return json(body);
+      }
+    }
+
+    return undefined;
+  });
+
+  for (const fileId of Object.keys(answers)) {
+    await assert.rejects(
+      exportGoogleFileToPdf({ accessToken: "t", fileId }, { fetchImpl }),
+      (error: unknown) =>
+        error instanceof DocumentConversionError &&
+        error.code === "unsupported_type",
+    );
+  }
+});
+
 test("an export over Google's 10 MB limit falls back to the export link", async () => {
   const link =
     "https://docs.google.com/feeds/download/documents/export/Export?id=doc-2&exportFormat=pdf";

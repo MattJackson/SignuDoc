@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { beforeEach, test } from "node:test";
+import { after, before, beforeEach, test } from "node:test";
 
 import {
   checkForUpdate,
@@ -18,6 +18,27 @@ import {
   parseVersion,
   toReleaseInfo,
 } from "./software-update.ts";
+
+// Several tests rely on the defaults, and on what they read from the process
+// environment when given none. A copy or a developer shell that sets these
+// must not turn them red, so they are set aside while the file runs.
+const BUILD_SETTINGS = /^(SIGNUDOC_RELEASES_REPO|NEXT_PUBLIC_SIGNUDOC_)/;
+const setAside = new Map<string, string>();
+
+before(() => {
+  for (const [name, value] of Object.entries(process.env)) {
+    if (BUILD_SETTINGS.test(name) && value !== undefined) {
+      setAside.set(name, value);
+      delete process.env[name];
+    }
+  }
+});
+
+after(() => {
+  for (const [name, value] of setAside) {
+    process.env[name] = value;
+  }
+});
 
 beforeEach(() => clearUpdateCheckCache());
 

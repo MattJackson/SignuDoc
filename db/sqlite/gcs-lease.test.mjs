@@ -242,6 +242,49 @@ test("the Cloud Storage calls carry generation preconditions", async () => {
   ]);
 });
 
+test("a successful write returns the new generation, and a missing object is not released", async () => {
+  const storage = gcsLeaseStorage({
+    bucket: "b",
+    fetch: async (url, init = {}) =>
+      init.method === "POST"
+        ? new Response('{"name":"db.lease","generation":"8"}', {
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(null, { status: 404 }),
+    getToken: async () => "token",
+    object: "db.lease",
+  });
+
+  assert.equal(
+    await storage.write({ heartbeatAt: "y", holder: "b", revision: "r" }, "7"),
+    "8",
+  );
+  assert.equal(await storage.remove("8"), false);
+});
+
+test("a lease with an unreadable heartbeat is taken over", async () => {
+  const storage = memoryStorage();
+
+  storage.state.generation = 3;
+  storage.state.object = {
+    heartbeatAt: "not a date",
+    holder: "a",
+    revision: "s-00001-a",
+  };
+
+  const next = createLease({
+    holder: "b",
+    revision: "s-00001-b",
+    sleep: async () => {
+      throw new Error("waited for a lease nobody can prove is alive");
+    },
+    storage,
+  });
+
+  await next.acquire();
+  assert.equal(storage.state.object.holder, "b");
+});
+
 test("the Litestream config and the lease sit beside the replica", () => {
   assert.deepEqual(leaseLocation("gs://bucket-db/db"), {
     bucket: "bucket-db",

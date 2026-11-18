@@ -3,17 +3,11 @@ import { rm } from "node:fs/promises";
 import pg from "pg";
 
 import { e2eDataDir, e2eDatabaseUrl } from "../playwright.config";
-import { isSqliteUrl, wipeSqliteDatabase } from "./support/database";
-
-function assertDisposableDatabase(connectionString: string) {
-  const databaseName = new URL(connectionString).pathname.replace(/^\//, "");
-
-  if (!databaseName.toLowerCase().includes("e2e")) {
-    throw new Error(
-      `Refusing to wipe database "${databaseName}". The end-to-end test database must have "e2e" in its name.`,
-    );
-  }
-}
+import {
+  assertDisposableDatabase,
+  isSqliteUrl,
+  wipeSqliteDatabase,
+} from "./support/database";
 
 async function ensureDatabaseExists(connectionString: string) {
   const targetUrl = new URL(connectionString);

@@ -134,8 +134,12 @@ function createFakeGcs() {
       session.received = joined;
 
       if (!final) {
+        // With nothing kept yet, Cloud Storage sends no Range header at all.
         return new Response(null, {
-          headers: { range: `bytes=0-${String(joined.byteLength - 1)}` },
+          headers:
+            joined.byteLength > 0
+              ? { range: `bytes=0-${String(joined.byteLength - 1)}` }
+              : {},
           status: 308,
         });
       }
@@ -604,6 +608,27 @@ test("a failed piece fails the upload", async () => {
     GcsRequestError,
   );
   assert.equal(fake.objects.has("broken"), false);
+});
+
+test("an upload Cloud Storage stops taking fails instead of looping", async () => {
+  const { client, fake } = setUp();
+  const bytes = new Uint8Array(9 * 1024 * 1024);
+
+  // It answers 308 with no Range: nothing of the piece was kept.
+  fake.setPartialPieces(() => 0);
+
+  await assert.rejects(
+    client.uploadStream("stuck", chunksOf(bytes, 1024 * 1024), {
+      contentType: "application/gzip",
+    }),
+    (error: unknown) =>
+      error instanceof GcsRequestError && /upload/.test(error.message),
+  );
+  assert.equal(
+    fake.calls.filter((call) => call.url.pathname === "/resumable").length,
+    1,
+  );
+  assert.equal(fake.objects.has("stuck"), false);
 });
 
 test("the driver says what is missing", () => {

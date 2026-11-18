@@ -469,6 +469,35 @@ test("Drive: a resumable upload to My Drive, then download and default fields", 
   );
 });
 
+test("Drive: a token for the labels scope alone cannot read or write files", async () => {
+  const labelsToken = google.issueAccessToken({
+    scopes: [GOOGLE_SCOPES.driveLabelsReadonly],
+    serviceAccount: key.client_email,
+  });
+  const headers = { authorization: `Bearer ${labelsToken}` };
+  const upload = await fetch(
+    `${google.url}/upload/drive/v3/files?uploadType=multipart`,
+    {
+      body: "{}",
+      headers: { ...headers, "content-type": "application/json" },
+      method: "POST",
+    },
+  );
+  const modify = await fetch(
+    `${google.url}/drive/v3/files/any-file/modifyLabels`,
+    {
+      body: "{}",
+      headers: { ...headers, "content-type": "application/json" },
+      method: "POST",
+    },
+  );
+  const list = await fetch(`${google.url}/drive/v3/files`, { headers });
+
+  assert.equal(upload.status, 403);
+  assert.equal(modify.status, 403);
+  assert.equal(list.status, 403);
+});
+
 test("Drive: an unknown query term is an error, not a silent match", async () => {
   const response = await drive(
     `/drive/v3/files?q=${encodeURIComponent("starred = true")}`,
