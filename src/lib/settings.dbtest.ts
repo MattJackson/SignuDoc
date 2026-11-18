@@ -4,7 +4,6 @@ import { after, before, beforeEach, test } from "node:test";
 import type pg from "pg";
 
 import { replaceDbPoolForTests, withTransaction } from "./db/connection.ts";
-import { isSqliteUrl } from "./db/sqlite/pool.ts";
 import { openTestDatabase } from "./db/test-database.ts";
 import {
   getSettings,
@@ -12,12 +11,10 @@ import {
   saveSettings,
 } from "./settings.ts";
 
-// The settings cache against a real Postgres: a save made inside a
+// The settings cache against a real database (Postgres or SQLite): a save made inside a
 // transaction has to show on this instance as soon as it commits, even when
 // another request read the settings while the transaction was still open.
 // Run with `npm run test:db`.
-
-const onSqlite = isSqliteUrl(process.env.E2E_DATABASE_URL ?? "");
 
 let database: pg.Pool;
 let replaced: pg.Pool | null = null;
@@ -43,23 +40,17 @@ after(async () => {
   await database.end();
 });
 
-// SQLite has one writer and a reader waits for it, so a read cannot overlap
-// an open transaction there. The race only exists on Postgres.
-test(
-  "a read during an open save does not keep the old settings after commit",
-  { skip: onSqlite },
-  async () => {
-    await saveSettings({ requireTwoFactor: false, signupMode: "open" });
-    invalidateSettingsCache();
+test("a read during an open save does not keep the old settings after commit", async () => {
+  await saveSettings({ requireTwoFactor: false, signupMode: "open" });
+  invalidateSettingsCache();
 
-    await withTransaction(async (tx) => {
-      await saveSettings({ requireTwoFactor: true }, tx);
+  await withTransaction(async (tx) => {
+    await saveSettings({ requireTwoFactor: true }, tx);
 
-      // Another request renders a page while the save is still open: it
-      // sees the committed (old) row.
-      assert.equal((await getSettings()).requireTwoFactor, false);
-    }, database);
+    // Another request renders a page while the save is still open: it
+    // sees the committed (old) row.
+    assert.equal((await getSettings()).requireTwoFactor, false);
+  }, database);
 
-    assert.equal((await getSettings()).requireTwoFactor, true);
-  },
-);
+  assert.equal((await getSettings()).requireTwoFactor, true);
+});
