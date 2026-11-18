@@ -18,6 +18,14 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_BOTID:
       process.env.VERCEL === "1" && process.env.BOTID === "1" ? "1" : "",
   },
+  experimental: {
+    // With a proxy (src/proxy.ts), Next.js keeps a copy of each request body
+    // and hands the route only the first 10 MB of it by default, without an
+    // error. Uploads that go through the app, such as to local storage, can
+    // be the 20 MB upload limit plus the form around it. On Vercel the
+    // browser uploads straight to Blob instead.
+    proxyClientMaxBodySize: "25mb",
+  },
   images: {
     unoptimized: true,
   },
