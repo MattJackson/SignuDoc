@@ -20,7 +20,9 @@ import {
   discardQueuedEvents,
   expandQueuedEvents,
   MAX_DELIVERY_ATTEMPTS,
+  nextDeliveryDueAt,
   type OutboxDeps,
+  purgeOldNotifications,
 } from "./outbox.ts";
 import { savePreferenceChoices } from "./preferences.ts";
 import {
@@ -922,4 +924,317 @@ test("a delivery left 'sending' after its last attempt is failed, not taken agai
     rows.map((row) => row.status).join(","),
   );
   assert.equal(fake.sent.length, 0);
+});
+
+/** Sends the owner one direct message about a fresh envelope. */
+async function directMessageToOwner(
+  channel: NotificationChannel,
+  now: number,
+): Promise<string> {
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(channel, now));
+  await database.query(
+    `
+      update notification_deliveries set next_attempt_at = $2
+      where target_kind = 'user' and event_id in (
+        select id from notification_events where envelope_id = $1
+      )
+    `,
+    [envelopeId, now - 10],
+  );
+  await deliverDueDeliveries(database, depsFor(channel, now));
+
+  return envelopeId;
+}
+
+async function rememberIdentity(
+  lookupEmail: string,
+  externalId: string | null,
+  checkedAt: number,
+) {
+  await database.query(
+    `delete from notification_identities where user_id = any($1)`,
+    [[owner.id, teammate.id, admin.id]],
+  );
+  await database.query(
+    `
+      insert into notification_identities (
+        user_id, channel, lookup_email, external_id, checked_at
+      ) values ($1, 'slack', $2, $3, $4)
+    `,
+    [owner.id, lookupEmail, externalId, checkedAt],
+  );
+}
+
+test("a remembered address is only trusted for the email it was found by", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+
+  await clearOutbox();
+  fake.users.set(owner.email.toLowerCase(), "UNEW");
+  await rememberIdentity("old-address@example.test", "UOLD", now);
+  await directMessageToOwner(fake.channel, now);
+
+  assert.ok(
+    fake.lookups.includes(owner.email.toLowerCase()),
+    "the new address was looked up",
+  );
+  assert.ok(fake.sent.some((item) => item.destination === "UNEW"));
+  assert.ok(
+    !fake.sent.some((item) => item.destination === "UOLD"),
+    "nothing went to the member found by the old address",
+  );
+});
+
+test("'nobody has this address' is believed for a day, then asked again", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const email = owner.email.toLowerCase();
+
+  await clearOutbox();
+
+  const recent = fakeChannel();
+
+  recent.users.set(email, "UFOUND");
+  await rememberIdentity(email, null, now - DAY + 100);
+
+  const recentEnvelope = await directMessageToOwner(recent.channel, now);
+
+  assert.ok(!recent.lookups.includes(email), "no lookup inside the day");
+  assert.ok(!recent.sent.some((item) => item.destination === "UFOUND"));
+  assert.equal(
+    (await deliveriesFor(recentEnvelope)).find((row) => row.target === owner.id)
+      ?.lastError,
+    "no_matching_account",
+  );
+
+  await clearOutbox();
+
+  const old = fakeChannel();
+
+  old.users.set(email, "UFOUND");
+  await rememberIdentity(email, null, now - DAY - 100);
+  await directMessageToOwner(old.channel, now);
+
+  assert.ok(old.lookups.includes(email), "looked up again after the day");
+  assert.ok(old.sent.some((item) => item.destination === "UFOUND"));
+});
+
+test("deliveries claimed after time ran out go back untried, with no attempt counted", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+
+  await clearOutbox();
+
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(fake.channel, now));
+  await database.query(
+    `
+      update notification_deliveries
+      set next_attempt_at = $2, attempts = 2
+      where event_id in (select id from notification_events where envelope_id = $1)
+    `,
+    [envelopeId, now - 10],
+  );
+
+  // Time is left when the batch is claimed and gone when each is tried.
+  let checks = 0;
+
+  await deliverDueDeliveries(database, depsFor(fake.channel, now), {
+    outOfTime: () => (checks += 1) > 1,
+  });
+
+  const rows = await database.query<{
+    attempts: number;
+    lockedUntil: number | null;
+    nextAttemptAt: number;
+    status: string;
+  }>(
+    `
+      select d.status, d.attempts, d.locked_until as "lockedUntil",
+        d.next_attempt_at as "nextAttemptAt"
+      from notification_deliveries d
+      join notification_events e on e.id = d.event_id
+      where e.envelope_id = $1
+    `,
+    [envelopeId],
+  );
+
+  assert.ok(rows.rows.length > 0);
+
+  for (const row of rows.rows) {
+    assert.equal(row.status, "pending");
+    assert.equal(row.attempts, 2, "no attempt was counted");
+    assert.equal(row.lockedUntil, null, "the lease was given back");
+    assert.equal(row.nextAttemptAt, now, "due again right away");
+  }
+
+  assert.equal(fake.sent.length, 0);
+  assert.equal(fake.lookups.length, 0);
+});
+
+test("the next waiting delivery is the earliest one still ahead, within the window", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const eventId = randomUUID();
+
+  await clearOutbox();
+  await database.query(
+    `
+      insert into notification_events (
+        id, dedupe_key, source, event, envelope_id, created_at, processed_at
+      ) values ($1, $1, 'job', 'probe', null, $2, $2)
+    `,
+    [eventId, now],
+  );
+
+  try {
+    const waiting: [string, number][] = [
+      ["pending", now + 100],
+      ["pending", now + 50],
+      ["pending", now - 5],
+      ["pending", now + 9999],
+      ["sent", now + 10],
+    ];
+
+    for (const [index, [status, next]] of waiting.entries()) {
+      await database.query(
+        `
+          insert into notification_deliveries (
+            id, event_id, channel, target_kind, target, status,
+            next_attempt_at, created_at, updated_at
+          ) values ($1, $2, 'slack', 'channel', $3, $4, $5, $6, $6)
+        `,
+        [randomUUID(), eventId, `C0PROBE${index}`, status, next, now],
+      );
+    }
+
+    assert.equal(await nextDeliveryDueAt(database, now, 1000), now + 50);
+    assert.equal(await nextDeliveryDueAt(database, now, 20), null);
+  } finally {
+    await database.query(`delete from notification_events where id = $1`, [
+      eventId,
+    ]);
+  }
+});
+
+test("purging keeps what is still needed and deletes the rest", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const old = now - 31 * DAY;
+  const sentEnvelope = await createEnvelope(owner.id, { sentAt: now });
+  const doneEnvelope = await createEnvelope(owner.id, {
+    sentAt: now,
+    status: "completed",
+  });
+  const events = {
+    deletable: randomUUID(),
+    doneMarker: randomUUID(),
+    liveMarker: randomUUID(),
+    pending: randomUUID(),
+    recent: randomUUID(),
+    sending: randomUUID(),
+  };
+  const insertEvent = (
+    id: string,
+    source: string,
+    envelopeId: string | null,
+    processedAt: number,
+  ) =>
+    database.query(
+      `
+        insert into notification_events (
+          id, dedupe_key, source, event, envelope_id, created_at, processed_at
+        ) values ($1, $1, $2, 'probe', $3, $4, $4)
+      `,
+      [id, source, envelopeId, processedAt],
+    );
+  const insertDelivery = (eventId: string, status: string) =>
+    database.query(
+      `
+        insert into notification_deliveries (
+          id, event_id, channel, target_kind, target, status,
+          next_attempt_at, created_at, updated_at
+        ) values ($1, $2, 'slack', 'channel', 'C0PURGE', $3, $4, $4, $4)
+      `,
+      [randomUUID(), eventId, status, now],
+    );
+
+  await insertEvent(events.deletable, "audit", sentEnvelope, old);
+  await insertEvent(events.pending, "audit", sentEnvelope, old);
+  await insertDelivery(events.pending, "pending");
+  await insertEvent(events.sending, "audit", sentEnvelope, old);
+  await insertDelivery(events.sending, "sending");
+  await insertEvent(events.liveMarker, "job", sentEnvelope, old);
+  await insertEvent(events.doneMarker, "job", doneEnvelope, old);
+  await insertEvent(events.recent, "audit", sentEnvelope, now - 5 * DAY);
+
+  const idle = {
+    envelopeId: await createEnvelope(owner.id, { sentAt: now }),
+    target: "T0IDLE",
+  };
+  const leased = {
+    envelopeId: await createEnvelope(owner.id, { sentAt: now }),
+    target: "T0LEASED",
+  };
+  const fresh = {
+    envelopeId: await createEnvelope(owner.id, { sentAt: now }),
+    target: "T0FRESH",
+  };
+  const insertThread = (
+    item: { envelopeId: string; target: string },
+    updatedAt: number,
+    leaseUntil: number | null,
+  ) =>
+    database.query(
+      `
+        insert into notification_threads (
+          envelope_id, channel, target_kind, target, lease_until,
+          created_at, updated_at
+        ) values ($1, 'slack', 'channel', $2, $3, $4, $4)
+      `,
+      [item.envelopeId, item.target, leaseUntil, updatedAt],
+    );
+
+  await insertThread(idle, now - 91 * DAY, null);
+  await insertThread(leased, now - 91 * DAY, now + 100);
+  await insertThread(fresh, now - DAY, null);
+
+  await purgeOldNotifications(database, now);
+
+  const remaining = await database.query<{ id: string }>(
+    `select id from notification_events where id = any($1)`,
+    [Object.values(events)],
+  );
+  const kept = new Set(remaining.rows.map((row) => row.id));
+
+  assert.ok(!kept.has(events.deletable), "an old, finished event is deleted");
+  assert.ok(
+    !kept.has(events.doneMarker),
+    "a job marker for a finished envelope is deleted",
+  );
+  assert.ok(kept.has(events.pending), "a pending delivery keeps its event");
+  assert.ok(kept.has(events.sending), "a sending delivery keeps its event");
+  assert.ok(
+    kept.has(events.liveMarker),
+    "a job marker stays while its envelope is out for signature",
+  );
+  assert.ok(kept.has(events.recent), "a recently processed event stays");
+
+  const threads = await database.query<{ target: string }>(
+    `select target from notification_threads where envelope_id = any($1)`,
+    [[idle.envelopeId, leased.envelopeId, fresh.envelopeId]],
+  );
+
+  assert.deepEqual(threads.rows.map((row) => row.target).sort(), [
+    "T0FRESH",
+    "T0LEASED",
+  ]);
 });

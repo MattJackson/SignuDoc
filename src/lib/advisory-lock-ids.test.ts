@@ -27,7 +27,12 @@ test("no two advisory locks share an id", () => {
   const claim = (id: number, owner: string) =>
     owners.set(id, [...(owners.get(id) ?? []), owner]);
 
-  for (const file of sourceFiles(SOURCE_ROOT)) {
+  // The migration runner holds a session lock from the same number space.
+  const migrators = ["db/migrate.mjs", "db/sqlite/migrate.mjs"].map((file) =>
+    path.resolve(SOURCE_ROOT, "../..", file),
+  );
+
+  for (const file of [...sourceFiles(SOURCE_ROOT), ...migrators]) {
     const text = readFileSync(file, "utf8");
     const names = new Map<string, number>();
 
