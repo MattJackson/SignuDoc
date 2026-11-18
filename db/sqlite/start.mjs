@@ -13,7 +13,7 @@
 //      first and Litestream syncs what is left before it exits.
 // Without it: run the migrations and start the server.
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname } from "node:os";
 
@@ -21,12 +21,13 @@ import { runMigrations } from "../migrate.mjs";
 import {
   createLease,
   gcsLeaseStorage,
+  holdLease,
   metadataServerToken,
 } from "./gcs-lease.mjs";
 import { sqliteFilePath } from "./open.mjs";
 
 const CONFIG_PATH = "/tmp/litestream.yml";
-const HEARTBEAT_MS = 10_000;
+const SERVER_PID_FILE = "/tmp/signudoc-server.pid";
 
 function log(line) {
   console.log(`[start] ${line}`);
@@ -66,6 +67,71 @@ function supervise(command, args) {
   };
 }
 
+/**
+ * Litestream with the app under it, in a process group of their own so that
+ * the whole group can be stopped, suspended or killed at once. The app writes
+ * its process id to a file, which lets a handover kill the app server alone
+ * and leave Litestream to make its final sync. `exited` resolves once the
+ * group is gone, so that the lease is not given up while something in it can
+ * still write.
+ */
+function superviseReplicator() {
+  rmSync(SERVER_PID_FILE, { force: true });
+
+  const child = spawn(
+    "litestream",
+    [
+      "replicate",
+      "-config",
+      CONFIG_PATH,
+      "-exec",
+      `sh -c 'echo $$ > ${SERVER_PID_FILE}; exec node server.js'`,
+    ],
+    { detached: true, stdio: "inherit" },
+  );
+  const signalGroup = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => child.kill(signal));
+  }
+
+  return {
+    exited: new Promise((resolve) =>
+      child.on("exit", async (code, signal) => {
+        // Anything Litestream left behind goes now.
+        signalGroup("SIGKILL");
+
+        for (let wait = 0; wait < 30 && signalGroup(0); wait += 1) {
+          await new Promise((done) => setTimeout(done, 100));
+        }
+
+        resolve(code ?? (signal ? 1 : 0));
+      }),
+    ),
+    killGroup: () => signalGroup("SIGKILL"),
+    killServer: () => {
+      try {
+        process.kill(
+          Number(readFileSync(SERVER_PID_FILE, "utf8").trim()),
+          "SIGKILL",
+        );
+      } catch {
+        // Not started, or gone already.
+      }
+    },
+    resume: () => signalGroup("SIGCONT"),
+    suspend: () => signalGroup("SIGSTOP"),
+    terminate: () => child.kill("SIGTERM"),
+  };
+}
+
 export function litestreamConfig({ file, replicaUrl, env = process.env }) {
   const lines = [
     "# Written by db/sqlite/start.mjs at container start.",
@@ -100,9 +166,11 @@ export function leaseLocation(replicaUrl) {
 }
 
 /**
- * Until the lease is ours, the port answers so Cloud Run counts the instance
+ * Until the app can listen, the port answers so Cloud Run counts the instance
  * as started and moves traffic to it (which is what makes the old revision
- * stop): /api/health says yes, anything else says to come back shortly.
+ * stop): /api/health says yes, anything else says to come back shortly. It
+ * stays up through the restore and the migrations, and is closed just before
+ * the app starts.
  */
 function startWaitingServer() {
   const port = Number(process.env.PORT ?? 8080);
@@ -122,7 +190,77 @@ function startWaitingServer() {
 
   server.listen(port, process.env.HOSTNAME ?? "0.0.0.0");
 
-  return () => new Promise((resolve) => server.close(() => resolve(undefined)));
+  // An open connection would keep close() waiting, and the port must be free
+  // for the app.
+  return () =>
+    new Promise((resolve) => {
+      server.close(() => resolve(undefined));
+      server.closeAllConnections();
+    });
+}
+
+/**
+ * Starts the app under the lease: the waiting server answers until the
+ * database is restored, migrated and the lease confirmed; the lease is kept
+ * fresh from the moment it is taken; and it is given back if starting fails
+ * or when the app has stopped. The steps are passed in so that they can be
+ * tested.
+ *
+ * Resolves with the exit code of the app.
+ */
+export async function startWithLease({
+  lease,
+  startWaiting,
+  restore,
+  migrate,
+  replicate,
+  holdOptions = {},
+  log: say = log,
+}) {
+  const stopWaiting = startWaiting();
+  let stoppedWaiting = null;
+  const closeWaiting = () => (stoppedWaiting ??= stopWaiting());
+  let held = null;
+
+  try {
+    await lease.acquire();
+    held = holdLease({ lease, log: say, ...holdOptions });
+    await restore();
+    await migrate();
+
+    // A migration blocks the event loop, so the refreshes and the fence may
+    // not have run. Nothing has been copied to the replica yet: be sure the
+    // lease is still ours before the first thing is.
+    if (!(await held.confirm())) {
+      throw new Error("The lease could not be confirmed before replicating.");
+    }
+
+    await closeWaiting();
+  } catch (error) {
+    await closeWaiting().catch(() => undefined);
+    await held?.stop();
+    await lease
+      .release()
+      .catch((releaseError) =>
+        say(`releasing the lease failed: ${String(releaseError)}`),
+      );
+    throw error;
+  }
+
+  const child = replicate();
+
+  held.attach(child);
+
+  const code = await child.exited;
+
+  await held.stop();
+  // Litestream has made its last sync and the group is gone, so the next
+  // instance can have the database.
+  await lease
+    .release()
+    .catch((error) => say(`releasing the lease failed: ${String(error)}`));
+
+  return code;
 }
 
 async function main() {
@@ -141,81 +279,41 @@ async function main() {
 
   const location = leaseLocation(replicaUrl);
   const leaseWanted = location && process.env.LITESTREAM_LEASE !== "off";
-  const lease = leaseWanted
-    ? createLease({
-        holder: `${hostname()}-${String(process.pid)}-${String(Date.now())}`,
-        log,
-        revision: process.env.K_REVISION ?? "local-00000-x",
-        storage: gcsLeaseStorage({
-          ...location,
-          getToken: metadataServerToken(),
-        }),
-      })
-    : null;
+  const restore = () => {
+    log(`restoring ${file} from ${replicaUrl}, if it is not here already`);
+    return run("litestream", [
+      "restore",
+      "-config",
+      CONFIG_PATH,
+      "-if-db-not-exists",
+      "-if-replica-exists",
+      file,
+    ]);
+  };
+  const migrate = () => runMigrations({ connectionString });
 
-  if (lease) {
-    const stopWaiting = startWaitingServer();
-
-    try {
-      await lease.acquire();
-    } finally {
-      await stopWaiting();
-    }
+  if (!leaseWanted) {
+    await restore();
+    await migrate();
+    process.exitCode = await superviseReplicator().exited;
+    return;
   }
 
-  log(`restoring ${file} from ${replicaUrl}, if it is not here already`);
-  await run("litestream", [
-    "restore",
-    "-config",
-    CONFIG_PATH,
-    "-if-db-not-exists",
-    "-if-replica-exists",
-    file,
-  ]);
-  await runMigrations({ connectionString });
-
-  const { child, exited } = supervise("litestream", [
-    "replicate",
-    "-config",
-    CONFIG_PATH,
-    "-exec",
-    "node server.js",
-  ]);
-  let heartbeat = null;
-
-  if (lease) {
-    heartbeat = setInterval(() => {
-      lease
-        .heartbeat()
-        .then((state) => {
-          if (state === "lost") {
-            // Someone else writes the database now: stop without another write.
-            log("the lease was taken by another instance; stopping now");
-            child.kill("SIGKILL");
-            process.exit(1);
-          }
-
-          if (state === "handover") {
-            log("a newer revision asked for the database; handing over");
-            clearInterval(heartbeat);
-            child.kill("SIGTERM");
-          }
-        })
-        .catch((error) => log(`lease refresh failed: ${String(error)}`));
-    }, HEARTBEAT_MS);
-  }
-
-  const code = await exited;
-
-  if (heartbeat) {
-    clearInterval(heartbeat);
-  }
-
-  // Litestream has made its last sync by now, so the next instance can have it.
-  await lease
-    ?.release()
-    .catch((error) => log(`releasing the lease failed: ${String(error)}`));
-  process.exitCode = code;
+  process.exitCode = await startWithLease({
+    lease: createLease({
+      holder: `${hostname()}-${String(process.pid)}-${String(Date.now())}`,
+      log,
+      revision: process.env.K_REVISION ?? "local-00000-x",
+      storage: gcsLeaseStorage({
+        ...location,
+        getToken: metadataServerToken(),
+      }),
+    }),
+    migrate,
+    replicate: superviseReplicator,
+    restore,
+    startWaiting: startWaitingServer,
+  });
 }
 
 const invokedDirectly = process.argv[1]?.endsWith("start.mjs");

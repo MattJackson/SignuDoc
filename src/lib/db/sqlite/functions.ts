@@ -102,7 +102,6 @@ const INTERVAL_UNITS: Record<string, number> = {
   hour: 3_600_000,
   millisecond: 1,
   minute: 60_000,
-  month: 30 * 86_400_000,
   second: 1000,
   week: 7 * 86_400_000,
 };
@@ -576,6 +575,35 @@ export function registerFunctions(
       container === null || contained === null
         ? null
         : jsonContains(parseJsonValue(container), parseJsonValue(contained)),
+    true,
+  );
+  define(
+    "pg_jsonb_typeof",
+    (value) => {
+      if (value === null) {
+        return null;
+      }
+
+      if (typeof value === "number" || typeof value === "bigint") {
+        return "number";
+      }
+
+      const parsed = parseJsonValue(value) as unknown;
+
+      if (parsed === null) {
+        return "null";
+      }
+
+      return Array.isArray(parsed)
+        ? "array"
+        : typeof parsed === "object"
+          ? "object"
+          : typeof parsed === "string"
+            ? "string"
+            : typeof parsed === "number"
+              ? "number"
+              : "boolean";
+    },
     true,
   );
   define(

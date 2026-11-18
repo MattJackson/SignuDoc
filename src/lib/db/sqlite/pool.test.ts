@@ -8,6 +8,7 @@ import { Kysely } from "kysely";
 
 import { runMigrations } from "../../../../db/migrate.mjs";
 import { createSqliteDialect } from "./kysely.ts";
+import { openSqliteDatabase } from "./open.ts";
 import { SqliteDatabaseError, SqlitePool } from "./pool.ts";
 
 // The SQLite pool on a real file with the app's schema: types, the write
@@ -605,4 +606,144 @@ test("Better Auth's queries run through the same pool", async () => {
     .executeTakeFirst();
 
   assert.deepEqual(row, { emailVerified: false, name: "Renamed" });
+});
+
+test("statements issued on one client without awaiting run in order", async () => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await Promise.all([
+      client.query(
+        `insert into rate_limits (key, count, expires_at) values ('serial-a', 1, 1)`,
+      ),
+      client.query(
+        `insert into rate_limits (key, count, expires_at) values ('serial-b', 1, 1)`,
+      ),
+    ]);
+    await client.query("COMMIT");
+  } finally {
+    client.release();
+  }
+
+  const rows = await pool.query<{ key: string }>(
+    `select key from rate_limits where key in ('serial-a', 'serial-b') order by key`,
+  );
+
+  assert.deepEqual(
+    rows.rows.map((row) => row.key),
+    ["serial-a", "serial-b"],
+  );
+});
+
+test("lower() folds every letter, as Postgres does, in queries and in unique indexes", async () => {
+  const folded = await pool.query<{ l: string; n: null }>(
+    `select lower('Émile Zola') as l, lower(null) as n`,
+  );
+
+  assert.equal(folded.rows[0]!.l, "émile zola");
+  assert.equal(folded.rows[0]!.n, null);
+
+  await pool.query(
+    `insert into teams (id, name, created_at, updated_at) values ('team-unicode-1', 'Équipe', 1, 1)`,
+  );
+  await assert.rejects(
+    pool.query(
+      `insert into teams (id, name, created_at, updated_at) values ('team-unicode-2', 'équipe', 1, 1)`,
+    ),
+    { code: "23505" },
+  );
+
+  // lower() sits in index expressions and in a trigger, which SQLite only
+  // allows for a function the connection defines when the schema is trusted.
+  const database = openSqliteDatabase(url, { readOnly: true });
+
+  try {
+    assert.equal(
+      (
+        database.prepare("pragma trusted_schema").get() as {
+          trusted_schema: number;
+        }
+      ).trusted_schema,
+      1,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("generate_series(a, b) is empty when a is past b", async () => {
+  const empty = await pool.query<{ n: number }>(
+    `select count(*) as n from generate_series(1, 0) as n`,
+  );
+  const three = await pool.query<{ n: number }>(
+    `select count(*) as n from generate_series(1, 3) as n`,
+  );
+
+  assert.equal(Number(empty.rows[0]!.n), 0);
+  assert.equal(Number(three.rows[0]!.n), 3);
+});
+
+test("jsonb_typeof names types as Postgres does", async () => {
+  const result = await pool.query<Record<string, unknown>>(
+    `select jsonb_typeof('"x"'::jsonb) as s, jsonb_typeof('1'::jsonb) as n, jsonb_typeof('1.5'::jsonb) as f,
+            jsonb_typeof('true'::jsonb) as b, jsonb_typeof('null'::jsonb) as z,
+            jsonb_typeof('[1]'::jsonb) as a, jsonb_typeof('{"k": 1}'::jsonb) as o`,
+  );
+
+  assert.deepEqual(result.rows[0], {
+    a: "array",
+    b: "boolean",
+    f: "number",
+    n: "number",
+    o: "object",
+    s: "string",
+    z: "null",
+  });
+});
+
+test("row_to_json gives boolean columns as JSON booleans", async () => {
+  const owner = await addUser();
+
+  await pool.query(
+    `insert into envelopes (id, user_id, title, source_pdf_key, source_pdf_filename, source_pdf_size_bytes, page_count, source_pdf_hash)
+     values ('env-rtj', $1, 'T', 'k', 'f.pdf', 1, 1, $2)`,
+    [owner, "b".repeat(64)],
+  );
+  await pool.query(
+    `insert into signers (id, envelope_id, name, email, sign_order, require_email_code) values ('rtj-signer', 'env-rtj', 'A', 'a@x.test', 1, true)`,
+  );
+
+  const result = await pool.query<{ j: unknown }>(
+    `select row_to_json(s)::text as j from signers s where s.id = 'rtj-signer'`,
+  );
+  const row = (
+    typeof result.rows[0]!.j === "string"
+      ? JSON.parse(result.rows[0]!.j)
+      : result.rows[0]!.j
+  ) as Record<string, unknown>;
+
+  assert.equal(row.require_email_code, true);
+  assert.equal(typeof row.require_email_code, "boolean");
+});
+
+test("a table changed after a row_to_json query is seen by the next one", async () => {
+  await pool.query("create table rtj_probe (a integer)");
+  await pool.query("insert into rtj_probe (a) values (1)");
+
+  const query = `select row_to_json(t)::text as j from rtj_probe t`;
+  const parse = (value: unknown) =>
+    (typeof value === "string" ? JSON.parse(value) : value) as Record<
+      string,
+      unknown
+    >;
+  const before = await pool.query<{ j: unknown }>(query);
+
+  assert.deepEqual(Object.keys(parse(before.rows[0]!.j)), ["a"]);
+  await pool.query("alter table rtj_probe add column c integer default 5");
+
+  const after = await pool.query<{ j: unknown }>(query);
+
+  assert.deepEqual(Object.keys(parse(after.rows[0]!.j)).sort(), ["a", "c"]);
+  await pool.query("drop table rtj_probe");
 });

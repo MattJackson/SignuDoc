@@ -1017,6 +1017,12 @@ function rewriteSpecialForms(tokens: Token[], sql: string): Token[] {
           punct("("),
           ident("SELECT"),
           ...args[0]!,
+          ident("WHERE"),
+          ...args[0]!,
+          op("<="),
+          punct("("),
+          ...args[1]!,
+          punct(")"),
           ident("UNION"),
           ident("ALL"),
           ident("SELECT"),
@@ -1058,7 +1064,7 @@ const FUNCTION_RENAMES: Record<string, string> = {
   JSONB_AGG: "json_group_array",
   JSONB_ARRAY_LENGTH: "json_array_length",
   JSONB_BUILD_OBJECT: "json_object",
-  JSONB_TYPEOF: "json_type",
+  JSONB_TYPEOF: "pg_jsonb_typeof",
   JSON_AGG: "json_group_array",
   JSON_BUILD_OBJECT: "json_object",
   LEFT: "pg_left",
@@ -1112,7 +1118,15 @@ function rewriteRowToJson(
       if (type.includes("JSON") || type.endsWith("[]")) {
         value = [ident("json"), punct("("), ...reference, punct(")")];
       } else if (type.includes("BOOL")) {
-        value = [ident("pg_json_bool"), punct("("), ...reference, punct(")")];
+        value = [
+          ident("json"),
+          punct("("),
+          ident("pg_json_bool"),
+          punct("("),
+          ...reference,
+          punct(")"),
+          punct(")"),
+        ];
       }
 
       if (args.length > 0) {
@@ -2326,7 +2340,7 @@ export function createRewriteCache(
 ) {
   const cache = new Map<string, Rewritten>();
 
-  return (sql: string): Rewritten => {
+  const rewrite = (sql: string): Rewritten => {
     const found = cache.get(sql);
 
     if (found) {
@@ -2342,4 +2356,8 @@ export function createRewriteCache(
     cache.set(sql, rewritten);
     return rewritten;
   };
+
+  // Rewrites carry what the schema was when they were made, so a change to
+  // the schema empties the cache.
+  return Object.assign(rewrite, { clear: () => cache.clear() });
 }

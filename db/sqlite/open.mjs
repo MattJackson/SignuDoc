@@ -64,6 +64,24 @@ export function loadNodeSqlite() {
 }
 
 /**
+ * lower() as Postgres has it: every letter folds, not only ASCII, which is all
+ * SQLite's own lower() does. Every connection defines it, the ones that
+ * migrate as well, because an index on lower(...) keeps the function's results:
+ * two connections that disagree would corrupt it. It has to be deterministic
+ * to be used in an index, and the schema trusted (SQLite's default) for an
+ * index or trigger to call a function the connection defines.
+ *
+ * @param {unknown} value
+ */
+function lowerForSql(value) {
+  if (value === null || value instanceof Uint8Array) {
+    return value;
+  }
+
+  return String(value).toLowerCase();
+}
+
+/**
  * Opens the file, creating it (and its folder) unless `readOnly`. WAL lets
  * the read-only connection and Litestream read while the app writes;
  * synchronous=FULL makes every commit durable on disk before it returns.
@@ -90,6 +108,8 @@ export function openSqliteDatabase(
   });
 
   try {
+    database.function("lower", { deterministic: true }, lowerForSql);
+
     if (!readOnly) {
       database.exec("PRAGMA journal_mode = WAL");
     }
