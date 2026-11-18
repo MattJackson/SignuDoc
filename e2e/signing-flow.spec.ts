@@ -932,6 +932,31 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
     await page.getByRole("button", { name: "Next →" }).click();
     await expect(page).toHaveURL(/\/prepare$/);
 
+    // A draft whose only recipient is an approver has nobody to place
+    // fields for: the prepare page sends the sender back to the signers page
+    // instead of failing.
+    const roleDatabase = openE2eClient(e2eDatabaseUrl);
+
+    await roleDatabase.connect();
+
+    try {
+      await roleDatabase.query(
+        `update public.signers set role = 'approver' where envelope_id = $1`,
+        [envelopeId],
+      );
+      await page.goto(`/envelopes/${envelopeId}/prepare`);
+      await expect(page).toHaveURL(/\/signers$/);
+    } finally {
+      await roleDatabase.query(
+        `update public.signers set role = 'signer' where envelope_id = $1`,
+        [envelopeId],
+      );
+      await roleDatabase.end();
+    }
+
+    await page.goto(`/envelopes/${envelopeId}/prepare`);
+    await expect(page).toHaveURL(/\/prepare$/);
+
     await page.getByRole("button", { exact: true, name: "Signature" }).click();
 
     const placementTarget = page.getByLabel("Place Signature on page 1");
