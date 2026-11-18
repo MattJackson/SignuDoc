@@ -226,11 +226,11 @@ test("a copy in the trash is not reused", async () => {
     driveId: "drive-1",
     envelopeId: "env-1",
     fetchImpl: drive.fetchImpl,
-    files: [files[0]!],
+    files,
     folders: [],
   });
 
-  assert.equal(drive.uploads(), 1);
+  assert.equal(drive.uploads(), 2);
   assert.equal(result.reused, 0);
   assert.equal(result.signedPdfFileId, "uploaded-1");
 });
