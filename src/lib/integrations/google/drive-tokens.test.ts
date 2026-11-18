@@ -501,11 +501,15 @@ test("an access token cached here is not served once the connection is gone or r
     repository,
   });
 
-  repository.rows.set("user-6", await storedRow("refresh-old", "1234"));
+  // Made first: saving a connection clears the cache.
+  const oldRow = await storedRow("refresh-old", "1234");
+  const newRow = await storedRow("refresh-new", "1234");
+
+  repository.rows.set("user-6", oldRow);
   assert.equal(await store.getAccessToken("user-6"), "access-for-refresh-old");
 
   // Another instance replaced the connection.
-  repository.rows.set("user-6", await storedRow("refresh-new", "1234"));
+  repository.rows.set("user-6", newRow);
   assert.equal(await store.getAccessToken("user-6"), "access-for-refresh-new");
 
   // Another instance disconnected it.
