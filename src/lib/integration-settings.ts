@@ -16,7 +16,8 @@ import { resolveDatabaseUrl, type EnvSource } from "./utils/env.ts";
 
 // Settings for the services this install connects to, set by an
 // administrator in the app instead of with environment variables: the
-// Resend API key, single sign-on, the Google Workspace directory, and where
+// Resend API key, single sign-on, the Google Workspace directory, Google
+// Drive, and where
 // first-run onboarding stands. One row each in integration_settings.
 //
 // An environment variable that sets the same thing always wins; the code
@@ -28,6 +29,13 @@ import { resolveDatabaseUrl, type EnvSource } from "./utils/env.ts";
 // counts as not set, so the administrator is asked for it again.
 
 export const INTEGRATION_SETTINGS = {
+  "drive.appId": { secret: false },
+  "drive.exportDriveId": { secret: false },
+  "drive.exportFolderPattern": { secret: false },
+  "drive.labelFields": { secret: false },
+  "drive.labelId": { secret: false },
+  "drive.labelsSubject": { secret: false },
+  "drive.pickerApiKey": { secret: false },
   "google.adminGroup": { secret: false },
   "google.adminSubject": { secret: false },
   "google.customerId": { secret: false },
