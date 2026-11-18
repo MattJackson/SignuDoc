@@ -64,7 +64,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: /google-workspace\.spec\.ts$/,
+      testIgnore: /(google-workspace|screenshots)\.spec\.ts$/,
       use: desktop,
     },
     // Google sign-in needs a site that has been set up, so it runs on the
@@ -73,6 +73,14 @@ export default defineConfig({
       dependencies: ["chromium"],
       name: "google-workspace",
       testMatch: /google-workspace\.spec\.ts$/,
+      use: desktop,
+    },
+    // Screenshots of the administrator's screens for CI to upload, taken
+    // last so every setting the tests above made is in them.
+    {
+      dependencies: ["google-workspace"],
+      name: "screenshots",
+      testMatch: /screenshots\.spec\.ts$/,
       use: desktop,
     },
   ],

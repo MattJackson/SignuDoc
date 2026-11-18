@@ -72,6 +72,15 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+      # Full-page screenshots of the administrator's screens
+      # (e2e/screenshots.spec.ts), to look at without running the app.
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: screenshots
+          path: test-results/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v6
         if: failure()
         with:
