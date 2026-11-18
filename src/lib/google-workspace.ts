@@ -36,9 +36,8 @@ import { readEnv, resolveAuthUrl, type EnvSource } from "./utils/env.ts";
 // The Google Workspace part of Settings and of onboarding: Google sign-in,
 // the Workspace directory and the administrator group, each with where its
 // value comes from (an environment variable wins, and is shown as fixed)
-// and checks an administrator can run. A section for Google Drive can be
-// added beside these later; it would reuse the same service account and
-// directory client.
+// and checks an administrator can run. Google Drive, on the same service
+// account, is in google-drive.ts.
 
 export type SettingSource = "default" | "env" | "none" | "settings";
 

@@ -27,6 +27,8 @@ export const GOOGLE_SCOPES = {
   directoryUserReadonly:
     "https://www.googleapis.com/auth/admin.directory.user.readonly",
   drive: "https://www.googleapis.com/auth/drive",
+  driveFile: "https://www.googleapis.com/auth/drive.file",
+  driveLabelsReadonly: "https://www.googleapis.com/auth/drive.labels.readonly",
 } as const;
 
 export type GoogleCredentialsSource = "metadata" | "service-account-key";

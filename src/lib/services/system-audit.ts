@@ -50,6 +50,9 @@ export const systemAuditEventTypes = [
   "team_deleted",
   "team_member_added",
   "team_member_removed",
+  "google_drive_connected",
+  "google_drive_disconnected",
+  "drive_export_retried",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];

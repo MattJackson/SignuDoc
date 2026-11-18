@@ -5,6 +5,7 @@ import { useState, type ComponentType, type FormEvent } from "react";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
+import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
 import {
   GoogleDirectorySection,
   GoogleSignInSection,
@@ -12,6 +13,7 @@ import {
 } from "@/components/settings/google-workspace-panel";
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
 import type { BackupSettingsView } from "@/lib/backup-config";
+import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -24,6 +26,7 @@ import type { SealSettingsView } from "@/lib/seal-setup";
 
 export type OnboardingData = {
   backups: BackupSettingsView;
+  googleDrive: GoogleDriveView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   seal: SealSettingsView;
@@ -251,6 +254,10 @@ function GoogleDirectoryStep({ data }: StepFormProps) {
   return <GoogleDirectorySection workspace={workspace} />;
 }
 
+function GoogleDriveStep({ data }: StepFormProps) {
+  return <GoogleDriveSection initialView={data.googleDrive} />;
+}
+
 function StorageStep({ data }: StepFormProps) {
   const [result, setResult] = useState<Feedback>(null);
   const [checking, setChecking] = useState(false);
@@ -397,6 +404,7 @@ export const STEP_FORMS: Record<
   backups: BackupsStep,
   email: EmailStep,
   "google-directory": GoogleDirectoryStep,
+  "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
   retention: RetentionStep,

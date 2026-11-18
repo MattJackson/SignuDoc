@@ -62,6 +62,7 @@ test("the steps come in the order onboarding walks them", () => {
       "email",
       "google-sign-in",
       "google-directory",
+      "google-drive",
       "storage",
       "seal",
       "backups",
@@ -145,6 +146,29 @@ test("the directory step waits until the directory is turned on", async () => {
       context({ stored: { "google.directory": "off" } }),
     ),
     "not_started",
+  );
+});
+
+test("the Drive step is done once the Picker is set up", async () => {
+  assert.equal(await check("google-drive", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-drive",
+      context({ stored: { "drive.pickerApiKey": "AIzaExampleKey000000000" } }),
+    ),
+    "not_started",
+  );
+  assert.equal(
+    await check(
+      "google-drive",
+      context({
+        stored: {
+          "drive.appId": "123456789012",
+          "drive.pickerApiKey": "AIzaExampleKey000000000",
+        },
+      }),
+    ),
+    "done",
   );
 });
 

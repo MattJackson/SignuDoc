@@ -152,6 +152,11 @@ type CreateDraftEnvelopeOptions = {
 };
 
 type CreateDraftEnvelopeInput = {
+  /**
+   * Where the document came from when it was not uploaded from this site
+   * (Google Drive, Gmail), kept on the "created" audit event.
+   */
+  importSource?: { kind: "drive" | "gmail" | "upload"; ref?: string } | null;
   sourcePdf: {
     body: Uint8Array;
     contentType?: string | null;
@@ -740,7 +745,14 @@ export async function createDraftEnvelope(
           createdAt: now,
           envelopeId,
           event: "created",
-          metadata: null,
+          metadata: input.importSource
+            ? {
+                importedFrom: input.importSource.kind,
+                ...(input.importSource.ref
+                  ? { importRef: input.importSource.ref.slice(0, 200) }
+                  : {}),
+              }
+            : null,
         },
         tx,
       );
@@ -1765,7 +1777,11 @@ function buildTimelineDescription(event: AuditEventRecord): string {
     case "copied":
       return "Copied from an earlier envelope";
     case "created":
-      return "Envelope created";
+      return event.metadata?.importedFrom === "drive"
+        ? "Envelope created from Google Drive"
+        : event.metadata?.importedFrom === "gmail"
+          ? "Envelope created from Gmail"
+          : "Envelope created";
     case "sent": {
       // A first step of several signers names them all.
       const stepSigners = Array.isArray(event.metadata?.stepSigners)

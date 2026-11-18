@@ -38,11 +38,14 @@ export function describeSsoError(code: string): string {
 export function SsoButton({
   label,
   onError,
+  returnTo = "/dashboard",
   sso,
   variant = "primary",
 }: {
   label?: string;
   onError: (message: string) => void;
+  /** A path on this site to go to once signed in. */
+  returnTo?: string;
   sso: SsoOption;
   variant?: "primary" | "secondary";
 }) {
@@ -59,7 +62,7 @@ export function SsoButton({
       const origin = window.location.origin;
       const response = await fetch("/api/auth/sign-in/social", {
         body: JSON.stringify({
-          callbackURL: `${origin}/dashboard`,
+          callbackURL: `${origin}${returnTo}`,
           errorCallbackURL: `${origin}/login`,
           newUserCallbackURL: `${origin}/dashboard`,
           provider: "sso",
