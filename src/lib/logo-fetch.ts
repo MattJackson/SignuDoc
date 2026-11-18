@@ -33,7 +33,10 @@ const HTML_TYPES = ["text/html", "application/xhtml+xml"];
 // loopback, link-local, carrier-grade NAT, documentation and benchmarking
 // ranges, multicast, reserved, and IPv6 forms that can carry an IPv4
 // address (mapped, NAT64, 6to4, Teredo).
-const BLOCKED = new BlockList();
+// Two lists: Node compares an IPv4 address with IPv6 rules too (as
+// ::ffff:a.b.c.d), so one list holding ::ffff:0:0/96 would refuse them all.
+const BLOCKED_V4 = new BlockList();
+const BLOCKED_V6 = new BlockList();
 
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
@@ -52,7 +55,7 @@ for (const [network, prefix] of [
   ["224.0.0.0", 4],
   ["240.0.0.0", 4],
 ] as const) {
-  BLOCKED.addSubnet(network, prefix, "ipv4");
+  BLOCKED_V4.addSubnet(network, prefix, "ipv4");
 }
 
 for (const [network, prefix] of [
@@ -69,7 +72,7 @@ for (const [network, prefix] of [
   ["fec0::", 10],
   ["ff00::", 8],
 ] as const) {
-  BLOCKED.addSubnet(network, prefix, "ipv6");
+  BLOCKED_V6.addSubnet(network, prefix, "ipv6");
 }
 
 /** True for an IP address on the public internet. */
@@ -80,7 +83,9 @@ export function isPublicAddress(address: string): boolean {
     return false;
   }
 
-  return !BLOCKED.check(address, family === 4 ? "ipv4" : "ipv6");
+  return family === 4
+    ? !BLOCKED_V4.check(address, "ipv4")
+    : !BLOCKED_V6.check(address, "ipv6");
 }
 
 /**
