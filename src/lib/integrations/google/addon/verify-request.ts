@@ -67,6 +67,15 @@ function tokenProblem(error: unknown): string | null {
   return error instanceof IdTokenError ? error.problem : null;
 }
 
+// Not being able to fetch Google's keys is the server's trouble, not a bad
+// request: it passes through as it is, so the route answers 500 and does not
+// count it against the caller.
+function isInfrastructureFailure(error: unknown): boolean {
+  return (
+    !(error instanceof IdTokenError) || error.problem === "keys_unavailable"
+  );
+}
+
 /** Throws AddonRequestError unless Google sent the request for a known user. */
 export async function authenticateAddonRequest({
   audiences,
@@ -106,7 +115,7 @@ export async function authenticateAddonRequest({
       );
     }
   } catch (error) {
-    if (error instanceof AddonRequestError) {
+    if (error instanceof AddonRequestError || isInfrastructureFailure(error)) {
       throw error;
     }
 
@@ -127,6 +136,10 @@ export async function authenticateAddonRequest({
       token: userIdToken,
     });
   } catch (error) {
+    if (isInfrastructureFailure(error)) {
+      throw error;
+    }
+
     throw new AddonRequestError(
       "no_user",
       "The request's user ID token did not verify.",

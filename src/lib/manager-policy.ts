@@ -4,6 +4,7 @@ import {
   readIntegrationSettings,
   type IntegrationSettings,
 } from "./integration-settings.ts";
+import { GoogleCredentialsError } from "./integrations/google/credentials.ts";
 import {
   DirectoryError,
   getDirectoryClient,
@@ -198,7 +199,10 @@ export async function findSenderManager(
       status: "found",
     };
   } catch (error) {
-    if (error instanceof DirectoryError) {
+    if (
+      error instanceof DirectoryError ||
+      error instanceof GoogleCredentialsError
+    ) {
       return { status: "lookup_failed" };
     }
 

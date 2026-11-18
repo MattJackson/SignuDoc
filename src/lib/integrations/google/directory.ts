@@ -498,3 +498,19 @@ export function getDirectoryClientFor(
 
   return client;
 }
+
+/**
+ * The directory client for a search, or why there is none: settings that
+ * could not be read are an error, which is not the same as a directory that
+ * is switched off (a null client).
+ */
+export async function resolveDirectoryForSearch(
+  loadSettings: () => Promise<StoredDirectorySettings | null>,
+  env: EnvSource = process.env,
+): Promise<{ client: DirectoryClient | null } | { error: string }> {
+  try {
+    return { client: getDirectoryClient(env, await loadSettings()) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "unknown" };
+  }
+}

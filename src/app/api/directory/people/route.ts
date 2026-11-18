@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 import { requireVerifiedSenderSession } from "@/lib/auth/route-session";
 import { getIntegrationSettings } from "@/lib/integration-settings";
 import {
-  getDirectoryClient,
   MAX_DIRECTORY_RESULTS,
+  resolveDirectoryForSearch,
 } from "@/lib/integrations/google/directory";
 import { logSecurityEvent } from "@/lib/security/logging";
 import {
@@ -29,13 +29,22 @@ export async function GET(request: Request) {
   }
 
   const term = (new URL(request.url).searchParams.get("q") ?? "").trim();
-  let directory;
+  const resolved = await resolveDirectoryForSearch(getIntegrationSettings);
 
-  try {
-    directory = getDirectoryClient(process.env, await getIntegrationSettings());
-  } catch {
-    directory = null;
+  if ("error" in resolved) {
+    logSecurityEvent("warn", {
+      category: "directory_search_failed",
+      message: "The Workspace directory settings could not be read.",
+      metadata: { error: resolved.error },
+      path: getRequestPathname(request),
+      userId: session.user.id,
+    });
+
+    // Not the same as a directory that is off: the page keeps asking.
+    return NextResponse.json({ enabled: true, people: [] });
   }
+
+  const directory = resolved.client;
 
   if (!directory) {
     return NextResponse.json({ enabled: false, people: [] });

@@ -359,7 +359,7 @@ test("the run slot is claimed only when a run is about to start", async () => {
   };
   const run = () =>
     runConfiguredBackup({
-      ...({ claimSlot } as object),
+      claimSlot,
       createSource: () => memoryStore(),
       createTarget: () => memoryStore(),
       database,

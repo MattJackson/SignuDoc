@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  directorySyncHttpStatus,
   parseDirectorySyncRequest,
   runDirectorySync,
 } from "@/lib/directory-sync";
@@ -70,7 +71,19 @@ async function handle(request: Request) {
     const outcome = await runDirectorySync(parsed.request);
 
     if (outcome.status !== "ran") {
-      return NextResponse.json(outcome);
+      const status = directorySyncHttpStatus(outcome);
+
+      if (status !== 200) {
+        logSecurityEvent("error", {
+          category: "directory_sync_not_runnable",
+          message:
+            "The directory sync is turned on but cannot run: it has no usable directory or no Workspace domains.",
+          metadata: { status: outcome.status },
+          path: getRequestPathname(request),
+        });
+      }
+
+      return NextResponse.json(outcome, { status });
     }
 
     logSecurityEvent(outcome.stoppedEarly ? "error" : "info", {
@@ -85,7 +98,7 @@ async function handle(request: Request) {
     // A run the directory could not answer shows as failed in the
     // scheduler, which is where someone will look.
     return NextResponse.json(outcome, {
-      status: outcome.stoppedEarly ? 502 : 200,
+      status: directorySyncHttpStatus(outcome),
     });
   } catch (error) {
     logRouteError(error, {

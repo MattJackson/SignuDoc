@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { IntegrationCard } from "@/components/settings/integration-kit";
 import {
+  countConnected,
   describeStorageBrand,
   INTEGRATIONS,
   type IntegrationInfo,
@@ -39,9 +40,10 @@ export default async function IntegrationsPage() {
   const groups = settings.hosted
     ? GROUPS.filter((group) => group.name === "Email and messaging")
     : GROUPS;
-  const connected = INTEGRATIONS.filter(
-    (integration) => states[integration.id].status === "connected",
-  ).length;
+  const { connected, total } = countConnected(
+    states,
+    groups.map((group) => group.name),
+  );
 
   return (
     <section
@@ -56,7 +58,7 @@ export default async function IntegrationsPage() {
         </h2>
         <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
           The services this site works with. Each one is optional unless it says
-          otherwise. {connected} of {INTEGRATIONS.length} are connected.
+          otherwise. {connected} of {total} are connected.
         </p>
       </div>
 
