@@ -3700,6 +3700,16 @@ export async function correctSentEnvelopeSigner(
         ),
       );
 
+      // A lookup that failed says nothing about the manager, and the outage
+      // passes: the person is asked to try again, so the required manager
+      // cannot be swapped out meanwhile.
+      if (
+        managerLookup.found.status === "lookup_failed" &&
+        managerCheck.status === "blocked"
+      ) {
+        throw new EnvelopeMutationError(managerCheck.message, 503);
+      }
+
       if (before.status === "satisfied" && managerCheck.status === "blocked") {
         throw new EnvelopeMutationError(managerCheck.message, 409);
       }
