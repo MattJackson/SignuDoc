@@ -481,10 +481,15 @@ export function createSelfSignedSealIdentity({
   };
 }
 
-/** Reads a PKCS#12 bundle (from a certificate authority) into an identity. */
+/**
+ * Reads a PKCS#12 bundle (from a certificate authority) into an identity.
+ * `what` names the bundle in error messages: the environment variable, or
+ * the file an administrator uploaded.
+ */
 export function sealIdentityFromPkcs12(
   p12: Uint8Array,
   passphrase: string,
+  what = "SEAL_P12_BASE64",
 ): SealIdentity {
   const parsed = forge.pkcs12.pkcs12FromAsn1(
     asn1.fromDer(toBinary(p12)),
@@ -509,7 +514,7 @@ export function sealIdentityFromPkcs12(
 
   if (!privateKey || certificates.length === 0) {
     throw new PdfSealError(
-      "SEAL_P12_BASE64 must hold one private key and its certificate.",
+      `${what} must hold one RSA private key and its certificate.`,
     );
   }
 
@@ -524,7 +529,7 @@ export function sealIdentityFromPkcs12(
 
   if (!matching) {
     throw new PdfSealError(
-      "No certificate in SEAL_P12_BASE64 matches its private key.",
+      `${what} has no certificate that matches its private key.`,
     );
   }
 
