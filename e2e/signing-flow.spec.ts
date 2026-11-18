@@ -874,7 +874,9 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
       page.getByRole("button", { name: "Turn off Part 11 mode" }),
     ).toBeVisible();
     // A retention period would delete regulated records on a timer.
-    await expect(page.getByLabel("Days to keep")).toBeDisabled();
+    await expect(
+      page.getByLabel("Days to keep", { exact: true }),
+    ).toBeDisabled();
   });
 
   await test.step("the signer makes an account and confirms their email", async () => {
