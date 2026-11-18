@@ -1,5 +1,11 @@
 import { MAX_UPLOAD_SIZE_BYTES } from "../../../types/domain.ts";
-import { googleUrl } from "../endpoints.ts";
+import { DriveFileTooLargeError, readLimitedBytes } from "../drive-api.ts";
+import {
+  GOOGLE_MEDIA_TIMEOUT_MS,
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "../endpoints.ts";
 
 // The Drive side of the add-on: which selected files can be sent for
 // signature, and reading a PDF or Word file's bytes as the person using
@@ -61,7 +67,10 @@ export async function downloadDriveFile(
       googleUrl(
         `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
       ),
-      { headers: { authorization: `Bearer ${accessToken}` } },
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+        signal: googleTimeoutSignal(GOOGLE_MEDIA_TIMEOUT_MS),
+      },
     );
   } catch {
     throw new DriveApiError("Google Drive could not be reached.", null);
@@ -74,19 +83,19 @@ export async function downloadDriveFile(
     );
   }
 
-  const declared = Number(response.headers.get("content-length") ?? "0");
+  // Read as it arrives and stopped at the limit: a large file, or one with
+  // no stated size, is never held in memory in full.
+  try {
+    return Buffer.from(
+      await readLimitedBytes(response, maxSizeBytes, "The Drive file"),
+    );
+  } catch (error) {
+    if (error instanceof DriveFileTooLargeError) {
+      throw new DriveApiError("The file is larger than an upload may be.", 413);
+    }
 
-  if (declared > maxSizeBytes) {
-    throw new DriveApiError("The file is larger than an upload may be.", 413);
+    throw new DriveApiError("Google Drive could not be reached.", null);
   }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-
-  if (bytes.byteLength > maxSizeBytes) {
-    throw new DriveApiError("The file is larger than an upload may be.", 413);
-  }
-
-  return bytes;
 }
 
 export type DriveFileMetadata = { id: string; mimeType: string; name: string };
@@ -107,7 +116,10 @@ export async function getDriveFileMetadata(
       googleUrl(
         `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?fields=id,name,mimeType&supportsAllDrives=true`,
       ),
-      { headers: { authorization: `Bearer ${accessToken}` } },
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+        signal: googleTimeoutSignal(GOOGLE_REQUEST_TIMEOUT_MS),
+      },
     );
   } catch {
     throw new DriveApiError("Google Drive could not be reached.", null);

@@ -1,7 +1,11 @@
 import { createSign } from "node:crypto";
 
 import { readEnv, type EnvSource } from "../../utils/env.ts";
-import { googleUrl } from "./endpoints.ts";
+import {
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "./endpoints.ts";
 
 // Access tokens for Google APIs (Cloud Storage, Drive, the Workspace
 // directory), shared by every Google integration in the app.
@@ -60,6 +64,8 @@ type CreateGoogleCredentialsOptions = {
   env?: EnvSource;
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** How long a request to Google may take, in milliseconds. */
+  timeoutMs?: number;
 };
 
 type ServiceAccountKey = {
@@ -175,6 +181,7 @@ export function createGoogleCredentials({
   env = process.env,
   fetchImpl = fetch,
   now = Date.now,
+  timeoutMs = GOOGLE_REQUEST_TIMEOUT_MS,
 }: CreateGoogleCredentialsOptions = {}): GoogleCredentials | null {
   const keyValue = readEnv(env, "GOOGLE_SERVICE_ACCOUNT_KEY");
   const key = keyValue ? parseServiceAccountKey(keyValue) : null;
@@ -197,6 +204,7 @@ export function createGoogleCredentials({
       body: new URLSearchParams({ assertion, grant_type: JWT_BEARER_GRANT }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
+      signal: googleTimeoutSignal(timeoutMs),
     });
 
     return toCachedToken(await readJson(response, "Google token exchange"));
@@ -221,6 +229,7 @@ export function createGoogleCredentials({
   async function metadataGet(pathAndQuery: string): Promise<Response> {
     return fetchImpl(`${METADATA_BASE_URL}/${pathAndQuery}`, {
       headers: { "Metadata-Flavor": "Google" },
+      signal: googleTimeoutSignal(timeoutMs),
     });
   }
 
@@ -304,6 +313,7 @@ export function createGoogleCredentials({
           "content-type": "application/json",
         },
         method: "POST",
+        signal: googleTimeoutSignal(timeoutMs),
       },
     );
     const signed = (await readJson(signResponse, "IAM signJwt")) as {

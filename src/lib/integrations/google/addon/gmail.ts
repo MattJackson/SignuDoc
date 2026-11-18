@@ -1,5 +1,10 @@
 import { MAX_UPLOAD_SIZE_BYTES } from "../../../types/domain.ts";
-import { googleUrl } from "../endpoints.ts";
+import {
+  GOOGLE_MEDIA_TIMEOUT_MS,
+  GOOGLE_REQUEST_TIMEOUT_MS,
+  googleTimeoutSignal,
+  googleUrl,
+} from "../endpoints.ts";
 
 // The open Gmail message, read through the Gmail API with plain fetch, as
 // the person using the add-on. Two tokens go with each call, as Google's
@@ -188,12 +193,14 @@ async function gmailGet(
   path: string,
   tokens: GmailTokens,
   fetchImpl: FetchLike,
+  timeoutMs: number = GOOGLE_REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   let response: Response;
 
   try {
     response = await fetchImpl(googleUrl(`${GMAIL_API}${path}`), {
       headers: gmailHeaders(tokens),
+      signal: googleTimeoutSignal(timeoutMs),
     });
   } catch {
     throw new GmailApiError("Gmail could not be reached.", null);
@@ -233,6 +240,7 @@ export async function getAttachmentBytes(
     `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
     tokens,
     fetchImpl,
+    GOOGLE_MEDIA_TIMEOUT_MS,
   )) as { data?: unknown };
 
   if (typeof body.data !== "string") {

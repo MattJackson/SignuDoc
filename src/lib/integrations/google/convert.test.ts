@@ -6,6 +6,7 @@ import {
   convertToPdf,
   DocumentConversionError,
   exportGoogleFileToPdf,
+  MAX_CONVERT_SOURCE_BYTES,
   pdfFileName,
 } from "./convert.ts";
 import { DRIVE_API_BASE_URL, DRIVE_UPLOAD_BASE_URL } from "./drive-api.ts";
@@ -307,4 +308,27 @@ test("a file in Drive that is too large is refused before it is downloaded", asy
       error instanceof DocumentConversionError && error.code === "too_large",
   );
   assert.equal(calls.length, 1);
+});
+
+test("a document too large to convert names the conversion limit", async () => {
+  const { fetchImpl } = fakeDrive(() => undefined);
+
+  await assert.rejects(
+    convertToPdf(
+      {
+        accessToken: "t",
+        bytes: new Uint8Array(MAX_CONVERT_SOURCE_BYTES + 1),
+        fileName: "Big.docx",
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      },
+      { fetchImpl },
+    ),
+    (error) =>
+      error instanceof DocumentConversionError &&
+      error.code === "too_large" &&
+      error.message.includes(
+        `${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB`,
+      ),
+  );
 });

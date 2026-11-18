@@ -143,9 +143,14 @@ export type DriveExportRow = {
   attempts: number;
   driveId: string;
   envelopeId: string;
+  /**
+   * The locked_until this claim set. Every update a worker makes to the row
+   * names it, so a worker whose claim was taken over changes nothing.
+   */
+  lease: number;
 };
 
-const RETURNING = `envelope_id AS "envelopeId", drive_id AS "driveId", attempts`;
+const RETURNING = `envelope_id AS "envelopeId", drive_id AS "driveId", attempts, locked_until AS "lease"`;
 
 /** Takes up to `limit` rows that are due, marking them as being tried. */
 export async function claimDueDriveExports(
@@ -202,16 +207,27 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function listQuery(driveId: string, q: string, fields: string): string {
-  return new URLSearchParams({
+function listQuery(
+  driveId: string,
+  q: string,
+  fields: string,
+  extra: { orderBy?: string; pageSize?: string } = {},
+): string {
+  const query = new URLSearchParams({
     corpora: "drive",
     driveId,
     fields,
     includeItemsFromAllDrives: "true",
-    pageSize: "10",
+    pageSize: extra.pageSize ?? "10",
     q,
     supportsAllDrives: "true",
-  }).toString();
+  });
+
+  if (extra.orderBy) {
+    query.set("orderBy", extra.orderBy);
+  }
+
+  return query.toString();
 }
 
 /** A file already uploaded for this envelope with these exact bytes. */
@@ -247,7 +263,10 @@ export async function ensureFolderPath(input: {
   // A Shared Drive's root folder has the drive's own id.
   let parent = input.driveId;
 
-  for (const name of input.folders) {
+  // Drive allows two folders of one name, so two exports that need a new
+  // folder at the same moment can each make one. Every export uses the
+  // oldest folder of the name, and a duplicate made in a race stays empty.
+  async function oldestFolder(name: string): Promise<string | undefined> {
     const q = [
       `name = ${quoteDriveQuery(name)}`,
       `mimeType = ${quoteDriveQuery(GOOGLE_FOLDER_MIME_TYPE)}`,
@@ -258,9 +277,17 @@ export async function ensureFolderPath(input: {
       input.fetchImpl,
       input.accessToken,
       "Looking for a folder",
-      `${DRIVE_API_BASE_URL}/files?${listQuery(input.driveId, q, "files(id)")}`,
+      `${DRIVE_API_BASE_URL}/files?${listQuery(input.driveId, q, "files(id)", {
+        orderBy: "createdTime",
+        pageSize: "1",
+      })}`,
     );
-    const existing = found.files?.[0]?.id;
+
+    return found.files?.[0]?.id;
+  }
+
+  for (const name of input.folders) {
+    const existing = await oldestFolder(name);
 
     if (existing) {
       parent = existing;
@@ -283,7 +310,7 @@ export async function ensureFolderPath(input: {
       },
     );
 
-    parent = created.id;
+    parent = (await oldestFolder(name)) ?? created.id;
   }
 
   return parent;
@@ -545,7 +572,7 @@ async function loadLabelValues(
         ORDER BY lower(t.name)
       `,
       [envelope.userId],
-    ).catch(() => []),
+    ),
     getSettings(env),
     getIntegrationSettings(env),
   ]);
@@ -647,7 +674,7 @@ export async function exportClaimedRow(
           certificate_file_id = $5,
           label_status = $6,
           label_error = $7
-        WHERE envelope_id = $1
+        WHERE envelope_id = $1 AND locked_until = $8
       `,
       [
         row.envelopeId,
@@ -657,6 +684,7 @@ export async function exportClaimedRow(
         files.certificateFileId,
         label.status,
         label.error,
+        row.lease,
       ],
     );
 
@@ -687,7 +715,7 @@ export async function exportClaimedRow(
           last_error = $4,
           locked_until = NULL,
           updated_at = $5
-        WHERE envelope_id = $1
+        WHERE envelope_id = $1 AND locked_until = $6
       `,
       [
         row.envelopeId,
@@ -695,6 +723,7 @@ export async function exportClaimedRow(
         outcome.nextAttemptAt,
         describeExportError(error),
         nowSeconds(),
+        row.lease,
       ],
     );
 
@@ -760,9 +789,9 @@ export async function runDueDriveExports({
           `
             UPDATE drive_exports
             SET attempts = attempts - 1, locked_until = NULL
-            WHERE envelope_id = $1
+            WHERE envelope_id = $1 AND locked_until = $2
           `,
-          [row.envelopeId],
+          [row.envelopeId, row.lease],
         );
         continue;
       }

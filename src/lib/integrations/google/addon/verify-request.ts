@@ -71,6 +71,18 @@ function tokenProblem(error: unknown): string | null {
   return error instanceof IdTokenError ? error.problem : null;
 }
 
+/**
+ * Google's signing keys could not be read: nothing is known about the
+ * request, so it is not called forged. The error passes on as it is, and the
+ * route answers it as a server problem without counting it against the
+ * caller's failures.
+ */
+function rethrowKeysUnavailable(error: unknown): void {
+  if (error instanceof IdTokenError && error.problem === "keys_unavailable") {
+    throw error;
+  }
+}
+
 /** Throws AddonRequestError unless Google sent the request for a known user. */
 export async function authenticateAddonRequest({
   audiences,
@@ -114,6 +126,8 @@ export async function authenticateAddonRequest({
       throw error;
     }
 
+    rethrowKeysUnavailable(error);
+
     throw new AddonRequestError(
       "not_from_google",
       "The request's system ID token did not verify.",
@@ -131,6 +145,8 @@ export async function authenticateAddonRequest({
       token: userIdToken,
     });
   } catch (error) {
+    rethrowKeysUnavailable(error);
+
     throw new AddonRequestError(
       "no_user",
       "The request's user ID token did not verify.",
