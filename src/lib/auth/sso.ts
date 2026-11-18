@@ -299,6 +299,21 @@ export type WorkspaceAccountDecision =
     };
 
 /**
+ * A domain list as the checks use it: the domains, and whether the list
+ * was set but holds no valid domain (so no one is allowed).
+ */
+export function splitWorkspaceDomains(
+  allowed: readonly string[] | WorkspaceDomains,
+): { domains: readonly string[]; noneAllowed: boolean } {
+  return Array.isArray(allowed)
+    ? { domains: allowed, noneAllowed: false }
+    : {
+        domains: (allowed as WorkspaceDomains).domains,
+        noneAllowed: (allowed as WorkspaceDomains).invalid === true,
+      };
+}
+
+/**
  * Checks the hd claim of a verified Google ID token. A personal Google
  * account has none. An account in another organization's Workspace has that
  * organization's domain.
@@ -307,11 +322,7 @@ export function checkWorkspaceAccount(
   profile: Readonly<Record<string, unknown>> | undefined,
   allowed: readonly string[] | WorkspaceDomains,
 ): WorkspaceAccountDecision {
-  const domains = Array.isArray(allowed)
-    ? allowed
-    : (allowed as WorkspaceDomains).domains;
-  const noneAllowed =
-    !Array.isArray(allowed) && (allowed as WorkspaceDomains).invalid === true;
+  const { domains, noneAllowed } = splitWorkspaceDomains(allowed);
   const claim = profile?.hd;
   const hd = typeof claim === "string" ? claim.trim().toLowerCase() : "";
 

@@ -91,5 +91,5 @@ test("an invalid Workspace domain list lets no address in", async () => {
     stored: null,
   });
 
-  assert.equal(isEmailInWorkspace("sam@example.com", invalid as never), false);
+  assert.equal(isEmailInWorkspace("sam@example.com", invalid), false);
 });

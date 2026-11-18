@@ -317,7 +317,7 @@ test("a configured but invalid Workspace domain list lets no add-on caller in", 
   assert.equal(
     await rejection({
       userIdToken: sign(userClaims({ hd: "other.example" })),
-      workspaceDomains: invalid as never,
+      workspaceDomains: invalid,
     }),
     "outside_workspace",
   );

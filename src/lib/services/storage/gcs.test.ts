@@ -770,7 +770,7 @@ test("a body that stops arriving after the headers fails a buffered read by the 
     credentials,
     fetchImpl,
     requestTimeoutMs: 100,
-  } as Parameters<typeof createGcsClient>[0]);
+  });
   const storage = createGcsStorageService({
     client,
     env: { GCS_BUCKET: BUCKET },

@@ -1,3 +1,7 @@
+import {
+  splitWorkspaceDomains,
+  type WorkspaceDomains,
+} from "../../../auth/sso.ts";
 import { type DbExecutor, getDb, queryOne } from "../../../db/connection.ts";
 import { getEmailDomain } from "../../../signup-policy.ts";
 import type { AddonCaller } from "./verify-request.ts";
@@ -29,11 +33,12 @@ export type AddonUserLookup =
 /** Whether the address belongs to one of the domains (any, when none). */
 export function isEmailInWorkspace(
   email: string,
-  domains: readonly string[],
+  allowed: readonly string[] | WorkspaceDomains,
 ): boolean {
   const domain = getEmailDomain(email);
+  const { domains, noneAllowed } = splitWorkspaceDomains(allowed);
 
-  if (!domain) {
+  if (!domain || noneAllowed) {
     return false;
   }
 
@@ -42,7 +47,7 @@ export function isEmailInWorkspace(
 
 export async function findAddonUser(
   caller: Pick<AddonCaller, "email">,
-  workspaceDomains: readonly string[],
+  workspaceDomains: readonly string[] | WorkspaceDomains,
   database: DbExecutor = getDb(),
 ): Promise<AddonUserLookup> {
   const email = caller.email.trim().toLowerCase();
