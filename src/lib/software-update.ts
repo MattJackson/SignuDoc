@@ -1,20 +1,23 @@
 // Whether a newer SignuDoc has been released, for the SignuDoc section of
 // Settings. The running version is baked in at build time (next.config.ts);
-// the latest one is the newest GitHub Release of the project, read from
-// GitHub's public API without a token. That API allows 60 requests an hour
-// per address, and a Vercel function shares its address with others, so the
-// answer is kept for a while and a failure is reported, never thrown.
+// the latest one is the newest GitHub Release of the repository this install
+// takes its releases from, read from GitHub's public API without a token.
+// That API allows 60 requests an hour per address, and a Vercel function
+// shares its address with others, so the answer is kept for a while and a
+// failure is reported, never thrown.
+//
+// The release source is this fork of SignuDoc, named in package.json
+// ("repository"), unless SIGNUDOC_RELEASES_REPO names another
+// owner/repository. The fork is built on a release of the original project;
+// package.json records which ("upstream"), and Settings shows it.
 
-export const UPSTREAM_OWNER = "NYLLON-SOFTWARE";
-export const UPSTREAM_REPO = "SignuDoc";
-export const UPSTREAM_SLUG = `${UPSTREAM_OWNER}/${UPSTREAM_REPO}`;
-export const UPSTREAM_RELEASES_URL = `https://github.com/${UPSTREAM_SLUG}/releases`;
+/** Where releases come from when nothing says otherwise. */
+export const DEFAULT_RELEASES_REPO = "MattJackson/SignuDoc";
+/** The project this fork is built on. */
+export const DEFAULT_UPSTREAM_REPO = "NYLLON-SOFTWARE/SignuDoc";
 export const UPDATE_WORKFLOW_FILE = "update-signudoc.yml";
 export const UPDATE_WORKFLOW_PATH = `.github/workflows/${UPDATE_WORKFLOW_FILE}`;
-export const UPDATE_DOCS_URL = `https://github.com/${UPSTREAM_SLUG}/blob/main/docs/self-hosting.md#keep-your-install-up-to-date`;
-export const UPDATE_WORKFLOW_SOURCE_URL = `https://raw.githubusercontent.com/${UPSTREAM_SLUG}/main/${UPDATE_WORKFLOW_PATH}`;
 
-const LATEST_RELEASE_API = `https://api.github.com/repos/${UPSTREAM_SLUG}/releases/latest`;
 const SUCCESS_TTL_MS = 30 * 60 * 1000;
 const FAILURE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -35,7 +38,8 @@ export type DeployRepository = {
   /** Adds the update workflow to a copy made before it existed. */
   addWorkflowUrl: string;
   branch: string;
-  isUpstream: boolean;
+  /** The install is deployed from the release source itself. */
+  isReleaseSource: boolean;
   owner: string;
   slug: string;
   url: string;
@@ -56,17 +60,82 @@ export type UpdateCheck =
       ok: false;
     };
 
+export type UpstreamBase = {
+  /** The original project, as owner/repository. */
+  repository: string;
+  url: string;
+  /** The release of it this build is based on, when recorded. */
+  version: string | null;
+};
+
 export type UpdateStatus = {
   check: UpdateCheck | null;
   commit: string | null;
   current: string;
   docsUrl: string;
+  /** The repository releases are taken from, as owner/repository. */
+  releasesRepo: string;
   releasesUrl: string;
   repository: DeployRepository | null;
+  upstream: UpstreamBase;
   workflowSourceUrl: string;
 };
 
 type Env = Record<string, string | undefined>;
+
+const REPO_SLUG = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+
+function readSlug(value: string | undefined): string | null {
+  const trimmed = value
+    ?.trim()
+    .replace(/^https:\/\/github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+
+  return trimmed && REPO_SLUG.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * The owner/repository whose GitHub Releases this install takes:
+ * SIGNUDOC_RELEASES_REPO, else the repository in package.json, else the
+ * default. A value that is not owner/repository is ignored.
+ */
+export function getReleasesRepo(env?: Env): string {
+  const configured = env
+    ? env.SIGNUDOC_RELEASES_REPO
+    : process.env.SIGNUDOC_RELEASES_REPO;
+  // Spelled out in full so the build can put the value in its place.
+  const built = env
+    ? env.NEXT_PUBLIC_SIGNUDOC_REPOSITORY
+    : process.env.NEXT_PUBLIC_SIGNUDOC_REPOSITORY;
+
+  return readSlug(configured) ?? readSlug(built) ?? DEFAULT_RELEASES_REPO;
+}
+
+/** The release of the original project this build is based on. */
+export function getUpstreamBase(env?: Env): UpstreamBase {
+  const repository =
+    readSlug(
+      env
+        ? env.NEXT_PUBLIC_SIGNUDOC_UPSTREAM_REPOSITORY
+        : process.env.NEXT_PUBLIC_SIGNUDOC_UPSTREAM_REPOSITORY,
+    ) ?? DEFAULT_UPSTREAM_REPO;
+  const version = (
+    env
+      ? env.NEXT_PUBLIC_SIGNUDOC_UPSTREAM_VERSION
+      : process.env.NEXT_PUBLIC_SIGNUDOC_UPSTREAM_VERSION
+  )?.trim();
+
+  return {
+    repository,
+    url: `https://github.com/${repository}`,
+    version: version && parseVersion(version) ? version : null,
+  };
+}
+
+export function releasesUrlFor(repo: string): string {
+  return `https://github.com/${repo}/releases`;
+}
 
 /** The version this deployment was built from, from package.json. */
 export function getRunningVersion(env?: Env): string {
@@ -94,6 +163,7 @@ const NAME_PART = /^[A-Za-z0-9_.-]{1,100}$/;
  */
 export function getDeployRepository(
   env: Env = process.env,
+  releasesRepo: string = getReleasesRepo(env),
 ): DeployRepository | null {
   if (env.VERCEL_GIT_PROVIDER !== "github") {
     return null;
@@ -120,8 +190,8 @@ export function getDeployRepository(
     actionsUrl: `${url}/actions/workflows/${UPDATE_WORKFLOW_FILE}`,
     addWorkflowUrl: `${url}/new/${encodeURIComponent(branch)}?filename=${encodeURIComponent(UPDATE_WORKFLOW_PATH)}`,
     branch,
-    isUpstream:
-      `${owner}/${slug}`.toLowerCase() === UPSTREAM_SLUG.toLowerCase(),
+    isReleaseSource:
+      `${owner}/${slug}`.toLowerCase() === releasesRepo.toLowerCase(),
     owner,
     slug,
     url,
@@ -175,7 +245,10 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-export function toReleaseInfo(payload: unknown): ReleaseInfo | null {
+export function toReleaseInfo(
+  payload: unknown,
+  releasesRepo: string = getReleasesRepo(),
+): ReleaseInfo | null {
   if (!payload || typeof payload !== "object") {
     return null;
   }
@@ -190,10 +263,13 @@ export function toReleaseInfo(payload: unknown): ReleaseInfo | null {
 
   const version = parsed.core.join(".") + (parsed.pre ? `-${parsed.pre}` : "");
   const htmlUrl = typeof record.html_url === "string" ? record.html_url : "";
-  // Only ever link to the project's own releases.
-  const url = htmlUrl.startsWith(`https://github.com/${UPSTREAM_SLUG}/`)
+  const releasesUrl = releasesUrlFor(releasesRepo);
+  // Only ever link to the release source's own releases.
+  const url = htmlUrl
+    .toLowerCase()
+    .startsWith(`https://github.com/${releasesRepo.toLowerCase()}/`)
     ? htmlUrl
-    : `${UPSTREAM_RELEASES_URL}/tag/${encodeURIComponent(tag)}`;
+    : `${releasesUrl}/tag/${encodeURIComponent(tag)}`;
   const body = typeof record.body === "string" ? record.body.trim() : "";
   const name =
     typeof record.name === "string" && record.name.trim()
@@ -213,7 +289,7 @@ export function toReleaseInfo(payload: unknown): ReleaseInfo | null {
   };
 }
 
-type CacheEntry = { expiresAt: number; value: UpdateCheck };
+type CacheEntry = { expiresAt: number; repo: string; value: UpdateCheck };
 
 const cacheHolder = globalThis as typeof globalThis & {
   __signudocUpdateCheck?: CacheEntry;
@@ -232,21 +308,29 @@ export async function checkForUpdate({
   current = getRunningVersion(),
   fetchImpl = fetch,
   now = Date.now,
+  releasesRepo = getReleasesRepo(),
 }: {
   current?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  releasesRepo?: string;
 } = {}): Promise<UpdateCheck> {
   const cached = cacheHolder.__signudocUpdateCheck;
 
-  if (cached && cached.expiresAt > now() && cached.value.current === current) {
+  if (
+    cached &&
+    cached.expiresAt > now() &&
+    cached.value.current === current &&
+    cached.repo === releasesRepo
+  ) {
     return cached.value;
   }
 
-  const value = await fetchLatest(current, fetchImpl, now);
+  const value = await fetchLatest(current, releasesRepo, fetchImpl, now);
 
   cacheHolder.__signudocUpdateCheck = {
     expiresAt: now() + (value.ok ? SUCCESS_TTL_MS : FAILURE_TTL_MS),
+    repo: releasesRepo,
     value,
   };
 
@@ -255,6 +339,7 @@ export async function checkForUpdate({
 
 async function fetchLatest(
   current: string,
+  releasesRepo: string,
   fetchImpl: typeof fetch,
   now: () => number,
 ): Promise<UpdateCheck> {
@@ -269,21 +354,24 @@ async function fetchLatest(
   let response: Response;
 
   try {
-    response = await fetchImpl(LATEST_RELEASE_API, {
-      cache: "no-store",
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "SignuDoc-update-check",
-        "x-github-api-version": "2022-11-28",
+    response = await fetchImpl(
+      `https://api.github.com/repos/${releasesRepo}/releases/latest`,
+      {
+        cache: "no-store",
+        headers: {
+          accept: "application/vnd.github+json",
+          "user-agent": "SignuDoc-update-check",
+          "x-github-api-version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    );
   } catch {
     return fail("GitHub could not be reached. Try again in a few minutes.");
   }
 
   if (response.status === 404) {
-    return fail("SignuDoc has no published release yet.");
+    return fail(`${releasesRepo} has no published release yet.`);
   }
 
   if (response.status === 403 || response.status === 429) {
@@ -298,7 +386,10 @@ async function fetchLatest(
     );
   }
 
-  const latest = toReleaseInfo(await response.json().catch(() => null));
+  const latest = toReleaseInfo(
+    await response.json().catch(() => null),
+    releasesRepo,
+  );
 
   if (!latest) {
     return fail("GitHub's answer could not be read. Try again later.");
@@ -317,13 +408,17 @@ export function getUpdateStatus(
   check: UpdateCheck | null,
   env?: Env,
 ): UpdateStatus {
+  const releasesRepo = getReleasesRepo(env);
+
   return {
     check,
     commit: getRunningCommit(env ?? process.env),
     current: getRunningVersion(env),
-    docsUrl: UPDATE_DOCS_URL,
-    releasesUrl: UPSTREAM_RELEASES_URL,
-    repository: getDeployRepository(env ?? process.env),
-    workflowSourceUrl: UPDATE_WORKFLOW_SOURCE_URL,
+    docsUrl: `https://github.com/${releasesRepo}/blob/main/docs/self-hosting.md#keep-your-install-up-to-date`,
+    releasesRepo,
+    releasesUrl: releasesUrlFor(releasesRepo),
+    repository: getDeployRepository(env ?? process.env, releasesRepo),
+    upstream: getUpstreamBase(env),
+    workflowSourceUrl: `https://raw.githubusercontent.com/${releasesRepo}/main/${UPDATE_WORKFLOW_PATH}`,
   };
 }
