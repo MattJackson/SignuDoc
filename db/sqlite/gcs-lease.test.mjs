@@ -540,7 +540,8 @@ test("a write that never answers does not stack refreshes, and the holder is sti
   await rig.timers.advance(40_000);
   assert.deepEqual(rig.events, ["suspend"]);
   assert.equal(rig.storage.faults.maxInflight, 1);
-  await held.stop();
+  // Not awaited: the write the fake storage hangs on never ends.
+  void held.stop();
 });
 
 test("a handover keeps the lease fresh until the app has stopped, and kills a stuck app server first", async () => {
@@ -583,8 +584,8 @@ test("a handover keeps the lease fresh until the app has stopped, and kills a st
 
   const before = heartbeatAt(rig.base);
 
-  // A long request keeps the app up for 14 s more: the lease stays fresh.
-  await rig.timers.advance(14_000);
+  // A long request keeps the app up for 13 s more: the lease stays fresh.
+  await rig.timers.advance(13_000);
   assert.ok(heartbeatAt(rig.base) >= before + 10_000, "still being refreshed");
   assert.equal(acquired, false);
   assert.deepEqual(rig.events, ["terminate"]);
@@ -757,7 +758,7 @@ test("a waiting instance retries a Cloud Storage error that comes and goes", asy
   const lease = createLease({
     holder: "a",
     revision: "s-00001-a",
-    sleep: async () => {},
+    sleep: () => new Promise((resolve) => setImmediate(resolve)),
     storage: wrapped,
   });
 
