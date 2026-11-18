@@ -1,7 +1,16 @@
 "use client";
 
+import { MessagesSquareIcon } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
+import {
+  BrandMark,
+  CopyButton,
+  EnvLockedNotice,
+  Notice as KitNotice,
+  SetupStep,
+  StatusBadge,
+} from "@/components/settings/integration-kit";
 import { SlackMessagePreview } from "@/components/settings/slack-message-preview";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { NotificationEventKind } from "@/lib/notifications/events";
@@ -67,14 +76,7 @@ function Notice({ feedback }: { feedback: Feedback }) {
     return null;
   }
 
-  return (
-    <p
-      className={`notice ${feedback.tone === "success" ? "notice-success" : "notice-danger"}`}
-      role={feedback.tone === "error" ? "alert" : "status"}
-    >
-      {feedback.message}
-    </p>
-  );
+  return <KitNotice tone={feedback.tone}>{feedback.message}</KitNotice>;
 }
 
 function StatusPill({
@@ -97,35 +99,9 @@ function Step({
   title: string;
 }) {
   return (
-    <li className="space-y-3 rounded-2xl bg-(--surface) px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-bold text-(--fg)">{title}</span>
-        {done === null ? null : (
-          <StatusPill tone={done ? "success" : "warning"}>
-            {done ? "Done" : "To do"}
-          </StatusPill>
-        )}
-      </div>
-      <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <button
-      className="btn-quiet"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value).then(() => setCopied(true));
-      }}
-      type="button"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <SetupStep ok={done} title={title}>
+      {children}
+    </SetupStep>
   );
 }
 
@@ -157,32 +133,43 @@ export function NotificationsAdminPanel({
       </div>
 
       <ul className="grid gap-3 sm:grid-cols-2">
-        <li className="space-y-2 rounded-2xl bg-(--surface) px-5 py-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm font-bold text-(--fg)">Slack</span>
-            <StatusPill tone={view.slack.configured ? "success" : "warning"}>
-              {view.slack.configured ? "Connected" : "Not set up"}
-            </StatusPill>
+        <li className="flex items-start gap-4 rounded-2xl bg-(--surface) px-5 py-4">
+          <BrandMark brand="slack" size="sm" />
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                className="text-sm font-bold text-(--fg) hover:underline"
+                href="#slack"
+              >
+                Slack
+              </a>
+              <StatusBadge
+                status={view.slack.configured ? "connected" : "not_set_up"}
+              />
+            </div>
+            <p className="text-sm leading-6 text-(--secondary)">
+              Direct messages to the people involved, and posts in the channels
+              you choose.
+            </p>
           </div>
-          <p className="text-sm leading-6 text-(--secondary)">
-            Direct messages to the people involved, and posts in the channels
-            you choose.
-          </p>
         </li>
         {view.planned.map((channel) => (
           <li
-            className="space-y-2 rounded-2xl bg-(--surface) px-5 py-4"
+            className="flex items-start gap-4 rounded-2xl border border-dashed border-(--border-strong) px-5 py-4"
             key={channel.id}
           >
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-sm font-bold text-(--fg)">
-                {channel.name}
-              </span>
-              <StatusPill tone="neutral">Coming later</StatusPill>
+            <BrandMark icon={MessagesSquareIcon} size="sm" />
+            <div className="min-w-0 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-bold text-(--fg)">
+                  {channel.name}
+                </span>
+                <StatusPill tone="neutral">Coming later</StatusPill>
+              </div>
+              <p className="text-sm leading-6 text-(--secondary)">
+                {channel.description}
+              </p>
             </div>
-            <p className="text-sm leading-6 text-(--secondary)">
-              {channel.description}
-            </p>
           </li>
         ))}
       </ul>
@@ -278,14 +265,16 @@ function SlackSetup({ onView, view }: SectionProps) {
   }
 
   return (
-    <div className="space-y-5 border-t border-(--border) pt-8" id="slack">
+    <div
+      className="scroll-mt-6 space-y-5 border-t border-(--border) pt-8"
+      id="slack"
+    >
       <div className="flex flex-wrap items-center gap-3">
+        <BrandMark brand="slack" size="sm" />
         <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
           Slack
         </h3>
-        <StatusPill tone={slack.configured ? "success" : "warning"}>
-          {slack.configured ? "Connected" : "Not set up"}
-        </StatusPill>
+        <StatusBadge status={slack.configured ? "connected" : "not_set_up"} />
       </div>
 
       <Notice feedback={feedback} />
@@ -312,7 +301,7 @@ function SlackSetup({ onView, view }: SectionProps) {
             <pre className="max-h-72 overflow-auto rounded-xl bg-white p-3 font-mono text-[0.75rem] text-(--fg)">
               {slack.manifest}
             </pre>
-            <CopyButton value={slack.manifest} />
+            <CopyButton label="app manifest" value={slack.manifest} />
           </div>
           <div className="space-y-1">
             <a
@@ -354,10 +343,7 @@ function SlackSetup({ onView, view }: SectionProps) {
             <code>xoxb-</code>).
           </p>
           {locked ? (
-            <p>
-              The token is set by the SLACK_BOT_TOKEN environment variable where
-              this site runs, so it is changed there.
-            </p>
+            <EnvLockedNotice variables={["SLACK_BOT_TOKEN"]} />
           ) : (
             <form className="space-y-4" noValidate onSubmit={saveToken}>
               <div className="max-w-md">
