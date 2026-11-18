@@ -27,6 +27,7 @@ import {
   getBranding,
   getSettings,
   isMissingSchemaError,
+  readStoredSettings,
 } from "../settings.ts";
 import { enforceSessionLimits } from "../session-controls.ts";
 import { clearFailedSignIns } from "../sign-in-security.ts";
@@ -39,22 +40,35 @@ import { escapeHtml } from "../utils/html.ts";
 import { isRunningSetup } from "./setup-context.ts";
 import { signInEvents } from "./sign-in-events.ts";
 import {
+  loadSignInSettings,
+  resolveSignInConfig,
+  type SignInSettings,
+} from "./sign-in-settings.ts";
+import {
+  checkWorkspaceAccount,
+  googleAuthorizationParams,
   mayUsePassword,
-  readPasswordSignInPolicy,
-  readSsoConfig,
+  resolveWorkspaceDomains,
   SSO_PROVIDER_ID,
 } from "./sso.ts";
+import { getIntegrationSettings } from "../integration-settings.ts";
 import { recordSystemAuditEvent } from "../services/system-audit.ts";
 
 type CreateAppAuthOptions = {
   database?: Pool;
   env?: EnvSource;
   includeNextCookies?: boolean;
+  /**
+   * Sign-in settings saved in the app (sign-in-settings.ts). Without them
+   * only the environment's are used.
+   */
+  signIn?: SignInSettings | null;
 };
 
 type AppAuth = ReturnType<typeof createAppAuth>;
 
 let cachedAuth: AppAuth | null = null;
+let cachedAuthFingerprint: string | null = null;
 
 const LOOPBACK_HOST_ALIASES = ["127.0.0.1", "localhost"] as const;
 
@@ -270,6 +284,7 @@ export function createAppAuth({
   database = getDb(),
   env = process.env,
   includeNextCookies = true,
+  signIn = null,
 }: CreateAppAuthOptions = {}) {
   const appEnv = getEnv(env);
   const authEnv = appEnv.auth;
@@ -289,8 +304,11 @@ export function createAppAuth({
 
     return cachedEmailService;
   };
-  const sso = readSsoConfig(env);
-  const passwordPolicy = readPasswordSignInPolicy(env);
+  const {
+    passwordPolicy,
+    sso,
+    workspaceDomains: hintedDomains,
+  } = resolveSignInConfig(signIn, env);
   const plugins = [
     // Single sign-on with the organization's identity provider (sso.ts).
     // Its sign-ins do not ask for this app's second step: the provider's
@@ -300,6 +318,16 @@ export function createAppAuth({
           genericOAuth({
             config: [
               {
+                // Google is asked to offer only the organization's
+                // Workspace accounts. The ID token is checked against the
+                // allowed domains anyway, in validateUserInfo below.
+                ...(sso.google
+                  ? {
+                      authorizationUrlParams: googleAuthorizationParams(
+                        hintedDomains.domains,
+                      ),
+                    }
+                  : {}),
                 clientId: sso.clientId,
                 clientSecret: sso.clientSecret,
                 discoveryUrl: sso.discoveryUrl,
@@ -539,7 +567,32 @@ export function createAppAuth({
       // the account comes to be created, so the check in hooks.before above
       // is not the only thing standing in the way.
       validateUserInfo: async ({ source, user }) => {
-        if (source.action !== "create-user" || isRunningSetup()) {
+        if (isRunningSetup()) {
+          return;
+        }
+
+        // Google sign-in is held to the organization's Workspace every
+        // time, not only when the account is made: someone who has left
+        // for another Workspace, or whose address moved, is turned away.
+        if (
+          sso?.google &&
+          source.method === "oauth" &&
+          source.oauth?.providerId === SSO_PROVIDER_ID
+        ) {
+          const decision = checkWorkspaceAccount(
+            source.oauth.profile,
+            await readWorkspaceDomains(env),
+          );
+
+          if (!decision.allowed) {
+            return {
+              error: decision.code,
+              errorDescription: decision.message,
+            };
+          }
+        }
+
+        if (source.action !== "create-user") {
           return;
         }
 
@@ -559,18 +612,92 @@ export function createAppAuth({
   });
 }
 
+/**
+ * The Workspace domains Google sign-in is held to right now, read fresh:
+ * like the sign-up rule, a change must hold at once.
+ */
+async function readWorkspaceDomains(env: EnvSource): Promise<string[]> {
+  const [stored, settings] = await Promise.all([
+    getIntegrationSettings(env),
+    readStoredSettings(),
+  ]);
+
+  return resolveWorkspaceDomains({
+    env,
+    signupDomains:
+      settings?.signupMode === "domains" ? settings.allowedEmailDomains : [],
+    stored,
+  }).domains;
+}
+
+/**
+ * What the auth server is built from. When an administrator changes how
+ * people sign in, this changes, and the next request builds it again.
+ */
+function fingerprintSignIn(signIn: SignInSettings | null): string {
+  const { passwordPolicy, sso, workspaceDomains } = resolveSignInConfig(signIn);
+
+  return JSON.stringify({ passwordPolicy, sso, workspaceDomains });
+}
+
+/**
+ * The auth server as it was last built. Code that runs on every request
+ * uses getCurrentAuth instead, which notices a change to the sign-in
+ * settings; this one is for places where that does not matter, such as
+ * first-run setup's own sign-up.
+ */
 export function getAuth(): AppAuth {
   if (cachedAuth) {
     return cachedAuth;
   }
 
   cachedAuth = createAppAuth();
+  cachedAuthFingerprint = fingerprintSignIn(null);
+
+  return cachedAuth;
+}
+
+/**
+ * The auth server for the sign-in settings in force now. Better Auth sets
+ * up its sign-in providers once, when it is created, so a change made in
+ * the app (Settings, Google Workspace) is applied by creating it again.
+ * Settings are cached for half a minute, so every instance has the change
+ * within that time, without a restart.
+ */
+export async function getCurrentAuth(): Promise<AppAuth> {
+  let signIn: SignInSettings | null;
+
+  try {
+    signIn = await loadSignInSettings();
+  } catch (error) {
+    // The database could not be asked. Whatever was built last stands.
+    if (cachedAuth) {
+      return cachedAuth;
+    }
+
+    if (!isMissingSchemaError(error)) {
+      console.error("[auth] Could not read the sign-in settings:", error);
+    }
+
+    signIn = null;
+  }
+
+  const fingerprint = fingerprintSignIn(signIn);
+
+  if (cachedAuth && cachedAuthFingerprint === fingerprint) {
+    return cachedAuth;
+  }
+
+  cachedAuth = createAppAuth({ signIn });
+  cachedAuthFingerprint = fingerprint;
 
   return cachedAuth;
 }
 
 export async function getAuthSessionFromHeaders(requestHeaders: Headers) {
-  const session = await getAuth().api.getSession({
+  const session = await (
+    await getCurrentAuth()
+  ).api.getSession({
     headers: requestHeaders,
   });
 

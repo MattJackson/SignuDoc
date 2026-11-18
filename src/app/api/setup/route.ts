@@ -174,10 +174,7 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json(
-      { redirectTo: "/settings#organization" },
-      { status: 201 },
-    );
+    return NextResponse.json({ redirectTo: "/onboarding" }, { status: 201 });
   } catch (error) {
     if (error instanceof SetupError) {
       if (error.statusCode === 403) {

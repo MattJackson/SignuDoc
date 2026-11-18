@@ -1,6 +1,6 @@
 import { LoginShell } from "@/components/auth/login-shell";
 import { redirectIfSignedIn } from "@/lib/auth/server";
-import { readPasswordSignInPolicy, readSsoConfig } from "@/lib/auth/sso";
+import { getSignInConfig } from "@/lib/auth/sign-in-settings";
 
 type LoginPageProps = {
   searchParams?: Promise<{
@@ -19,8 +19,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   }
 
   const error = resolvedSearchParams?.error ?? null;
-  const sso = readSsoConfig();
-  const passwordPolicy = readPasswordSignInPolicy();
+  const { passwordPolicy, sso } = await getSignInConfig();
 
   return (
     <LoginShell
