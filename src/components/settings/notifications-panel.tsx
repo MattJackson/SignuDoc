@@ -11,6 +11,13 @@ import {
   SetupStep,
   StatusBadge,
 } from "@/components/settings/integration-kit";
+import {
+  draftFromRule,
+  EMPTY_RULE,
+  ruleBody,
+  type RuleDraft,
+} from "@/components/settings/notification-rule-draft";
+import { parseDays } from "@/components/settings/notification-thresholds";
 import { SlackMessagePreview } from "@/components/settings/slack-message-preview";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type { NotificationEventKind } from "@/lib/notifications/events";
@@ -539,22 +546,6 @@ function MessagePreviews({ view }: { view: NotificationsAdminView }) {
   );
 }
 
-type RuleDraft = {
-  destination: string;
-  destinationName: string;
-  events: NotificationEventKind[];
-  id: string | null;
-  teamId: string;
-};
-
-const EMPTY_RULE: RuleDraft = {
-  destination: "",
-  destinationName: "",
-  events: ["envelope_completed", "envelope_declined"],
-  id: null,
-  teamId: "",
-};
-
 function RulesSection({ onView, view }: SectionProps) {
   const [draft, setDraft] = useState<RuleDraft | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -607,13 +598,7 @@ function RulesSection({ onView, view }: SectionProps) {
     setPending("save");
     setFeedback(null);
 
-    const body = {
-      channel: "slack",
-      destination: draft.destination,
-      destinationName: draft.destinationName || null,
-      events: draft.events,
-      teamId: draft.teamId || null,
-    };
+    const body = ruleBody(draft);
     const result = draft.id
       ? await send<{ rules: NotificationRule[] }>(
           `/api/admin/notifications/rules/${encodeURIComponent(draft.id)}`,
@@ -780,15 +765,7 @@ function RulesSection({ onView, view }: SectionProps) {
                 <button
                   className="btn-quiet"
                   disabled={pending !== null}
-                  onClick={() =>
-                    setDraft({
-                      destination: rule.destination,
-                      destinationName: rule.destinationName ?? "",
-                      events: rule.events,
-                      id: rule.id,
-                      teamId: rule.teamId ?? "",
-                    })
-                  }
+                  onClick={() => setDraft(draftFromRule(rule))}
                   type="button"
                 >
                   Edit
@@ -1048,15 +1025,15 @@ function ThresholdsSection({ onView, view }: SectionProps) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const expiringDays = Number(values.expiringDays);
-    const stuckDays = Number(values.stuckDays);
+    const expiringDays = parseDays(values.expiringDays);
+    const stuckDays = parseDays(values.stuckDays);
     const fieldErrors: Record<string, string> = {};
 
     for (const [field, value] of [
       ["expiringDays", expiringDays],
       ["stuckDays", stuckDays],
     ] as const) {
-      if (!Number.isInteger(value) || value < 0 || value > 60) {
+      if (value === null) {
         fieldErrors[field] = "Use a whole number of days from 0 to 60.";
       }
     }

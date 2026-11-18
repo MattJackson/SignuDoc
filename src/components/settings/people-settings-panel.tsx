@@ -249,8 +249,9 @@ export function PeopleSettingsForm({ onSaved }: { onSaved?: () => void }) {
           Someone suspended or deleted there can no longer sign in here, and
           their open envelopes and drafts go to their manager, or to an
           administrator. The last administrator and the break-glass addresses
-          are never touched. The job needs RETENTION_JOB_SECRET; see the Google
-          Workspace guide for the schedule.
+          are never touched. The job needs a job secret: CRON_SECRET (on Vercel,
+          whose cron sends it) or RETENTION_JOB_SECRET; see the Google Workspace
+          guide for the schedule.
           {view.directory.enabled
             ? ""
             : " This needs the Workspace directory, which is off."}
