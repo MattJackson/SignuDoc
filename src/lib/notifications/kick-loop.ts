@@ -6,6 +6,8 @@ import type { NotificationJobSummary } from "./job.ts";
 /** How many times a run waits for a delivery that is due soon. */
 const MAX_WAITS = 3;
 const WAIT_MARGIN_MS = 1_000;
+/** The most rounds one kick makes, so a backlog that never fits cannot spin. */
+const MAX_ROUNDS = 10;
 
 export type KickState = {
   again: boolean;
@@ -31,25 +33,31 @@ export async function runUntilCaughtUp(
 
   try {
     let waits = 0;
+    let rounds = 0;
 
     do {
       current.again = false;
+      rounds += 1;
 
       const summary = await run();
+
+      if (current.again || summary.status !== "ran") {
+        continue;
+      }
 
       // A signature waits a minute in case more follow (burst collapse).
       // Wait for it here, a few times at most, rather than leave it to the
       // next scheduled run; whatever is still waiting goes out then.
-      if (
-        !current.again &&
-        summary.status === "ran" &&
-        summary.nextDueAt !== null &&
-        waits < MAX_WAITS
-      ) {
+      if (summary.nextDueAt !== null && waits < MAX_WAITS) {
         waits += 1;
         await wait(
           Math.max(summary.nextDueAt * 1000 - Date.now(), 0) + WAIT_MARGIN_MS,
         );
+        current.again = true;
+      } else if (summary.stoppedEarly && rounds < MAX_ROUNDS) {
+        // Out of time with work left (deliveries put back as due now do not
+        // show up as "due soon"): go round again rather than leave them for
+        // the next scheduled run, which may be a day away.
         current.again = true;
       }
     } while (current.again);
