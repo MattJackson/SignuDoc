@@ -9,21 +9,23 @@ import {
   decryptPrivateKey,
   encryptPrivateKey,
   secretKeyFor,
-} from "./services/seal-identity.ts";
+} from "./services/secret-box.ts";
 import { recordSystemAuditEvent } from "./services/system-audit.ts";
 import { isMissingSchemaError } from "./settings.ts";
 import { resolveDatabaseUrl, type EnvSource } from "./utils/env.ts";
 
 // Settings for the services this install connects to, set by an
 // administrator in the app instead of with environment variables: the
-// Resend API key, single sign-on, the Google Workspace directory, and where
-// first-run onboarding stands. One row each in integration_settings.
+// Resend API key, single sign-on, the Google Workspace directory, the seal
+// certificate and timestamp server (seal-settings.ts), and where first-run
+// onboarding stands. One row each in integration_settings.
 //
 // An environment variable that sets the same thing always wins; the code
 // that uses a setting decides that, and the page shows the setting as fixed.
 //
 // Secret values are encrypted at rest with a key derived from the auth
-// secret, as the seal key is (seal-identity.ts), and never leave the server.
+// secret, as the seal key is (services/secret-box.ts), and never leave the
+// server.
 // If the auth secret changes, a stored secret can no longer be read and
 // counts as not set, so the administrator is asked for it again.
 
@@ -35,6 +37,10 @@ export const INTEGRATION_SETTINGS = {
   "google.workspaceDomains": { secret: false },
   "onboarding.steps": { secret: false },
   "resend.apiKey": { secret: true },
+  "seal.certificate": { secret: false },
+  "seal.p12": { secret: true },
+  "seal.p12Password": { secret: true },
+  "seal.timestampUrl": { secret: false },
   "sso.clientId": { secret: false },
   "sso.clientSecret": { secret: true },
   "sso.issuer": { secret: false },

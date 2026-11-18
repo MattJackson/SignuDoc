@@ -1,5 +1,14 @@
 import { readSsoConfig } from "../auth/sso.ts";
 import {
+  getBackupSetupStatus,
+  type BackupSetupStatus,
+} from "../backup-config.ts";
+import { getDb } from "../db/connection.ts";
+import {
+  resolveSealCertificate,
+  resolveSealTimestamp,
+} from "../seal-settings.ts";
+import {
   getIntegrationSettings,
   saveIntegrationSettings,
   type IntegrationSettings,
@@ -28,6 +37,7 @@ export type OnboardingStepId =
   | "google-sign-in"
   | "google-directory"
   | "storage"
+  | "seal"
   | "backups"
   | "retention";
 
@@ -40,6 +50,11 @@ export type OnboardingCheck = {
 export type OnboardingStepStatus = OnboardingCheck["status"] | "skipped";
 
 export type OnboardingContext = {
+  /**
+   * Whether backups are set up and working. Read from the database when not
+   * given; tests give it.
+   */
+  backupStatus?: () => Promise<BackupSetupStatus>;
   env: EnvSource;
   /** Steps the administrator skipped or confirmed (onboarding.steps). */
   marks: OnboardingMarks;
@@ -210,18 +225,43 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     title: "Storage",
   },
   {
-    check: async ({ marks }) =>
-      marks.backups === "confirmed"
-        ? { detail: "Backups are taken care of.", status: "done" }
-        : {
+    check: async ({ env, marks, stored }) => checkSeal(env, stored, marks),
+    confirmable: true,
+    id: "seal",
+    settingsHref: "/settings#seal",
+    summary:
+      "The trusted time on every seal, and the certificate finished documents are sealed with.",
+    title: "Seal & timestamp",
+  },
+  {
+    check: async ({ backupStatus, env, marks }) => {
+      const status = await (backupStatus
+        ? backupStatus()
+        : getBackupSetupStatus(getDb(), env));
+
+      if (status.state === "done") {
+        return { detail: status.message, status: "done" };
+      }
+
+      if (status.state === "failing") {
+        return { detail: status.message, status: "needs_attention" };
+      }
+
+      // Backed up some other way (the database's own backups and a bucket
+      // the deployment copies): the administrator can say so.
+      return marks.backups === "confirmed"
+        ? {
             detail:
-              "Plan how this site's database and documents are backed up.",
-            status: "not_started",
-          },
+              "Backed up outside this app, as an administrator confirmed.",
+            status: "done",
+          }
+        : { detail: status.message, status: "not_started" };
+    },
     confirmable: true,
     id: "backups",
-    settingsHref: "/settings",
-    summary: "Make sure the database and the documents are backed up.",
+    settingsHref: "/settings#backups",
+    summary:
+      "A daily copy of the database and every document, kept apart from this install.",
     title: "Backups",
   },
   {
@@ -250,6 +290,60 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     title: "Retention",
   },
 ];
+
+/**
+ * The seal step: done once the timestamp server and the certificate have
+ * been chosen (here, in Settings or by the environment), or the
+ * administrator kept what there is. A chosen certificate that cannot be
+ * used needs attention whatever else is true.
+ */
+export function checkSeal(
+  env: EnvSource,
+  stored: IntegrationSettings,
+  marks: OnboardingMarks,
+  now: number = Date.now(),
+): OnboardingCheck {
+  const timestamp = resolveSealTimestamp(env, stored);
+  const certificate = resolveSealCertificate(env, stored, now);
+
+  if (certificate.kind === "install" && certificate.problem) {
+    return { detail: certificate.problem, status: "needs_attention" };
+  }
+
+  const sealedWith =
+    certificate.kind === "install"
+      ? "the install's own certificate"
+      : certificate.kind === "pkcs12"
+        ? `the certificate of ${certificate.summary.subject}`
+        : "the certificate in SEAL_P12_BASE64";
+  const detail = timestamp.url
+    ? `Sealed with ${sealedWith}, timestamped by ${hostOf(timestamp.url)}.`
+    : `Sealed with ${sealedWith}, without a trusted time.`;
+  // A new install has DigiCert's server stored by first-run setup, so it
+  // starts done; an install from before has nothing stored.
+  const chosen =
+    timestamp.source !== "unset" ||
+    certificate.kind !== "install" ||
+    stored["seal.certificate"] !== undefined;
+
+  if (chosen || marks.seal === "confirmed") {
+    return { detail, status: "done" };
+  }
+
+  return {
+    detail:
+      "Seals have no trusted time yet. Turn on a timestamp server, or keep it as it is.",
+    status: "not_started",
+  };
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 function safeEmailDriver(env: EnvSource): string | null {
   try {

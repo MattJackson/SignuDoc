@@ -1,24 +1,17 @@
-import {
-  X509Certificate,
-  createCipheriv,
-  createDecipheriv,
-  generateKeyPairSync,
-  hkdfSync,
-  randomBytes,
-  randomUUID,
-} from "node:crypto";
+import { X509Certificate, generateKeyPairSync, randomUUID } from "node:crypto";
 
 import { PDFDocument } from "pdf-lib";
 
 import { getDb, withTransaction, type DbPool } from "../db/connection.ts";
 import type { Branding } from "../branding.ts";
-import { getBranding } from "../settings.ts";
 import {
-  isProduction,
-  readEnv,
-  resolveAuthSecret,
-  type EnvSource,
-} from "../utils/env.ts";
+  getSealTimestampUrl,
+  readSealSettings,
+  resolveSealCertificate,
+  type ResolvedSealCertificate,
+} from "../seal-settings.ts";
+import { getBranding } from "../settings.ts";
+import { readEnv, type EnvSource } from "../utils/env.ts";
 import {
   addLongTermValidation,
   isSelfSigned,
@@ -33,106 +26,47 @@ import {
   type SealIdentity,
   type SealOptions,
 } from "./pdf-seal.ts";
+import {
+  decryptPrivateKey,
+  encryptPrivateKey,
+  secretKeyFor,
+} from "./secret-box.ts";
 
-// Where the install's seal key comes from:
+// Kept here too, where they started, for the modules that import them.
+export { decryptPrivateKey, encryptPrivateKey, secretKeyFor };
+
+// Where the install's seal key comes from (seal-settings.ts decides):
 //
 // 1. SEAL_P12_BASE64 (+ SEAL_P12_PASSWORD): a certificate the organization
 //    bought from a certificate authority, so readers show its name as
 //    verified. Used as given, never stored.
-// 2. Otherwise a key the install makes for itself the first time it seals a
+// 2. A PKCS#12 file an administrator uploaded in Settings, kept encrypted
+//    with the other integration settings.
+// 3. Otherwise a key the install makes for itself the first time it seals a
 //    document. The private key is kept in the seal_keys table, encrypted with
 //    a key derived from the auth secret. If that secret changes and the old
 //    key can no longer be read, a new one is made; documents sealed before
 //    still verify, because each carries its own certificate.
+//
+// Switching between them leaves the install's own key in seal_keys, so
+// switching back seals with the same certificate as before.
 
 const KEY_CONTEXT = "signudoc/seal-key/v1";
 const SEAL_KEY_LOCK_ID = 746108325;
 
-type CachedIdentity = { identity: SealIdentity; source: string };
+type CachedIdentity = {
+  identity: SealIdentity;
+  /** Which choice it was loaded for; another choice loads again. */
+  key: string;
+  source: string;
+};
 
 declare global {
   var __signudocSealIdentity: CachedIdentity | undefined;
 }
 
-function encryptionKey(env: EnvSource, context: string = KEY_CONTEXT): Buffer {
-  const secret = resolveAuthSecret(env);
-
-  if (!secret) {
-    if (isProduction(env)) {
-      throw new Error(
-        "Sealing documents needs BETTER_AUTH_SECRET, or a database password of at least 12 characters.",
-      );
-    }
-
-    // Local development without a password: nothing worth protecting.
-    return Buffer.from(
-      hkdfSync("sha256", "signudoc-development", "", context, 32),
-    );
-  }
-
-  return Buffer.from(hkdfSync("sha256", secret, "", context, 32));
-}
-
-/**
- * A key for keeping something else secret in the database, derived from the
- * auth secret the same way as the seal key's, for its own purpose.
- */
-export function secretKeyFor(
-  context: string,
-  env: EnvSource = process.env,
-): Buffer {
-  return encryptionKey(env, context);
-}
-
-export function encryptPrivateKey(pem: string, key: Buffer): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const body = Buffer.concat([cipher.update(pem, "utf8"), cipher.final()]);
-
-  return [
-    "v1",
-    iv.toString("base64"),
-    cipher.getAuthTag().toString("base64"),
-    body.toString("base64"),
-  ].join(".");
-}
-
-export function decryptPrivateKey(value: string, key: Buffer): string | null {
-  const [version, iv, tag, body] = value.split(".");
-
-  if (version !== "v1" || !iv || !tag || !body) {
-    return null;
-  }
-
-  try {
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      key,
-      Buffer.from(iv, "base64"),
-    );
-
-    decipher.setAuthTag(Buffer.from(tag, "base64"));
-
-    return Buffer.concat([
-      decipher.update(Buffer.from(body, "base64")),
-      decipher.final(),
-    ]).toString("utf8");
-  } catch {
-    return null;
-  }
-}
-
-function identityFromEnvironment(env: EnvSource): SealIdentity | null {
-  const bundle = readEnv(env, "SEAL_P12_BASE64");
-
-  if (!bundle) {
-    return null;
-  }
-
-  return sealIdentityFromPkcs12(
-    new Uint8Array(Buffer.from(bundle, "base64")),
-    readEnv(env, "SEAL_P12_PASSWORD") ?? "",
-  );
+function encryptionKey(env: EnvSource): Buffer {
+  return secretKeyFor(KEY_CONTEXT, env);
 }
 
 type SealKeyRow = {
@@ -144,7 +78,7 @@ type SealKeyRow = {
 async function identityFromDatabase(
   env: EnvSource,
   database: DbPool,
-): Promise<CachedIdentity> {
+): Promise<{ identity: SealIdentity; source: string }> {
   const key = encryptionKey(env);
   // Read before the transaction: settings come through another connection,
   // which a full pool could not give while this one waits on the lock.
@@ -215,24 +149,84 @@ async function identityFromDatabase(
   }, database);
 }
 
+function cacheKeyFor(choice: ResolvedSealCertificate): string {
+  switch (choice.kind) {
+    case "environment":
+      return "environment";
+    case "pkcs12":
+      return `pkcs12:${choice.summary.fingerprint}`;
+    case "install":
+      return "install";
+  }
+}
+
+async function loadIdentity(
+  choice: ResolvedSealCertificate,
+  env: EnvSource,
+  database: DbPool,
+): Promise<{ identity: SealIdentity; source: string }> {
+  if (choice.kind === "environment") {
+    return {
+      identity: sealIdentityFromPkcs12(
+        new Uint8Array(Buffer.from(choice.bundleBase64, "base64")),
+        choice.password,
+      ),
+      source: "environment",
+    };
+  }
+
+  if (choice.kind === "pkcs12") {
+    try {
+      return {
+        identity: sealIdentityFromPkcs12(
+          new Uint8Array(Buffer.from(choice.bundleBase64, "base64")),
+          choice.password,
+          "The uploaded certificate file",
+        ),
+        source: "settings",
+      };
+    } catch (error) {
+      // It was checked when it was uploaded, so this is unexpected. A
+      // document must still be sealed: the install's own key does it.
+      console.error(
+        "[seal] The uploaded seal certificate could not be read; sealing with the install's own certificate.",
+        error,
+      );
+    }
+  } else if (choice.problem) {
+    console.warn(`[seal] ${choice.problem}`);
+  }
+
+  return identityFromDatabase(env, database);
+}
+
+/**
+ * The key and certificate that seal now. The choice is read from the
+ * settings (cached briefly) each time, so a change made on one instance
+ * reaches the others within the settings cache's time; the key itself is
+ * only loaded again when the choice changed.
+ */
 export async function getSealIdentity({
-  database = getDb(),
+  database,
   env = process.env,
 }: { database?: DbPool; env?: EnvSource } = {}): Promise<SealIdentity> {
+  // With the certificate in the environment, the database is not asked.
+  const stored = readEnv(env, "SEAL_P12_BASE64")
+    ? {}
+    : await readSealSettings(env, database);
+  const choice = resolveSealCertificate(env, stored);
+  const key = cacheKeyFor(choice);
   const cached = globalThis.__signudocSealIdentity;
 
-  if (cached) {
+  if (cached && cached.key === key) {
     return cached.identity;
   }
 
-  const fromEnvironment = identityFromEnvironment(env);
-  const resolved = fromEnvironment
-    ? { identity: fromEnvironment, source: "environment" }
-    : await identityFromDatabase(env, database);
+  const loaded = await loadIdentity(choice, env, database ?? getDb());
 
-  globalThis.__signudocSealIdentity = resolved;
+  globalThis.__signudocSealIdentity = { ...loaded, key };
 
-  return resolved.identity;
+  return loaded.identity;
 }
 
 /** Forgets the loaded key, for tests. */
@@ -254,16 +248,22 @@ export async function saveInstallSealedPdf(
     database,
     env = process.env,
     identity,
+    timestampUrl: givenTimestampUrl,
   }: {
     branding?: Branding;
     database?: DbPool;
     env?: EnvSource;
     identity?: SealIdentity;
+    /** The timestamp server, read already; null for none. */
+    timestampUrl?: string | null;
   } = {},
 ): Promise<Uint8Array> {
   const sealIdentity = identity ?? (await getSealIdentity({ database, env }));
   const branding = givenBranding ?? (await getBranding(env));
-  const timestampUrl = readEnv(env, "SEAL_TIMESTAMP_URL") ?? null;
+  const timestampUrl =
+    givenTimestampUrl !== undefined
+      ? givenTimestampUrl
+      : await getSealTimestampUrl(env, { database });
   const options: SealOptions = {
     contactInfo: branding.supportAddress ?? "",
     name: branding.organizationName ?? branding.productName,
@@ -360,7 +360,7 @@ async function withLongTermValidation(
     if (result.revoked.length > 0) {
       console.error(
         whose === "seal"
-          ? `[seal] A certificate authority says these certificates are revoked: ${result.revoked.join("; ")}. Readers will not accept the seal. Replace SEAL_P12_BASE64.`
+          ? `[seal] A certificate authority says these certificates are revoked: ${result.revoked.join("; ")}. Readers will not accept the seal. Replace the seal certificate (Settings, Seal & timestamp, or SEAL_P12_BASE64).`
           : `[seal] A certificate authority says these signers' certificates are revoked: ${result.revoked.join("; ")}. Readers will not accept those signatures.`,
       );
     }
@@ -384,20 +384,27 @@ async function withLongTermValidation(
 /**
  * The finished PDF of an envelope whose signers signed with certificates in
  * their own names: the last signer's revision, with the validation data of
- * every signature in it (PAdES B-LT), and with SEAL_TIMESTAMP_URL an archive
- * timestamp over all of it (B-LTA). The signers' signatures already protect
- * the document, so the install adds no seal of its own here.
+ * every signature in it (PAdES B-LT), and with a timestamp server (the seal
+ * settings) an archive timestamp over all of it (B-LTA). The signers'
+ * signatures already protect the document, so the install adds no seal of
+ * its own here.
  */
 export async function finishSignerSignedPdf(
   revision: Uint8Array,
   {
     env = process.env,
     fetch,
-  }: { env?: EnvSource; fetch?: ValidationFetch } = {},
+    timestampUrl,
+  }: {
+    env?: EnvSource;
+    fetch?: ValidationFetch;
+    /** The timestamp server, read already; null for none. */
+    timestampUrl?: string | null;
+  } = {},
 ): Promise<Uint8Array> {
   return withLongTermValidation(
     revision,
-    readEnv(env, "SEAL_TIMESTAMP_URL") ?? null,
+    timestampUrl !== undefined ? timestampUrl : await getSealTimestampUrl(env),
     fetch,
     "signers",
   );

@@ -3,15 +3,19 @@
 import { useState, type ComponentType, type FormEvent } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import { BackupSettingsSection } from "@/components/settings/backup-settings-section";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
 import {
   GoogleDirectorySection,
   GoogleSignInSection,
   useGoogleWorkspace,
 } from "@/components/settings/google-workspace-panel";
+import { SealSettingsSection } from "@/components/settings/seal-settings-section";
+import type { BackupSettingsView } from "@/lib/backup-config";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
+import type { SealSettingsView } from "@/lib/seal-setup";
 
 // The form for each onboarding step, by the step's id in
 // lib/onboarding/steps.ts. A step added there gets its form here. Most
@@ -19,8 +23,10 @@ import type { OrganizationSettingsView } from "@/lib/organization-settings";
 // drift apart.
 
 export type OnboardingData = {
+  backups: BackupSettingsView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
+  seal: SealSettingsView;
   storage: { driver: string | null; problem: string | null };
 };
 
@@ -303,20 +309,21 @@ function StorageStep({ data }: StepFormProps) {
   );
 }
 
-function BackupsStep() {
+function SealStep({ data, onChanged }: StepFormProps) {
+  return <SealSettingsSection initialView={data.seal} onChange={onChanged} />;
+}
+
+function BackupsStep({ data, onChanged }: StepFormProps) {
   return (
-    <div className="space-y-3 text-sm leading-6 text-(--secondary)">
-      <p>
-        Signed documents are records your organization may need for years. Back
-        up both the database and the stored documents, and try a restore once.
+    <div className="space-y-4">
+      <p className="text-sm leading-6 text-(--secondary)">
+        Signed documents are records your organization may need for years.
+        Choose where the daily backup goes and run one now. If the database and
+        documents are already backed up another way (see
+        docs/backup-and-restore.md), choose &quot;Mark as done&quot; below
+        instead.
       </p>
-      <p>
-        The backup and restore guide (docs/backup-and-restore.md) explains how.
-        When backups are set up, choose &quot;Mark as done&quot; below.
-      </p>
-      <ShellButton href="/settings" variant="ghost">
-        Open Settings
-      </ShellButton>
+      <BackupSettingsSection initialView={data.backups} onChange={onChanged} />
     </div>
   );
 }
@@ -393,5 +400,6 @@ export const STEP_FORMS: Record<
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
   retention: RetentionStep,
+  seal: SealStep,
   storage: StorageStep,
 };
