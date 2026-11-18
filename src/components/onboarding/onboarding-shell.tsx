@@ -45,6 +45,11 @@ const STATUS_PILLS: Record<OnboardingStepStatus, string> = {
   skipped: "pill-neutral",
 };
 
+const CONFIRM_LABELS: Partial<Record<OnboardingStepId, string>> = {
+  name: "Keep the organization's name",
+  retention: "Keep as it is",
+};
+
 type OnboardingShellProps = {
   current: OnboardingStepId | "done";
   data: OnboardingData;
@@ -343,9 +348,7 @@ export function OnboardingShell({
                       onClick={() => void mark("confirmed", true)}
                       variant="secondary"
                     >
-                      {step.id === "retention"
-                        ? "Keep as it is"
-                        : "Mark as done"}
+                      {CONFIRM_LABELS[step.id] ?? "Mark as done"}
                     </ShellButton>
                   ) : null}
                   <ShellButton href={nextHref}>

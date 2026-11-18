@@ -17,6 +17,7 @@ const stored: AppSettings = {
   organizationName: "Example Inc",
   part11Mode: false,
   privacyUrl: null,
+  productName: null,
   requireTwoFactor: false,
   retentionDays: null,
   senderAddress: "sign@example.com",
@@ -58,6 +59,7 @@ test("the steps come in the order onboarding walks them", () => {
   assert.deepEqual(
     ONBOARDING_STEPS.map((step) => step.id),
     [
+      "name",
       "organization",
       "email",
       "google-sign-in",
@@ -478,5 +480,25 @@ test("storage is not done while the driver cannot be used", async () => {
   assert.equal(
     await check("storage", context({ env: { STORAGE_DRIVER: "gcs" } })),
     "needs_attention",
+  );
+});
+
+test("the name step is done once the app has a name, or the organization's is kept", async () => {
+  assert.equal(await check("name", context()), "not_started");
+  assert.equal(
+    await check(
+      "name",
+      context({
+        settings: resolveSettings(
+          { ...stored, productName: "BusbarSigner" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("name", context({ marks: { name: "confirmed" } })),
+    "done",
   );
 });

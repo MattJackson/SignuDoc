@@ -109,6 +109,82 @@ function Notice({ feedback }: { feedback: Feedback }) {
   );
 }
 
+const NAME_EXAMPLES = ["SignuDoc", "BusbarSigner", "Acme Sign"];
+
+function NameStep({ data, onChanged }: StepFormProps) {
+  const [name, setName] = useState(data.organization.productName);
+  const [error, setError] = useState<string | undefined>();
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setFeedback(null);
+
+    try {
+      const response = await fetch("/api/admin/settings", {
+        body: JSON.stringify({ productName: name }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        fieldErrors?: Record<string, string>;
+      } | null;
+
+      if (!response.ok) {
+        setError(payload?.fieldErrors?.productName);
+        setFeedback({
+          message: payload?.error ?? GENERIC_ERROR_MESSAGE,
+          tone: "error",
+        });
+        return;
+      }
+
+      setError(undefined);
+      setFeedback({ message: "Saved.", tone: "success" });
+      onChanged();
+    } catch {
+      setFeedback({ message: GENERIC_ERROR_MESSAGE, tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="space-y-5" noValidate onSubmit={submit}>
+      <p className="text-sm leading-6 text-(--secondary)">
+        Pick the name people will know this site by, such as{" "}
+        {NAME_EXAMPLES.join(", ")}. The next steps suggest it for the Google
+        consent screen, the OAuth client, the Picker key, the directory role,
+        the Drive app and the Slack app, so you only type it once.
+      </p>
+      <Notice feedback={feedback} />
+      <div className="max-w-md">
+        <FieldShell
+          disabled={saving}
+          error={error}
+          helper={`Up to 60 characters. Leave it empty to go by ${data.organization.organizationName || "the organization's name"}.`}
+          label="What do you want to call this app?"
+          name="product-name"
+          onChange={(event) => {
+            setName(event.target.value);
+            setError(undefined);
+            setFeedback(null);
+          }}
+          placeholder={data.organization.organizationName || "SignuDoc"}
+          readOnly={false}
+          value={name}
+        />
+      </div>
+      <ShellButton className="w-fit" loading={saving} type="submit">
+        {saving ? "Saving..." : "Save"}
+      </ShellButton>
+    </form>
+  );
+}
+
 function OrganizationStep({ data, onChanged }: StepFormProps) {
   const [view, setView] = useState(data.organization);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -395,6 +471,7 @@ export const STEP_FORMS: Record<
   "google-directory": GoogleDirectoryStep,
   "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
+  name: NameStep,
   notifications: NotificationsStep,
   organization: OrganizationStep,
   people: PeopleStep,

@@ -42,6 +42,7 @@ import { type EnvSource } from "../utils/env.ts";
 // ("google-addon") ends the Google steps.
 
 export type OnboardingStepId =
+  | "name"
   | "organization"
   | "email"
   | "google-sign-in"
@@ -92,6 +93,28 @@ export type OnboardingMark = "confirmed" | "skipped";
 export type OnboardingMarks = Partial<Record<OnboardingStepId, OnboardingMark>>;
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
+  {
+    check: async ({ marks, settings }) => {
+      if (settings.productName) {
+        return { detail: `Called ${settings.productName}.`, status: "done" };
+      }
+
+      const fallback = settings.organizationName ?? "SignuDoc";
+
+      return marks.name === "confirmed"
+        ? { detail: `Goes by ${fallback}.`, status: "done" }
+        : {
+            detail: `Goes by ${fallback} until it has a name of its own.`,
+            status: "not_started",
+          };
+    },
+    confirmable: true,
+    id: "name",
+    settingsHref: "/settings/organization",
+    summary:
+      "What do you want to call this app? The name is used in the header, in emails, and for everything set up in Google and Slack.",
+    title: "App name",
+  },
   {
     check: async ({ settings }) => {
       if (!settings.organizationName || !settings.supportAddress) {

@@ -19,6 +19,7 @@ const stored: AppSettings = {
   sessionIdleMinutes: null,
   sessionMaxHours: null,
   privacyUrl: null,
+  productName: null,
   retentionDays: null,
   senderAddress: "sign@acme.com",
   setupCompletedAt: 1_800_000_000,
