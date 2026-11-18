@@ -3,6 +3,7 @@
 Everything about running your own SignuDoc: deploying it, setting it up, what it costs, keeping it up to date, and the settings you can change. For working on the code, see [Development](development.md).
 
 - [Deploy to Vercel](#deploy-to-vercel)
+- [Deploy on Google Cloud Run](google-cloud-run.md)
 - [Set the site up](#set-the-site-up)
 - [Your responsibilities](#your-responsibilities)
 - [Signed PDFs and the seal](#signed-pdfs-and-the-seal)
@@ -76,7 +77,7 @@ After this, preview deployments have no database and open on the page that asks 
 
 ### Keep your install up to date
 
-The Deploy button makes a copy of this repository in your GitHub account, and Vercel deploys every push to it. A copy does not receive new versions by itself: an update means bringing a new [release](https://github.com/NYLLON-SOFTWARE/SignuDoc/releases) into your copy. Vercel then builds it, and the production build applies any new database migrations.
+The Deploy button makes a copy of this repository in your GitHub account, and Vercel deploys every push to it. A copy does not receive new versions by itself: an update means bringing a new [release](https://github.com/MattJackson/SignuDoc/releases) into your copy. Vercel then builds it, and the production build applies any new database migrations.
 
 **See whether there is one.** Sign in as the administrator and open Settings. The SignuDoc section shows the version the site runs; **Check for updates** asks GitHub for the latest release and shows what is new in it.
 
@@ -105,14 +106,16 @@ To skip the pull request, run the workflow with **Merge straight into the produc
 
 If Vercel deploys your site from a branch other than the repository's default branch, set the repository variable `SIGNUDOC_PRODUCTION_BRANCH` to that branch, so the workflow updates and opens pull requests against it.
 
-**A copy made before version 0.2.0** does not have the workflow yet. Add it once: in your repository on GitHub choose **Add file**, **Create new file**, name it `.github/workflows/update-signudoc.yml`, paste in [the workflow](https://raw.githubusercontent.com/NYLLON-SOFTWARE/SignuDoc/main/.github/workflows/update-signudoc.yml), and commit it to your production branch. Settings in SignuDoc links to the right page. Then run it as above.
+**Where releases come from.** This is a fork of [SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc) for Google Workspace and Google Cloud, and both Settings and the workflow take releases from the fork, [MattJackson/SignuDoc](https://github.com/MattJackson/SignuDoc/releases). Settings also names the version of the original project the install is built on. To take releases from another repository, set `SIGNUDOC_RELEASES_REPO` to its owner/repository: as an environment variable for Settings, and as a repository variable (Settings, Secrets and variables, Actions, Variables) for the workflow. A copy made from the original project moves to the fork by replacing its `.github/workflows/update-signudoc.yml` with the fork's; the fork carries the original's history, so the merge still finds the version the copy started from.
+
+**A copy made before version 0.2.0** does not have the workflow yet. Add it once: in your repository on GitHub choose **Add file**, **Create new file**, name it `.github/workflows/update-signudoc.yml`, paste in [the workflow](https://raw.githubusercontent.com/MattJackson/SignuDoc/main/.github/workflows/update-signudoc.yml), and commit it to your production branch. Settings in SignuDoc links to the right page. Then run it as above.
 
 **Updating by hand.** A copy made by the Deploy button has none of this project's history, so a plain `git merge` refuses to merge "unrelated histories". Tell git which SignuDoc commit your copy started from, then merge as usual:
 
 ```bash
 git clone https://github.com/<your-account>/signudoc.git
 cd signudoc
-git fetch https://github.com/NYLLON-SOFTWARE/SignuDoc.git main --tags
+git fetch https://github.com/MattJackson/SignuDoc.git main --tags
 # The SignuDoc commit your copy started from. The workflow's summary
 # names it when it stops, or use the release tag you deployed, e.g. v0.1.0.
 git replace --graft "$(git rev-list --max-parents=0 HEAD)" v0.1.0
@@ -127,35 +130,61 @@ The graft only lives in your local clone. The merge itself is a normal commit th
 
 A deployment made with the button needs no environment variables. These are there if you want them, under Settings, Environment Variables in the Vercel project. Deploy again after changing one.
 
-| Variable                                            | What it does                                                                                                                                                                                           |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SETUP_TOKEN`                                       | A secret the setup page asks for. See [Lock down a new install](#lock-down-a-new-install).                                                                                                             |
-| `CRON_SECRET`                                       | Closes the daily cleanup route to everyone but Vercel's own cron call. See [Daily cleanup](#daily-cleanup).                                                                                            |
-| `BOTID`                                             | `1` turns on Vercel BotID for sign-in, sign-up and setup. See [Bot protection](#bot-protection).                                                                                                       |
-| `RESEND_FROM_EMAIL`, `SUPPORT_EMAIL`                | Fix the sender and support addresses from the environment instead of in Settings.                                                                                                                      |
-| `BETTER_AUTH_SECRET`                                | Your own secret for signing sessions. Without it one is derived from the database password, so changing that password signs everyone out.                                                              |
-| `APP_URL`                                           | The site's public address, if it should not be the project's production domain.                                                                                                                        |
-| `HOSTED_MODE`                                       | `1` runs SignuDoc as a public service under its own name. See [Hosted mode](#hosted-mode).                                                                                                             |
-| `RESEND_REGION`                                     | Where Resend sends from when the app adds your domain, for example `eu-west-1`. See [Running in the EU](#running-in-the-eu).                                                                           |
-| `SEAL_P12_BASE64`, `SEAL_P12_PASSWORD`              | Seal finished PDFs with a certificate from a certificate authority instead of the install's own. See [Signed PDFs and the seal](#signed-pdfs-and-the-seal).                                            |
-| `SEAL_TIMESTAMP_URL`                                | An RFC 3161 timestamp server that adds a trusted time to each seal, and long-term validation. See [Long-term validation](#long-term-validation).                                                       |
-| `EIDEASY_CLIENT_ID`, `EIDEASY_SECRET`               | Let senders ask for advanced or qualified signatures in the signers' own names, through eID Easy. See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes). |
-| `CSC_API_URL`, `CSC_CLIENT_ID`, `CSC_CLIENT_SECRET` | The same through a trust service provider's remote signing service (CSC API v2). See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).                  |
-| `BACKUP_BLOB_READ_WRITE_TOKEN`, `BACKUP_KEEP_DAYS`  | A daily backup of the database and files to a second Blob store. See [Backup and restore](backup-and-restore.md).                                                                                      |
-| `AUDIT_LOG`                                         | `off` keeps audit rows out of the function logs. See [Send the audit trail to your SIEM](#send-the-audit-trail-to-your-siem).                                                                          |
-| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`  | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. See [Single sign-on](#single-sign-on).                      |
+| Variable                                                                                                                                         | What it does                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SETUP_TOKEN`                                                                                                                                    | A secret the setup page asks for. See [Lock down a new install](#lock-down-a-new-install).                                                                                                                      |
+| `CRON_SECRET`                                                                                                                                    | Closes the daily cleanup route to everyone but Vercel's own cron call. See [Daily cleanup](#daily-cleanup).                                                                                                     |
+| `BOTID`                                                                                                                                          | `1` turns on Vercel BotID for sign-in, sign-up and setup. See [Bot protection](#bot-protection).                                                                                                                |
+| `RESEND_FROM_EMAIL`, `SUPPORT_EMAIL`                                                                                                             | Fix the sender and support addresses from the environment instead of in Settings.                                                                                                                               |
+| `BETTER_AUTH_SECRET`                                                                                                                             | Your own secret for signing sessions. Without it one is derived from the database password, so changing that password signs everyone out.                                                                       |
+| `APP_URL`                                                                                                                                        | The site's public address, if it should not be the project's production domain.                                                                                                                                 |
+| `HOSTED_MODE`                                                                                                                                    | `1` runs SignuDoc as a public service under its own name. See [Hosted mode](#hosted-mode).                                                                                                                      |
+| `RESEND_REGION`                                                                                                                                  | Where Resend sends from when the app adds your domain, for example `eu-west-1`. See [Running in the EU](#running-in-the-eu).                                                                                    |
+| `SEAL_P12_BASE64`, `SEAL_P12_PASSWORD`                                                                                                           | Seal finished PDFs with a certificate from a certificate authority instead of the install's own. Wins over a certificate uploaded in Settings. See [Signed PDFs and the seal](#signed-pdfs-and-the-seal).       |
+| `SEAL_TIMESTAMP_URL`                                                                                                                             | An RFC 3161 timestamp server that adds a trusted time to each seal, and long-term validation, or `off`. Wins over Settings. See [Long-term validation](#long-term-validation).                                  |
+| `EIDEASY_CLIENT_ID`, `EIDEASY_SECRET`                                                                                                            | Let senders ask for advanced or qualified signatures in the signers' own names, through eID Easy. See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).          |
+| `CSC_API_URL`, `CSC_CLIENT_ID`, `CSC_CLIENT_SECRET`                                                                                              | The same through a trust service provider's remote signing service (CSC API v2). See [Signatures in the signers' own names](#signatures-in-the-signers-own-names-eidas-ades-and-qes).                           |
+| `BACKUP_BLOB_READ_WRITE_TOKEN`, `BACKUP_KEEP_DAYS`                                                                                               | A daily backup of the database and files to a second Blob store. See [Backup and restore](backup-and-restore.md).                                                                                               |
+| `BACKUP_GCS_BUCKET`, `BACKUP_GCS_PREFIX`                                                                                                         | The same backup to a Google Cloud Storage bucket. See [Backup and restore](backup-and-restore.md#back-up-to-google-cloud-storage).                                                                              |
+| `AUDIT_LOG`                                                                                                                                      | `off` keeps audit rows out of the function logs. See [Send the audit trail to your SIEM](#send-the-audit-trail-to-your-siem).                                                                                   |
+| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`                                                                                               | Sign in through your organization's identity provider (Okta, Entra ID, Google Workspace). `PASSWORD_SIGN_IN=off` then turns passwords off. Can also be set in the app. See [Single sign-on](#single-sign-on).   |
+| `RESEND_API_KEY`                                                                                                                                 | The Resend key email is sent with. The Resend integration on Vercel sets it; elsewhere it can be pasted into the app instead. See [Email](#email).                                                              |
+| `GOOGLE_WORKSPACE_DOMAINS`, `GOOGLE_ADMIN_GROUP`, `GOOGLE_WORKSPACE_DIRECTORY`, `GOOGLE_WORKSPACE_ADMIN_SUBJECT`, `GOOGLE_WORKSPACE_CUSTOMER_ID` | Google Workspace sign-in, directory suggestions and the administrator group, fixed from the environment instead of in Settings. See [Google Workspace](google-workspace.md).                                    |
+| `GOOGLE_PICKER_API_KEY`, `GOOGLE_DRIVE_APP_ID`                                                                                                   | Start envelopes from Google Drive with the Picker. See [Google Drive](google-workspace.md#7-google-drive).                                                                                                      |
+| `GOOGLE_DRIVE_EXPORT_DRIVE_ID`, `GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`                                                                             | Keep a copy of every executed envelope in a Shared Drive; call `/api/internal/drive-export` every 15 minutes to retry. See [Google Drive](google-workspace.md#executed-copies-in-a-shared-drive).               |
+| `GOOGLE_DRIVE_LABEL_ID`, `GOOGLE_DRIVE_LABEL_FIELDS`, `GOOGLE_DRIVE_LABELS_SUBJECT`                                                              | A Drive label on executed copies, and what fills its fields. See [Google Drive](google-workspace.md#labels-on-executed-copies).                                                                                 |
+| `GOOGLE_ADDON_SERVICE_ACCOUNT`, `GOOGLE_ADDON_CLIENT_ID`, `GOOGLE_ADDON_AUDIENCE`                                                                | The Gmail and Drive add-on, from `gcloud workspace-add-ons get-authorization`. Can also be set in the app. See [the add-on](google-workspace.md#8-the-gmail-and-drive-add-on).                                  |
+| `DIRECTORY_SYNC`, `DIRECTORY_SYNC_MAX_PER_RUN`                                                                                                   | `on` blocks sign-in for people your Google Workspace directory says have left, and hands their open envelopes on. Needs a job secret and a scheduler. See [Offboarding](google-workspace.md#4-offboarding).     |
+| `MANAGER_APPROVAL`                                                                                                                               | `off`, `suggest` or `require`: the sender's manager, from the Workspace directory, approves first. Can also be set in the app. See [The sender's manager](google-workspace.md#5-the-senders-manager).           |
+| `GOOGLE_SIGNING`                                                                                                                                 | `off`, `offer` or `require`: employees confirm who they are with Google sign-in when they sign. Can also be set in the app. See [Employees sign with Google](google-workspace.md#6-employees-sign-with-google). |
+| `SLACK_BOT_TOKEN`, `NOTIFICATION_EXPIRING_DAYS`, `NOTIFICATION_STUCK_DAYS`                                                                       | Notifications in Slack, and when the job warns about a deadline or an idle envelope, fixed from the environment instead of in Settings. See [Notifications](notifications.md).                                  |
+| `MAX_SIGNERS_PER_ENVELOPE`                                                                                                                       | The most signers one envelope can have, from 1 to 100. 25 when not set. See [Teams and signing order](teams-and-signing-order.md).                                                                              |
 
 ## Set the site up
 
 The first time you open a new install it takes you to `/setup`. There you name your organization, give its support address, and create the first account, which becomes the administrator. After that the setup page is gone for good.
 
+Setup then continues in the app, at `/onboarding`: one step at a time through the organization, [email](#email), Google sign-in, the Workspace directory and administrator group, managers, employees and leavers, Google Drive and the Gmail and Drive add-on ([Google Workspace](google-workspace.md)), storage (shown, with a read and write test), [seal and timestamp](#signed-pdfs-and-the-seal), [backups](backup-and-restore.md), retention and [notifications](#notifications). Each step can be skipped and opened again; Settings has a setup checklist with every step's status. Everything there is also an environment variable for those who prefer one, and a variable that is set wins and shows as fixed in the app.
+
 - **Support address.** Setup does not finish without one. It is the address signers and people with an account are told to write to, and where replies to the site's emails go. It is saved in your install's own settings and nowhere else; there is no SignuDoc address that it falls back to. The administrator can change it under Settings, Organization, but not remove it.
 
 - **Who can sign up.** The install starts by letting people with an email address at the administrator's own domain create accounts (or nobody else, if the administrator used a public mailbox such as Gmail). The administrator can change this under Settings, Organization: people at listed domains, nobody, or anyone. People who are only sent a document to sign never need an account.
 - **More administrators.** Settings, Organization lists everyone with an account under People, where an administrator can make someone else an administrator or take that away. There is always at least one. When an account is closed, its finished documents and their audit trails move to the longest-standing administrator, because they are the organization's records. If that person later stops being an administrator, those documents move on to one who stays, and the documents they sent themselves stay with them.
-- **Email.** Settings, Organization also shows whether email is working. While no sender address is set, mail goes out from Resend's test address, which only reaches the owner of the Resend account. Enter a sender address at your domain and the page shows the DNS records to add and checks them for you. Mail from that address is not delivered until its domain is verified.
+- **Teams.** An administrator can put people on teams under Settings, Teams. People on a team see the envelopes their teammates send, read-only, and administrators see every sent envelope. See [Teams and signing order](teams-and-signing-order.md).
+- **Email.** Settings, Organization also shows whether email is working. See [Email](#email).
 - **`SETUP_TOKEN`.** A new install can be claimed by whoever opens it first. If its URL will be public before you get to it, set `SETUP_TOKEN` to a secret of your own and the setup page will ask for it.
 - **An install from before this page existed** has accounts but no administrator. Set `SETUP_TOKEN`, sign in with the account that should be in charge, and open `/setup`. It asks for a support address if the install has none. Sign-up stays open, as it was, until that administrator changes it.
+
+## Email
+
+The site sends its email (sign-up confirmations, signing invitations, copies of finished documents) through [Resend](https://resend.com). Email setup is in Settings, Organization, and is the second step of onboarding. It shows where things stand: **Not configured**, **Key OK**, **Domain pending** or **Verified**.
+
+1. **The Resend API key.** On Vercel, the Resend integration from the Vercel Marketplace sets `RESEND_API_KEY` for you (redeploy after connecting it). Anywhere else, or if you would rather not use the integration, create a key at [resend.com/api-keys](https://resend.com/api-keys) and paste it into the page. Give it Full access, so the page can add your domain and show its DNS records; a sending-only key works too, but then the domain is set up in Resend itself. A pasted key is checked with Resend before it is kept, stored encrypted with a key derived from `BETTER_AUTH_SECRET` (like the seal key), never shown again, and can be replaced or removed. `RESEND_API_KEY`, when it is set, always wins, and the page says so. If `BETTER_AUTH_SECRET` changes, a pasted key can no longer be read; paste it again.
+2. **The sender address.** While none is set, mail goes out from Resend's test address, which only reaches the owner of the Resend account. Enter a sender address at your domain ("Send email from"), ideally on a subdomain such as `sign@notify.yourcompany.com`.
+3. **The domain.** Choose "Set up" and the page adds the domain to Resend and lists the DNS records to add where your domain's DNS is managed. "Check DNS records" asks Resend to look again. Mail from that address is not delivered until its domain is verified.
+4. **A test email.** "Send me a test email" sends one to you through the real setup. When it arrives, email is working.
+
+Changes to the key and to the domain are recorded in the site audit trail (the key's value never is).
 
 ## Sign-in security
 
@@ -189,7 +218,11 @@ Each line has `"source": "signudoc"` and a `type`:
 
 ### Single sign-on
 
-People can sign in through your organization's identity provider instead of with a password, over OpenID Connect. That puts your provider's own rules in charge: its MFA, its conditional access, and removing someone there removes them here at their next sign-in. It works with any provider that publishes `/.well-known/openid-configuration`, which includes Okta, Microsoft Entra ID, Google Workspace, OneLogin, JumpCloud, Keycloak and Auth0. It is optional and set up by hand, because the provider is outside Vercel.
+People can sign in through your organization's identity provider instead of with a password, over OpenID Connect. That puts your provider's own rules in charge: its MFA, its conditional access, and removing someone there removes them here at their next sign-in. It works with any provider that publishes `/.well-known/openid-configuration`, which includes Okta, Microsoft Entra ID, Google Workspace, OneLogin, JumpCloud, Keycloak and Auth0. It is optional.
+
+For Google Workspace, follow [Google Workspace](google-workspace.md): it covers the OAuth client, holding sign-in to your Workspace, directory suggestions and an administrator group.
+
+It can be set in the app (Settings, Google Workspace, Google sign-in: the issuer, client ID and client secret, and the password policy), with no environment variables and no redeploy: a change applies within about a minute on every instance, because the auth server is rebuilt when its sign-in settings change. The client secret is stored encrypted with a key derived from `BETTER_AUTH_SECRET`. Or with environment variables, which win when any of the three is set:
 
 1. In your provider, make a web application (OIDC, authorization code flow). Give it the redirect URI `https://<your site>/api/auth/callback/sso` and the scopes `openid email profile`.
 2. In the Vercel project, under Settings, Environment Variables, set:
@@ -200,10 +233,11 @@ People can sign in through your organization's identity provider instead of with
 
 How it behaves:
 
-- **New people** get an account the first time they sign in, under the same sign-up rule as a password sign-up (Settings, Organization, Who can sign up). So the email domain limit holds for single sign-on too. With Google this matters: any Google account can use the button, and the rule decides who gets an account. To let only your directory in, set the rule to your domains, or to nobody and add people some other way first.
+- **New people** get an account the first time they sign in, under the same sign-up rule as a password sign-up (Settings, Organization, Who can sign up). So the email domain limit holds for single sign-on too.
+- **With Google as the issuer** (`https://accounts.google.com`), sign-in is also held to your Workspace: Google is asked to offer only your Workspace's accounts (the `hd` hint), and the `hd` claim in Google's ID token must be one of your Workspace domains at every sign-in, so a personal Google account or one from another organization is turned away even if the OAuth client were set to External. The domains are `GOOGLE_WORKSPACE_DOMAINS`, or the ones in Settings, or else the sign-up rule's domains.
 - **People who already have an account** with the same email address are signed in to it, if their address here is confirmed and the provider does not say theirs is unverified. Microsoft Entra ID does not say either way, and its addresses are trusted.
 - **Two-step sign-in** is not asked for after single sign-on: the provider's sign-in, with its own MFA, is the check. When an administrator requires two-step sign-in, it applies to people who have a password; someone who only uses single sign-on is not held up.
-- **Turning passwords off.** With single sign-on set up, `PASSWORD_SIGN_IN=off` stops password sign-in, password sign-up and password reset links. Put one or two administrator addresses in `PASSWORD_SIGN_IN_ALLOWED_EMAILS` (comma-separated) so there is a way in if the provider is down; their sign-in page shows "Sign in with a password instead". Without single sign-on set up, `PASSWORD_SIGN_IN=off` does nothing, so nobody is locked out by a half-finished setup.
+- **Turning passwords off.** With single sign-on set up, `PASSWORD_SIGN_IN=off` (or the same choice in Settings, Google Workspace) stops password sign-in, password sign-up and password reset links. Put one or two administrator addresses in `PASSWORD_SIGN_IN_ALLOWED_EMAILS` (comma-separated; in the app, "Break-glass addresses", which it requires) so there is a way in if the provider is down; their sign-in page shows "Sign in with a password instead". Without single sign-on set up, `PASSWORD_SIGN_IN=off` does nothing, so nobody is locked out by a half-finished setup.
 - **The site audit trail** records single sign-on sign-ins, and refused ones with the reason (for example, an address the sign-up rule turned away).
 - A missing or broken setting (one of the three left out, an issuer that is not `https://`) turns single sign-on off and leaves a warning in the function logs, so password sign-in keeps working.
 
@@ -227,11 +261,26 @@ Validating the install is up to your organization. The [Part 11 validation pack]
 
 Every finished PDF and audit certificate is sealed with a PAdES signature, so any change after signing shows in Adobe Acrobat and other PDF readers, and its SHA-256 is recorded. Anyone can check a copy at `/verify`. The audit trail in the database is a hash chain, so an edited or deleted row shows too.
 
-By default each install makes its own seal key and self-signed certificate the first time it seals, and keeps the key encrypted in the database with a key derived from `BETTER_AUTH_SECRET` (or the database password, when that is unset). Keep that secret stable: a new one makes a new seal key, and old PDFs still verify but under the old certificate. Readers show a self-signed seal as "validity unknown" until the certificate is trusted. For a seal readers trust on sight, buy a document-signing certificate and set `SEAL_P12_BASE64` and `SEAL_P12_PASSWORD`. `SEAL_TIMESTAMP_URL` adds a trusted time from a timestamp server.
+By default each install makes its own seal key and self-signed certificate the first time it seals, and keeps the key encrypted in the database with a key derived from `BETTER_AUTH_SECRET` (or the database password, when that is unset). Keep that secret stable: a new one makes a new seal key, and old PDFs still verify but under the old certificate. Readers show a self-signed seal as "validity unknown" until the certificate is trusted. For a seal readers trust on sight, use a document-signing certificate from a certificate authority.
+
+The administrator chooses both in Settings, **Seal & timestamp**, which is also a step of onboarding:
+
+- **Timestamp server.** A new install starts with DigiCert's free RFC 3161 server, `http://timestamp.digicert.com`, chosen at first-run setup. It can be changed to another server or turned off, and **Test timestamp server** asks the server for a real timestamp over a throwaway hash and shows the time and who signed it. An install set up before this setting existed keeps sealing without a timestamp, as it did; the onboarding step offers to turn it on. `SEAL_TIMESTAMP_URL` wins over Settings (`SEAL_TIMESTAMP_URL=off` turns timestamps off), and Settings then shows it as fixed.
+- **Seal certificate.** The install's own certificate (the default), or a `.p12` or `.pfx` file uploaded with its password. The file is checked before it is kept: it must open with the password, hold an RSA private key and the certificate for it, and the certificate must be valid now; Settings then shows who it is issued to, by whom, and until when. The file and its password are kept encrypted in the database like the install's own key, and never sent back to the browser. Going back to the install's own certificate deletes the uploaded file. `SEAL_P12_BASE64` and `SEAL_P12_PASSWORD` win over Settings. If an uploaded certificate expires, or can no longer be read because the auth secret changed, documents are sealed with the install's own certificate until a new file is uploaded, and the onboarding checklist shows the step as needing attention.
+- **Cloud KMS key**, for certificates on Adobe's Approved Trust List (AATL), whose keys must stay in a hardware module, is shown but not available yet. The stored setting already has room for it.
+
+Changing either never affects documents already sealed: each PDF carries the certificate it was sealed with and its own timestamp, so old documents still verify in PDF readers and at `/verify`, and the install's own key is kept for when you switch back. Every change is recorded in the install's audit trail (Settings, Security) with what changed, never a password or key.
+
+**Making company computers trust the seal.** The same section has **Download certificate** as `.cer` (DER) and `.pem`. It is only the certificate, with nothing secret in it. To have Adobe Acrobat on your organization's computers show the install's own seal as trusted:
+
+- Push the `.cer` file to the computers' trusted root certificates with your device management (Microsoft Intune, Jamf, Google endpoint management, or a group policy), and in Acrobat turn on Preferences, Signatures, Verification, "Use Windows Certificate Store" (or the macOS keychain equivalent) for validating signatures and certified documents. Acrobat's own settings can be pushed the same way.
+- Or, on one computer, import the file in Acrobat under Preferences, Signatures, Identities & Trusted Certificates, and tick "Use this certificate as a trusted root" for signatures and certified documents.
+
+Readers outside your organization still see a self-signed seal as unknown; only a certificate from an authority they trust changes that.
 
 ### Long-term validation
 
-A seal is easy to check while its certificates are valid and their certificate authority still answers. Years later, neither may be true. So when `SEAL_TIMESTAMP_URL` is set, every seal is made to PAdES B-LTA, the level meant for records kept for years:
+A seal is easy to check while its certificates are valid and their certificate authority still answers. Years later, neither may be true. So when a timestamp server is set (in Settings or with `SEAL_TIMESTAMP_URL`), every seal is made to PAdES B-LTA, the level meant for records kept for years:
 
 1. The seal gets a timestamp from the timestamp server (B-T).
 2. The certificates of the seal and of the timestamp server, and an answer from each certificate authority that none of them is revoked (an OCSP response, or the revocation list when there is no OCSP), are added to the PDF's document security store (B-LT).
@@ -246,8 +295,8 @@ The lookups go to the timestamp server and the certificate authorities, outside 
 Under eIDAS, a seal is the organization's counterpart of a signature. A seal that meets the four tests of Article 36 (linked only to your organization, identifying it, made with a key under its control, and showing any later change) is an **advanced electronic seal**. To get one:
 
 - Buy a seal certificate that names your organization from a certificate authority, such as an eIDAS seal certificate or an organization-validated document-signing certificate. Choose one on the [EU trusted lists](https://esignature.ec.europa.eu/efda/tl-browser) or Adobe's Approved Trust List, so readers show your organization's name as verified.
-- Get it as a PKCS#12 file with an RSA key (SignuDoc does not read EC keys from a file yet), and set it as `SEAL_P12_BASE64` (the file in base64) and `SEAL_P12_PASSWORD`. Keep the file somewhere safe outside Vercel too: the key in it is what makes the seal yours.
-- Set `SEAL_TIMESTAMP_URL`, so the seal gets long-term validation as above. A timestamp server run by a qualified trust service provider gives a qualified electronic time stamp, which a court presumes accurate (Article 41).
+- Get it as a PKCS#12 file with an RSA key (SignuDoc does not read EC keys from a file yet), and upload it in Settings, Seal & timestamp, or set it as `SEAL_P12_BASE64` (the file in base64) and `SEAL_P12_PASSWORD`. Keep the file somewhere safe outside Vercel too: the key in it is what makes the seal yours.
+- Keep a timestamp server set (Settings, or `SEAL_TIMESTAMP_URL`), so the seal gets long-term validation as above. A timestamp server run by a qualified trust service provider gives a qualified electronic time stamp, which a court presumes accurate (Article 41).
 
 What this gives you: each finished PDF and certificate carries your organization's advanced seal, showing it came from you unchanged. What it does not: the signers' own signatures stay simple electronic signatures (for signatures in their own names, see the next section), and the seal is not a qualified seal, which needs a qualified certificate held on a qualified device, usually a trust service provider's remote signing service rather than a file. This is not legal advice: whether a seal is enough for a document is for your own counsel.
 
@@ -258,7 +307,7 @@ Out of the box, signers make simple electronic signatures and the install seals 
 What ends up in the PDF:
 
 - Each signer's signature is a PAdES signature in a revision of its own, holding their filled-in fields. The revisions only add to the file, so every earlier signer's signature stays valid, and a PDF reader lists one signature per signer with the name from their certificate.
-- When the last signer has signed, the install adds the certificates and revocation answers (B-LT), and with `SEAL_TIMESTAMP_URL` an archive timestamp too (B-LTA), as for the seal above. If the provider did not timestamp a signature, the install's timestamp server does.
+- When the last signer has signed, the install adds the certificates and revocation answers (B-LT), and with a timestamp server an archive timestamp too (B-LTA), as for the seal above. If the provider did not timestamp a signature, the install's timestamp server does.
 - The signed PDF does not get the install's seal, because the signers' signatures already cover all of it. The certificate of completion is still sealed, and lists each signer's certificate, its issuer, and the provider.
 - The certificate has to be in the name the document was sent to, so a signing link passed to someone else does not let them sign. Case, accents, punctuation (an apostrophe, as in O'Connor, can be left out), word order and ID numbers in the certificate's name do not count, and a middle name or title on one side only is allowed, but otherwise a certificate in another name is refused and the signer is asked to have the sender correct the name. Enter each signer's name as it is on their ID.
 - For a qualified signature, the install refuses a certificate that does not say it is qualified and held on a qualified signature device (the EU QC statements). It does not look the issuer up on the EU trusted lists; PDF readers and the EU's own validator do that when the document is checked.
@@ -289,7 +338,13 @@ Some data still leaves the EU: Vercel's and Resend's account metadata and logs, 
 
 ## Backups
 
-Turn on the daily backup to a second Blob store, and learn the restore steps, in [Backup and restore](backup-and-restore.md).
+An administrator turns on the daily backup under Settings, Backups: a second Blob store, or a Google Cloud Storage bucket. [Backup and restore](backup-and-restore.md) has the steps, what to keep on at the database, and how to restore.
+
+## How long documents are kept
+
+By default finished documents are kept forever: until someone deletes them. To delete them after a time instead, an administrator enters a number of days under Settings, Organization, "How long to keep finished documents". A completed, declined or voided envelope is then deleted with its audit trail that many days after it finished, and its sender is emailed 30 days before. Emptying the field goes back to keeping them forever. While Part 11 mode is on the setting is off, and records are deleted by hand only.
+
+The daily backup keeps the copy of a deleted document for its own `BACKUP_KEEP_DAYS` (or the days set in Settings, Backups) more, so plan that into your retention rules.
 
 ## Daily cleanup
 
@@ -309,9 +364,24 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 - `CRON_SECRET` is the one to use on Vercel, because Vercel sends it on its own cron calls.
 - `RETENTION_JOB_SECRET` does the same for a scheduler of your own. On Vercel, a deployment that sets only this one turns Vercel's cron call away, so store the secret as `CRON_SECRET` there instead.
 
+The same secrets guard the offboarding job, `/api/internal/directory-sync` (see [Offboarding](google-workspace.md#4-offboarding)). Unlike the cleanup, that route never runs without one, because it decides who can sign in.
+
+## Notifications
+
+Slack can tell senders, their teammates and channels when envelopes are signed, completed, declined or stuck, and administrators when a backup fails. An administrator sets it up under Settings, Notifications; [Notifications](notifications.md) has the steps. Most messages go out within seconds of what they are about. The rest (retries, deadlines coming up, envelopes with no activity) wait for a request to:
+
+```text
+/api/internal/notifications
+```
+
+- **On Vercel** `vercel.json` calls it once a day, which is as often as a Hobby plan allows. On a Pro plan, change its schedule to every few minutes for quicker retries.
+- **Anywhere else**, have your scheduler (Cloud Scheduler, say) send it a `GET` or `POST` every 5 to 15 minutes.
+
+It takes the same secrets as the daily cleanup: with `CRON_SECRET` or `RETENTION_JOB_SECRET` set, a caller has to send `Authorization: Bearer <secret>`. Without one it runs at most once a minute and answers with an empty response.
+
 ## Rate limits
 
-Sign-in, sign-up, password reset, the signing pages, uploads and sending are rate limited per visitor. The counts are kept in the `rate_limits` table in Postgres, so they hold across every instance of the app. On Vercel the visitor's address is read from the header Vercel sets itself, which a visitor cannot forge. If the database cannot be reached, each instance falls back to counting in its own memory.
+Sign-in, sign-up, password reset, the signing pages, uploads and sending are rate limited per visitor. The counts are kept in the `rate_limits` table in Postgres, so they hold across every instance of the app. On Vercel the visitor's address is read from the header Vercel sets itself, which a visitor cannot forge. Anywhere else it is the last entry of `X-Forwarded-For`, the one added by the proxy in front of the app, which is right on Cloud Run and behind a single reverse proxy; see [The visitor's address](#the-visitors-address) for other setups. If the database cannot be reached, each instance falls back to counting in its own memory.
 
 ## Bot protection
 
@@ -327,6 +397,8 @@ It is opt-in for now because it has not yet been proven against a live Vercel de
 
 ## Self-hosting somewhere else
 
+On Google Cloud, [Deploy on Google Cloud Run](google-cloud-run.md) sets up everything with one script. The [`Dockerfile`](../Dockerfile) it uses builds an image that runs on any other container platform too.
+
 SignuDoc is a regular Next.js app and runs anywhere Node.js 24 and Postgres do:
 
 ```bash
@@ -341,8 +413,34 @@ Away from Vercel, a few things Vercel does for you are yours to set:
 - `APP_URL`, the site's public HTTPS address.
 - `BETTER_AUTH_SECRET`, at least 32 characters (`openssl rand -hex 32`). Without it a secret is derived from the database password, which must then be at least 12 characters long.
 - `RESEND_API_KEY`, from your Resend account.
-- Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`.
+- Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`. On Google Cloud, use a Cloud Storage bucket (below).
 - Leave `EMAIL_DRIVER` unset. The capture driver is for development only.
+- Schedule the daily backup, if you use it: have your scheduler call `/api/internal/backup` once a day, with the same secret as the [daily cleanup](#daily-cleanup).
+
+### Files in Google Cloud Storage
+
+On Cloud Run (or anywhere else on Google Cloud), keep the files in a Cloud Storage bucket:
+
+| Variable         | What it does                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------ |
+| `STORAGE_DRIVER` | `gcs`. A bucket name alone does not switch storage over; this does.                              |
+| `GCS_BUCKET`     | The bucket, for example `acme-signudoc-files`. Required.                                         |
+| `GCS_PREFIX`     | Optional. A folder in the bucket to keep everything under, so one bucket can hold more installs. |
+
+1. Make the bucket, in the region the app runs in, with **uniform bucket-level access** and **public access prevention** on. Nothing in it is ever given a public URL; every download goes through the app, which checks who is asking first.
+2. Give the service account the app runs as `roles/storage.objectAdmin` on that bucket (not on the project):
+
+   ```sh
+   gcloud storage buckets add-iam-policy-binding gs://acme-signudoc-files \
+     --member=serviceAccount:signudoc@your-project.iam.gserviceaccount.com \
+     --role=roles/storage.objectAdmin
+   ```
+
+3. Set the variables above and deploy.
+
+On Cloud Run the app gets its access tokens from the metadata server, as that service account, so there is no key to store. Anywhere else, set `GOOGLE_SERVICE_ACCOUNT_KEY` to a key for a service account with the same role (the JSON, or the same in base64).
+
+**Uploads.** On Vercel the browser sends a PDF straight to Blob, because Vercel stops a request to the app at 4.5 MB. With Cloud Storage the PDF goes through the app instead, and Cloud Run takes a request of up to 32 MB, which is more than the 20 MB upload limit with the form around it. The app itself is set to accept a request body of up to 25 MB (`proxyClientMaxBodySize` in `next.config.ts`); past that Next.js would quietly hand the upload route a cut-off file. If you put a load balancer or proxy of your own in front of the app, let it pass requests of 25 MB.
 
 Self-hosted operators are responsible for:
 
@@ -350,3 +448,13 @@ Self-hosted operators are responsible for:
 - keeping the support address pointed at a mailbox someone reads, and verifying a sending domain for email;
 - configuring retention, consent, and compliance requirements for their own deployment; and
 - scheduling the [daily cleanup](#daily-cleanup) if they are not on Vercel, where it is scheduled for them.
+
+### The visitor's address
+
+Rate limits, sessions and the audit trail record each visitor's IP address. Away from Vercel it is read from `X-Forwarded-For`, counting from the right: every proxy appends the address it saw the request come from, so only the entries your own proxies add can be trusted, and anything to the left of them is whatever the visitor sent.
+
+- With one proxy in front of the app (Cloud Run's front end, or an nginx or Caddy that appends to the header), the default is right: the last entry.
+- With more than one, set `TRUSTED_PROXY_HOPS` to how many append an entry. Behind a Google Cloud external Application Load Balancer, which appends two, use `TRUSTED_PROXY_HOPS=2`. A request with fewer entries than that did not come through all of them, and gets no address.
+- Behind a proxy that writes the visitor's address into a header of its own and replaces any value the visitor sent, set `CLIENT_IP_HEADER` to that header, such as `cf-connecting-ip` behind Cloudflare or `x-real-ip` behind an nginx that sets it. Only that header is then read. Set it only when the app cannot be reached except through that proxy, since anyone who can reach the app directly can send the header.
+
+`cf-connecting-ip` and `x-real-ip` are never trusted unless `CLIENT_IP_HEADER` names them.
