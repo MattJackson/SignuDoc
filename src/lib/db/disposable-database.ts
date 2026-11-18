@@ -1,10 +1,15 @@
 // Which databases the tests may wipe: only one with "e2e" in its name. The
 // end-to-end setup and the database tests both drop everything in the
 // database they are pointed at, so both ask here before they do.
+import path from "node:path";
 
-/** The database's name: for Postgres its name, for SQLite its file's. */
+import { isSqliteUrl, sqliteFilePath } from "./sqlite/open.ts";
+
+/** The database's name: for Postgres its name, for SQLite its file's own. */
 export function disposableDatabaseName(connectionString: string): string {
-  return new URL(connectionString).pathname.replace(/^\//, "");
+  return isSqliteUrl(connectionString)
+    ? path.basename(sqliteFilePath(connectionString))
+    : new URL(connectionString).pathname.replace(/^\//, "");
 }
 
 export function isDisposableDatabase(connectionString: string): boolean {
