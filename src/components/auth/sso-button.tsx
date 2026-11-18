@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 import { ShellButton } from "@/components/shared/form-shell";
 
 // "Continue with <provider>": hands the visitor to the organization's
@@ -9,7 +10,11 @@ import { ShellButton } from "@/components/shared/form-shell";
 // /api/auth/callback/sso, and from there to the dashboard, or to the sign-in
 // page with ?error= when it did not work.
 
-export type SsoOption = { name: string };
+export type SsoOption = {
+  /** Google is the provider, so the button follows Google's branding. */
+  google?: boolean;
+  name: string;
+};
 
 /** What the sign-in page says for an ?error= the provider callback sent. */
 export function describeSsoError(code: string): string {
@@ -17,6 +22,12 @@ export function describeSsoError(code: string): string {
     case "signup_closed":
     case "signup_domain_not_allowed":
       return "That address does not have an account here, and this site's sign-up rule does not let it make one. Ask an administrator.";
+    case "workspace_account_required":
+      return "Sign in with your organization's Google Workspace account, not a personal Google account.";
+    case "workspace_domain_not_allowed":
+      return "This Google account belongs to a different organization's Workspace. Sign in with your account at this organization.";
+    case "directory_blocked":
+      return "This account was suspended or removed in your organization's Google Workspace, so it can no longer sign in here. Ask an administrator if this is a mistake.";
     case "access_denied":
       return "Sign-in was cancelled.";
     case "email_not_found":
@@ -34,11 +45,14 @@ export function describeSsoError(code: string): string {
 export function SsoButton({
   label,
   onError,
+  returnTo = "/dashboard",
   sso,
   variant = "primary",
 }: {
   label?: string;
   onError: (message: string) => void;
+  /** A path on this site to go to once signed in. */
+  returnTo?: string;
   sso: SsoOption;
   variant?: "primary" | "secondary";
 }) {
@@ -55,9 +69,12 @@ export function SsoButton({
       const origin = window.location.origin;
       const response = await fetch("/api/auth/sign-in/social", {
         body: JSON.stringify({
-          callbackURL: `${origin}/dashboard`,
-          errorCallbackURL: `${origin}/login`,
-          newUserCallbackURL: `${origin}/dashboard`,
+          callbackURL: `${origin}${returnTo}`,
+          errorCallbackURL:
+            returnTo === "/dashboard"
+              ? `${origin}/login`
+              : `${origin}/login?next=${encodeURIComponent(returnTo)}`,
+          newUserCallbackURL: `${origin}${returnTo}`,
           provider: "sso",
         }),
         headers: { "content-type": "application/json" },
@@ -78,6 +95,16 @@ export function SsoButton({
       onError(describeSsoError(""));
       setIsBusy(false);
     }
+  }
+
+  if (sso.google) {
+    return (
+      <GoogleSignInButton
+        busy={isBusy}
+        label={label ?? "Continue with Google"}
+        onClick={() => void start()}
+      />
+    );
   }
 
   return (
