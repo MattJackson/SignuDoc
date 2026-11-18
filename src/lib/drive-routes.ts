@@ -79,3 +79,15 @@ export function describeImportFailure(error: unknown): DraftFailure | null {
 
   return null;
 }
+
+export function driveOpenFailure(
+  error: unknown,
+): { connect: true } | { problem: string } | null {
+  if (!(error instanceof DriveAuthorizationError)) {
+    return null;
+  }
+
+  return error.code === "not_configured"
+    ? { problem: "not_configured" }
+    : { connect: true };
+}

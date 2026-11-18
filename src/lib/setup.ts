@@ -511,3 +511,7 @@ export async function completeSetup(
     throw error;
   }
 }
+
+export function firstRunDestination(_env: EnvSource = process.env): string {
+  return "/onboarding";
+}

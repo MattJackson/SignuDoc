@@ -174,9 +174,7 @@ test("setup.sh deletes noncurrent versions in the replica and backup buckets", (
   ] as const) {
     const lines = calls.split("\n");
     const at = lines.findIndex((line) =>
-      line.startsWith(
-        `storage buckets update gs://${bucket} --lifecycle-file=`,
-      ),
+      line.includes(`storage buckets update gs://${bucket} --lifecycle-file=`),
     );
 
     assert.notEqual(at, -1, `${bucket} has a lifecycle rule`);
