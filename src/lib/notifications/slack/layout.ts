@@ -92,6 +92,15 @@ function detailsLine(message: NotificationMessage, reply: boolean): string {
   return parts.join("  ·  ");
 }
 
+/** Block Kit allows at most 75 characters of button text. */
+const MAX_BUTTON_TEXT = 75;
+
+function clampButtonText(label: string): string {
+  return label.length <= MAX_BUTTON_TEXT
+    ? label
+    : `${label.slice(0, MAX_BUTTON_TEXT - 1).trimEnd()}…`;
+}
+
 function actionsBlock(
   message: NotificationMessage,
   reply: boolean,
@@ -109,7 +118,11 @@ function actionsBlock(
   return {
     elements: actions.map((action) => ({
       action_id: action.id,
-      text: { emoji: false, text: action.label, type: "plain_text" },
+      text: {
+        emoji: false,
+        text: clampButtonText(action.label),
+        type: "plain_text",
+      },
       type: "button",
       url: action.url,
       ...(action.primary ? { style: "primary" } : {}),

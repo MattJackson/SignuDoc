@@ -165,7 +165,8 @@ function parseRuleInput(body: unknown) {
     channel: channel.id,
     destination: destination.data,
     destinationName: input.destinationName,
-    enabled: input.enabled ?? true,
+    // Left as given: a create defaults to on, an update keeps what it had.
+    enabled: input.enabled,
     events: [...new Set(input.events)],
     teamId,
   };
@@ -230,6 +231,7 @@ export async function createNotificationRule(
 
     const id = randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    const enabled = input.enabled ?? true;
 
     await tx.query(
       `
@@ -245,12 +247,14 @@ export async function createNotificationRule(
         input.teamId,
         input.destination,
         input.destinationName,
-        input.enabled,
+        enabled,
         now,
         actor.id,
       ],
     );
-    await recordRuleChange(tx, actor, { created: { id, ...input } });
+    await recordRuleChange(tx, actor, {
+      created: { id, ...input, enabled },
+    });
   }, database);
 
   return listNotificationRules(database);
@@ -281,6 +285,8 @@ export async function updateNotificationRule(
       throw new NotificationSettingsError("That rule no longer exists.", 404);
     }
 
+    const enabled = input.enabled ?? before.enabled;
+
     await tx.query(
       `
         UPDATE notification_rules SET
@@ -295,7 +301,7 @@ export async function updateNotificationRule(
         input.teamId,
         input.destination,
         input.destinationName,
-        input.enabled,
+        enabled,
         Math.floor(Date.now() / 1000),
       ],
     );
@@ -311,7 +317,7 @@ export async function updateNotificationRule(
           teamId: before.teamId,
         },
         id,
-        to: input,
+        to: { ...input, enabled },
       },
     });
   }, database);

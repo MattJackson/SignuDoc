@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { after, before, test } from "node:test";
+import { after, before, mock, test } from "node:test";
 
 import type pg from "pg";
 import { z } from "zod";
@@ -23,7 +23,11 @@ import {
   type OutboxDeps,
 } from "./outbox.ts";
 import { savePreferenceChoices } from "./preferences.ts";
-import { createNotificationRule, NotificationSettingsError } from "./rules.ts";
+import {
+  createNotificationRule,
+  NotificationSettingsError,
+  updateNotificationRule,
+} from "./rules.ts";
 
 // The outbox against a real Postgres, with a fake chat tool: events are
 // queued by the audit trigger in the audit event's own transaction, turned
@@ -632,4 +636,290 @@ test("a team's rule cannot take the install's own events", async () => {
       error instanceof NotificationSettingsError &&
       Boolean(error.fieldErrors.events),
   );
+});
+
+test("editing a paused rule without saying enabled leaves it paused", async () => {
+  const actor = { email: admin.email, id: admin.id };
+  const created = await createNotificationRule(
+    actor,
+    {
+      channel: "slack",
+      destination: "C0PAUSED1",
+      events: ["envelope_completed"],
+      teamId: null,
+    },
+    database,
+  );
+  const rule = created.find((item) => item.destination === "C0PAUSED1");
+
+  assert.ok(rule);
+  createdRules.push(rule.id);
+
+  const body = {
+    channel: "slack",
+    destination: "C0PAUSED1",
+    events: ["envelope_completed"],
+    teamId: null,
+  };
+
+  await updateNotificationRule(
+    actor,
+    rule.id,
+    { ...body, enabled: false },
+    database,
+  );
+
+  // The settings panel's edit sends no `enabled`.
+  const edited = await updateNotificationRule(
+    actor,
+    rule.id,
+    { ...body, events: ["envelope_completed", "envelope_declined"] },
+    database,
+  );
+  const result = edited.find((item) => item.id === rule.id);
+
+  assert.deepEqual(result?.events.slice().sort(), [
+    "envelope_completed",
+    "envelope_declined",
+  ]);
+  assert.equal(result?.enabled, false, "still paused");
+});
+
+test("a missing scope on the address lookup does not stop posts to channels", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+  const channel: NotificationChannel = {
+    ...fake.channel,
+    async lookupUser(email): Promise<LookupResult> {
+      fake.lookups.push(email);
+
+      return { error: "missing_scope", outcome: "auth" };
+    },
+  };
+
+  await clearOutbox();
+  await database.query(
+    `delete from notification_identities where user_id = any($1)`,
+    [[owner.id, teammate.id]],
+  );
+
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(channel, now));
+  // The direct messages come first in the run.
+  await database.query(
+    `
+      update notification_deliveries set next_attempt_at = $2
+      where target_kind = 'user' and event_id in (
+        select id from notification_events where envelope_id = $1
+      )
+    `,
+    [envelopeId, now - 10],
+  );
+  await deliverDueDeliveries(database, depsFor(channel, now));
+
+  const rows = await deliveriesFor(envelopeId);
+  const channelRows = rows.filter((row) => row.targetKind === "channel");
+
+  assert.ok(channelRows.length > 0);
+  assert.ok(fake.lookups.length > 0, "the lookup was tried");
+
+  for (const row of channelRows) {
+    assert.equal(row.status, "sent", `${row.target}: ${String(row.lastError)}`);
+    assert.equal(row.attempts, 1);
+  }
+});
+
+test("a remembered address that Slack no longer knows is looked up again", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+  const channel: NotificationChannel = {
+    ...fake.channel,
+    async send(destination, message, context, options): Promise<SendResult> {
+      if (destination === "USTALE") {
+        fake.sent.push({ destination, headline: "stale" });
+
+        return { error: "channel_not_found", outcome: "failed" };
+      }
+
+      return fake.channel.send(destination, message, context, options);
+    },
+  };
+
+  await clearOutbox();
+  fake.users.set(owner.email.toLowerCase(), "UFRESH");
+  await database.query(
+    `
+      insert into notification_identities (
+        user_id, channel, lookup_email, external_id, checked_at
+      ) values ($1, 'slack', $2, 'USTALE', $3)
+      on conflict (user_id, channel) do update set
+        lookup_email = excluded.lookup_email,
+        external_id = excluded.external_id,
+        checked_at = excluded.checked_at
+    `,
+    [owner.id, owner.email.toLowerCase(), now],
+  );
+
+  const first = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId: first, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(channel, now));
+  await deliverDueDeliveries(database, depsFor(channel, now));
+
+  const firstDm = (await deliveriesFor(first)).find(
+    (row) => row.targetKind === "user" && row.target === owner.id,
+  );
+
+  assert.equal(firstDm?.status, "failed");
+
+  const second = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId: second, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(channel, now));
+  await deliverDueDeliveries(database, depsFor(channel, now));
+
+  const secondDm = (await deliveriesFor(second)).find(
+    (row) => row.targetKind === "user" && row.target === owner.id,
+  );
+
+  assert.equal(secondDm?.status, "sent");
+  assert.ok(
+    fake.sent.some((item) => item.destination === "UFRESH"),
+    "the second message went to the new Slack id",
+  );
+});
+
+test("a send that throws is logged and retried", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+  const channel: NotificationChannel = {
+    ...fake.channel,
+    async send(): Promise<SendResult> {
+      throw new TypeError("boom");
+    },
+  };
+  const warn = mock.method(console, "warn", () => {});
+
+  try {
+    await clearOutbox();
+
+    const envelopeId = await createEnvelope(outsider.id, { sentAt: now });
+
+    await recordAuditEvent(
+      { actorType: "system", envelopeId, event: "declined" },
+      database,
+    );
+    await expandQueuedEvents(database, depsFor(channel, now));
+    await deliverDueDeliveries(database, depsFor(channel, now));
+
+    const legal = (await deliveriesFor(envelopeId)).find(
+      (row) => row.target === "C0LEGAL1",
+    );
+
+    assert.equal(legal?.status, "pending");
+    assert.equal(legal?.lastError, "send_threw");
+    assert.ok(
+      warn.mock.calls.some((call) =>
+        call.arguments.some((argument) => String(argument).includes("boom")),
+      ),
+      "the cause was logged",
+    );
+  } finally {
+    warn.mock.restore();
+  }
+});
+
+test("a delivery that throws before sending does not stop the rest of the batch", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+  const channel: NotificationChannel = {
+    ...fake.channel,
+    async lookupUser(): Promise<LookupResult> {
+      throw new RangeError("lookup exploded");
+    },
+  };
+  const warn = mock.method(console, "warn", () => {});
+
+  try {
+    await clearOutbox();
+    await database.query(
+      `delete from notification_identities where user_id = any($1)`,
+      [[owner.id, teammate.id]],
+    );
+
+    const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+    await recordAuditEvent(
+      { actorType: "system", envelopeId, event: "completed" },
+      database,
+    );
+    await expandQueuedEvents(database, depsFor(channel, now));
+    await database.query(
+      `
+        update notification_deliveries set next_attempt_at = $2
+        where target_kind = 'user' and event_id in (
+          select id from notification_events where envelope_id = $1
+        )
+      `,
+      [envelopeId, now - 10],
+    );
+    await deliverDueDeliveries(database, depsFor(channel, now));
+
+    const rows = await deliveriesFor(envelopeId);
+
+    for (const row of rows.filter((item) => item.targetKind === "channel")) {
+      assert.equal(row.status, "sent", row.target);
+    }
+
+    const dm = rows.find((row) => row.target === owner.id);
+
+    assert.equal(dm?.status, "pending");
+    assert.equal(dm?.attempts, 1, "the try is counted");
+  } finally {
+    warn.mock.restore();
+  }
+});
+
+test("a delivery left 'sending' after its last attempt is failed, not taken again", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fake = fakeChannel();
+
+  await clearOutbox();
+
+  const envelopeId = await createEnvelope(owner.id, { sentAt: now });
+
+  await recordAuditEvent(
+    { actorType: "system", envelopeId, event: "completed" },
+    database,
+  );
+  await expandQueuedEvents(database, depsFor(fake.channel, now));
+  await database.query(
+    `
+      update notification_deliveries
+      set status = 'sending', locked_until = $2, attempts = $3
+      where event_id in (select id from notification_events where envelope_id = $1)
+    `,
+    [envelopeId, now - 1, MAX_DELIVERY_ATTEMPTS],
+  );
+  await deliverDueDeliveries(database, depsFor(fake.channel, now));
+
+  const rows = await deliveriesFor(envelopeId);
+
+  assert.ok(rows.length > 0);
+  assert.ok(
+    rows.every((row) => row.status === "failed"),
+    rows.map((row) => row.status).join(","),
+  );
+  assert.equal(fake.sent.length, 0);
 });

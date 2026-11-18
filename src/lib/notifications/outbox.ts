@@ -351,6 +351,7 @@ type ClaimedDelivery = {
   envelopeTitle: string | null;
   event: string;
   eventCreatedAt: number;
+  eventSeq: number;
   eventId: string;
   id: string;
   ownerEmail: string | null;
@@ -370,6 +371,18 @@ async function claimDueDeliveries(
   now: number,
   limit: number,
 ): Promise<ClaimedDelivery[]> {
+  // A delivery whose run died on its last attempt is given up on, not
+  // taken yet again: attempts are only checked when a send fails.
+  await database.query(
+    `
+      UPDATE notification_deliveries SET
+        status = 'failed', last_error = 'attempts_exhausted',
+        locked_until = NULL, updated_at = $1
+      WHERE status = 'sending' AND locked_until <= $1 AND attempts >= $2
+    `,
+    [now, MAX_DELIVERY_ATTEMPTS],
+  );
+
   const claimed = await queryMany<{ id: string }>(
     database,
     `
@@ -410,6 +423,7 @@ async function claimDueDeliveries(
         e.event,
         e.id AS "eventId",
         e.created_at AS "eventCreatedAt",
+        e.seq AS "eventSeq",
         e.payload,
         env.user_id AS "ownerId",
         e.envelope_id AS "envelopeId",
@@ -633,7 +647,7 @@ async function isSuperseded(
         AND d.channel = $2 AND d.target_kind = $3 AND d.target = $4
         AND d.id <> $5
         AND d.status IN ('pending', 'sending', 'sent')
-        AND (e.created_at, e.id) > ($6::bigint, $7::text)
+        AND (e.created_at, e.seq) > ($6::bigint, $7::bigint)
         AND NOT (e.source = 'audit' AND e.event = 'viewed')
       LIMIT 1
     `,
@@ -644,7 +658,7 @@ async function isSuperseded(
       delivery.target,
       delivery.id,
       delivery.eventCreatedAt,
-      delivery.eventId,
+      delivery.eventSeq,
     ],
   );
 
@@ -685,11 +699,16 @@ async function takeThread(
   key: ThreadKey,
   owner: string,
   now: number,
-): Promise<{ parentEventAt: number | null; thread: ThreadRef | null } | null> {
+): Promise<{
+  parentEventAt: number | null;
+  parentEventSeq: number | null;
+  thread: ThreadRef | null;
+} | null> {
   const row = await queryOne<{
     conversation: string | null;
     messageTs: string | null;
     parentEventAt: number | null;
+    parentEventSeq: number | null;
   }>(
     database,
     `
@@ -705,7 +724,8 @@ async function takeThread(
         OR notification_threads.lease_until <= $7
         OR notification_threads.lease_owner = excluded.lease_owner
       RETURNING conversation, message_ts AS "messageTs",
-        parent_event_at AS "parentEventAt"
+        parent_event_at AS "parentEventAt",
+        parent_event_seq AS "parentEventSeq"
     `,
     [
       key.envelopeId,
@@ -724,6 +744,7 @@ async function takeThread(
 
   return {
     parentEventAt: row.parentEventAt,
+    parentEventSeq: row.parentEventSeq,
     thread:
       row.conversation && row.messageTs
         ? { conversation: row.conversation, ts: row.messageTs }
@@ -740,7 +761,7 @@ async function releaseThread(
   key: ThreadKey,
   owner: string,
   now: number,
-  sent: { eventAt: number; thread: ThreadRef | null } | null,
+  sent: { eventAt: number; eventSeq: number; thread: ThreadRef | null } | null,
 ): Promise<void> {
   if (!sent) {
     await database.query(
@@ -762,7 +783,19 @@ async function releaseThread(
         message_ts = $8,
         parent_event_at = CASE
           WHEN $8::text IS NULL THEN NULL
-          ELSE GREATEST(COALESCE(parent_event_at, $9), $9)
+          WHEN parent_event_at IS NULL OR $9::bigint > parent_event_at
+            OR ($9::bigint = parent_event_at
+              AND $10::bigint > COALESCE(parent_event_seq, -1))
+            THEN $9::bigint
+          ELSE parent_event_at
+        END,
+        parent_event_seq = CASE
+          WHEN $8::text IS NULL THEN NULL
+          WHEN parent_event_at IS NULL OR $9::bigint > parent_event_at
+            OR ($9::bigint = parent_event_at
+              AND $10::bigint > COALESCE(parent_event_seq, -1))
+            THEN $10::bigint
+          ELSE parent_event_seq
         END,
         lease_owner = NULL,
         lease_until = NULL,
@@ -780,6 +813,7 @@ async function releaseThread(
       sent.thread?.conversation ?? null,
       sent.thread?.ts ?? null,
       sent.eventAt,
+      sent.eventSeq,
     ],
   );
 }
@@ -865,6 +899,229 @@ export async function deliverDueDeliveries(
     }
   }
 
+  /** Everything for one delivery, from the checks to the send. */
+  async function deliverOne(delivery: ClaimedDelivery): Promise<void> {
+    const now = deps.now();
+
+    if (outOfTime()) {
+      await apply(delivery, {
+        countAttempt: false,
+        error: null,
+        nextAttemptAt: now,
+        status: "pending",
+      });
+      return;
+    }
+
+    const channel = channelsById.get(delivery.channel);
+
+    if (!channel || !channel.status(deps.context).configured) {
+      await apply(delivery, { error: "not_configured", status: "skipped" });
+      return;
+    }
+
+    const kind = notificationKindFor(delivery.source, delivery.event);
+
+    if (!kind) {
+      await apply(delivery, { error: "unknown_event", status: "skipped" });
+      return;
+    }
+
+    if (BURST_KINDS.has(kind) && (await isSuperseded(database, delivery))) {
+      await apply(delivery, { error: "superseded", status: "skipped" });
+      return;
+    }
+
+    const block = blocked.get(channel.id);
+    const lookupKey = `${channel.id}:lookup`;
+
+    if (block) {
+      await apply(
+        delivery,
+        updateForFailure(block, delivery.attempts, now, random),
+      );
+      return;
+    }
+
+    let address = delivery.target;
+
+    if (delivery.targetKind === "user") {
+      if (!channel.status(deps.context).directMessages) {
+        await apply(delivery, {
+          error: "direct_messages_off",
+          status: "skipped",
+        });
+        return;
+      }
+
+      const lookupBlock = blocked.get(lookupKey);
+
+      if (lookupBlock) {
+        await apply(
+          delivery,
+          updateForFailure(lookupBlock, delivery.attempts, now, random),
+        );
+        return;
+      }
+
+      const resolved = await resolveUserAddress(
+        database,
+        channel,
+        delivery,
+        deps,
+      );
+
+      if (resolved.outcome === "not_found") {
+        await apply(delivery, {
+          error: "no_matching_account",
+          status: "skipped",
+        });
+        return;
+      }
+
+      if (resolved.outcome !== "found") {
+        if (resolved.outcome === "auth" && resolved.error === "missing_scope") {
+          // Only looking people up by address needs this permission (Slack's
+          // users:read.email); posting to channels does not, so it holds
+          // back only the direct messages.
+          blocked.set(lookupKey, resolved);
+        } else if (
+          resolved.outcome === "rate_limited" ||
+          resolved.outcome === "auth"
+        ) {
+          blocked.set(channel.id, resolved);
+        }
+
+        await apply(
+          delivery,
+          updateForFailure(resolved, delivery.attempts, now, random),
+        );
+        return;
+      }
+
+      address = resolved.address;
+    }
+
+    const envelope = envelopeFor(delivery);
+    const message = buildNotificationMessage({
+      appUrl: deps.appUrl,
+      brand: deps.brand,
+      envelope,
+      forSender:
+        delivery.targetKind === "user" && delivery.target === delivery.ownerId,
+      kind,
+      occurredAt: delivery.eventCreatedAt,
+      payload: readNotificationPayload(delivery.payload),
+    });
+    const placement = placementFor(
+      kind,
+      delivery.targetKind,
+      envelope !== null,
+    );
+    const threadKey: ThreadKey | null =
+      placement === "standalone" || !envelope
+        ? null
+        : {
+            channel: delivery.channel,
+            envelopeId: envelope.id,
+            target: delivery.target,
+            targetKind: delivery.targetKind,
+          };
+    let options: SendOptions = STANDALONE;
+
+    if (threadKey) {
+      const taken = await takeThread(database, threadKey, delivery.id, now);
+
+      if (!taken) {
+        // Another delivery is posting about this envelope here right now.
+        await apply(delivery, {
+          countAttempt: false,
+          error: null,
+          nextAttemptAt: now + THREAD_BUSY_RETRY_SECONDS,
+          status: "pending",
+        });
+        return;
+      }
+
+      options = {
+        placement,
+        thread: taken.thread,
+        // Events are ordered by time, then by the order they were queued in;
+        // a thread made before that order was kept has no sequence yet.
+        updateThread:
+          taken.parentEventAt === null ||
+          delivery.eventCreatedAt > taken.parentEventAt ||
+          (delivery.eventCreatedAt === taken.parentEventAt &&
+            delivery.eventSeq > (taken.parentEventSeq ?? -1)),
+      };
+    }
+
+    let result: SendResult;
+
+    try {
+      result = await channel.send(address, message, deps.context, options);
+    } catch (error) {
+      // The chat tool's own failures come back as results, so a throw here
+      // is a bug in this code; say what, without anything a tool sent.
+      console.warn(
+        "[notifications] Sending threw:",
+        error instanceof Error ? `${error.name}: ${error.message}` : error,
+      );
+      result = {
+        error: "send_threw",
+        outcome: "retry" as const,
+        retryAfterSeconds: null,
+      };
+    }
+
+    if (threadKey) {
+      await releaseThread(
+        database,
+        threadKey,
+        delivery.id,
+        deps.now(),
+        result.outcome === "sent"
+          ? {
+              eventAt: delivery.eventCreatedAt,
+              eventSeq: delivery.eventSeq,
+              thread: result.thread,
+            }
+          : null,
+      );
+    }
+
+    if (result.outcome === "sent") {
+      await apply(delivery, { status: "sent" });
+      return;
+    }
+
+    if (result.outcome === "rate_limited" || result.outcome === "auth") {
+      blocked.set(channel.id, result);
+    }
+
+    if (
+      delivery.targetKind === "user" &&
+      result.outcome === "failed" &&
+      (result.error === "channel_not_found" ||
+        result.error === "user_not_found")
+    ) {
+      // The remembered address no longer exists (another workspace, a
+      // recreated account): look the person up again next time.
+      await database.query(
+        `
+          UPDATE notification_identities SET external_id = NULL, checked_at = 0
+          WHERE user_id = $1 AND channel = $2
+        `,
+        [delivery.target, channel.id],
+      );
+    }
+
+    await apply(
+      delivery,
+      updateForFailure(result, delivery.attempts, now, random),
+    );
+  }
+
   while (!outOfTime()) {
     const batch = await claimDueDeliveries(database, deps.now(), batchSize);
 
@@ -873,179 +1130,29 @@ export async function deliverDueDeliveries(
     }
 
     for (const delivery of batch) {
-      const now = deps.now();
-
-      if (outOfTime()) {
-        await apply(delivery, {
-          countAttempt: false,
-          error: null,
-          nextAttemptAt: now,
-          status: "pending",
-        });
-        continue;
-      }
-
-      const channel = channelsById.get(delivery.channel);
-
-      if (!channel || !channel.status(deps.context).configured) {
-        await apply(delivery, { error: "not_configured", status: "skipped" });
-        continue;
-      }
-
-      const kind = notificationKindFor(delivery.source, delivery.event);
-
-      if (!kind) {
-        await apply(delivery, { error: "unknown_event", status: "skipped" });
-        continue;
-      }
-
-      if (BURST_KINDS.has(kind) && (await isSuperseded(database, delivery))) {
-        await apply(delivery, { error: "superseded", status: "skipped" });
-        continue;
-      }
-
-      const block = blocked.get(channel.id);
-
-      if (block) {
+      try {
+        await deliverOne(delivery);
+      } catch (error) {
+        // A throw before the send (a lookup, a date that cannot be shown)
+        // is this delivery's problem, not the rest of the batch's.
+        console.warn(
+          "[notifications] A delivery failed before it was sent:",
+          error instanceof Error ? `${error.name}: ${error.message}` : error,
+        );
         await apply(
           delivery,
-          updateForFailure(block, delivery.attempts, now, random),
-        );
-        continue;
-      }
-
-      let address = delivery.target;
-
-      if (delivery.targetKind === "user") {
-        if (!channel.status(deps.context).directMessages) {
-          await apply(delivery, {
-            error: "direct_messages_off",
-            status: "skipped",
-          });
-          continue;
-        }
-
-        const resolved = await resolveUserAddress(
-          database,
-          channel,
-          delivery,
-          deps,
-        );
-
-        if (resolved.outcome === "not_found") {
-          await apply(delivery, {
-            error: "no_matching_account",
-            status: "skipped",
-          });
-          continue;
-        }
-
-        if (resolved.outcome !== "found") {
-          if (
-            resolved.outcome === "rate_limited" ||
-            resolved.outcome === "auth"
-          ) {
-            blocked.set(channel.id, resolved);
-          }
-
-          await apply(
-            delivery,
-            updateForFailure(resolved, delivery.attempts, now, random),
-          );
-          continue;
-        }
-
-        address = resolved.address;
-      }
-
-      const envelope = envelopeFor(delivery);
-      const message = buildNotificationMessage({
-        appUrl: deps.appUrl,
-        brand: deps.brand,
-        envelope,
-        forSender:
-          delivery.targetKind === "user" &&
-          delivery.target === delivery.ownerId,
-        kind,
-        occurredAt: delivery.eventCreatedAt,
-        payload: readNotificationPayload(delivery.payload),
-      });
-      const placement = placementFor(
-        kind,
-        delivery.targetKind,
-        envelope !== null,
-      );
-      const threadKey: ThreadKey | null =
-        placement === "standalone" || !envelope
-          ? null
-          : {
-              channel: delivery.channel,
-              envelopeId: envelope.id,
-              target: delivery.target,
-              targetKind: delivery.targetKind,
-            };
-      let options: SendOptions = STANDALONE;
-
-      if (threadKey) {
-        const taken = await takeThread(database, threadKey, delivery.id, now);
-
-        if (!taken) {
-          // Another delivery is posting about this envelope here right now.
-          await apply(delivery, {
-            countAttempt: false,
-            error: null,
-            nextAttemptAt: now + THREAD_BUSY_RETRY_SECONDS,
-            status: "pending",
-          });
-          continue;
-        }
-
-        options = {
-          placement,
-          thread: taken.thread,
-          updateThread:
-            taken.parentEventAt === null ||
-            delivery.eventCreatedAt >= taken.parentEventAt,
-        };
-      }
-
-      let result: SendResult;
-
-      try {
-        result = await channel.send(address, message, deps.context, options);
-      } catch {
-        result = {
-          error: "send_threw",
-          outcome: "retry" as const,
-          retryAfterSeconds: null,
-        };
-      }
-
-      if (threadKey) {
-        await releaseThread(
-          database,
-          threadKey,
-          delivery.id,
-          deps.now(),
-          result.outcome === "sent"
-            ? { eventAt: delivery.eventCreatedAt, thread: result.thread }
-            : null,
+          updateForFailure(
+            {
+              error: "delivery_threw",
+              outcome: "retry",
+              retryAfterSeconds: null,
+            },
+            delivery.attempts,
+            deps.now(),
+            random,
+          ),
         );
       }
-
-      if (result.outcome === "sent") {
-        await apply(delivery, { status: "sent" });
-        continue;
-      }
-
-      if (result.outcome === "rate_limited" || result.outcome === "auth") {
-        blocked.set(channel.id, result);
-      }
-
-      await apply(
-        delivery,
-        updateForFailure(result, delivery.attempts, now, random),
-      );
     }
   }
 

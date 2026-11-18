@@ -46,11 +46,9 @@ function sampleEnvelope(kind: NotificationEventKind): NotificationEnvelope {
         ? "declined"
         : kind === "envelope_voided"
           ? "voided"
-          : kind === "envelope_expired"
-            ? "expired"
-            : kind === "envelope_rejected"
-              ? "rejected"
-              : "sent";
+          : kind === "envelope_rejected"
+            ? "declined"
+            : "sent";
 
   return {
     expiresAt: SAMPLE_TIME + 3 * DAY,

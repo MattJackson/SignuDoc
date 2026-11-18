@@ -245,7 +245,12 @@ export function buildNotificationMessage({
   const actions: NotificationAction[] = [];
 
   if (envelope) {
-    details.push(STATUS_LABELS[envelope.status] ?? envelope.status);
+    // An envelope that ran out of time keeps the stored status "sent".
+    const expired = kind === "envelope_expired";
+
+    details.push(
+      expired ? "Expired" : (STATUS_LABELS[envelope.status] ?? envelope.status),
+    );
 
     if (progress && !progressInHeadline(kind)) {
       details.push(progress);
@@ -259,6 +264,7 @@ export function buildNotificationMessage({
 
     if (
       envelope.expiresAt !== null &&
+      !expired &&
       envelope.status === "sent" &&
       kind !== "envelope_expiring_soon"
     ) {
