@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { DatabaseSync } from "node:sqlite";
+
 import { listMigrationFiles } from "../migrate.mjs";
 import {
+  BASELINE_FILE,
   listSqliteMigrationFiles,
   readBaselineVersions,
   runSqliteMigrations,
@@ -133,5 +136,105 @@ test("the app's copy of open.mjs reads sqlite: URLs the same way", async () => {
     if (isSqliteUrl(url)) {
       assert.equal(copy.sqliteFilePath(url), sqliteFilePath(url), url);
     }
+  }
+});
+
+test("moving to Unicode lower() renames names that now collide and removes no row", async () => {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "signudoc-sqlite-unicode-"),
+  );
+  const connectionString = `sqlite:${path.join(directory, "u.db")}`;
+
+  try {
+    // A database as an older version left it: the baseline, indexes built
+    // with SQLite's own lower(), which folds ASCII only.
+    const old = new DatabaseSync(path.join(directory, "u.db"));
+
+    old.exec(readFileSync(BASELINE_FILE, "utf8"));
+    old.exec(
+      "create table signudoc_migrations (version text not null primary key, applied_at timestamptz not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))",
+    );
+
+    for (const version of await readBaselineVersions()) {
+      old
+        .prepare("insert into signudoc_migrations (version) values (?)")
+        .run(version);
+    }
+
+    const team = old.prepare(
+      "insert into teams (id, name, google_group_email, created_at, updated_at) values (?, ?, ?, 1, 1)",
+    );
+
+    team.run("t1", "Équipe", "Ü@x.test");
+    team.run("t2", "équipe", "ü@x.test");
+    team.run("t3", "Plain", null);
+    old
+      .prepare(
+        `insert into "user" (id, name, email, "emailVerified", role) values ('u1', 'U', 'u@x.test', 1, 'user')`,
+      )
+      .run();
+    old
+      .prepare(
+        "insert into envelopes (id, user_id, title, source_pdf_key, source_pdf_filename, source_pdf_size_bytes, page_count, source_pdf_hash) values ('e1', 'u1', 'T', 'k', 'f.pdf', 1, 1, ?)",
+      )
+      .run("a".repeat(64));
+
+    const signer = old.prepare(
+      "insert into signers (id, envelope_id, name, email, sign_order) values (?, 'e1', 'S', ?, ?)",
+    );
+
+    signer.run("s1", "É@x.test", 1);
+    signer.run("s2", "é@x.test", 2);
+    old.close();
+
+    await runSqliteMigrations({ connectionString, log: () => {} });
+
+    const database = openSqliteDatabase(connectionString);
+
+    try {
+      const teams = database
+        .prepare(
+          "select id, name, google_group_email as email from teams order by id",
+        )
+        .all();
+
+      assert.equal(teams.length, 3);
+      assert.deepEqual(
+        teams.map((row) => [row.id, row.name]),
+        [
+          ["t1", "Équipe"],
+          ["t2", "équipe (2)"],
+          ["t3", "Plain"],
+        ],
+      );
+      assert.equal(teams[0].email, "Ü@x.test");
+      assert.equal(teams[1].email, null);
+
+      const signers = database
+        .prepare("select id, email from signers order by id")
+        .all();
+
+      assert.equal(signers.length, 2);
+      assert.equal(signers[0].email, "É@x.test");
+      assert.notEqual(
+        signers[1].email.toLowerCase(),
+        signers[0].email.toLowerCase(),
+      );
+
+      // The indexes are rebuilt, so a new collision is refused.
+      assert.throws(
+        () =>
+          database
+            .prepare(
+              "insert into teams (id, name, created_at, updated_at) values ('t9', 'ÉQUIPE', 1, 1)",
+            )
+            .run(),
+        /UNIQUE/,
+      );
+    } finally {
+      database.close();
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
   }
 });
