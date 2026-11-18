@@ -432,6 +432,19 @@ export function registerFunctions(
     );
   };
 
+  // The divisor of every division (rewrite.ts), passed through unchanged:
+  // integers arrive as BigInt, so an integer stays one and 7 / 2 is still 3.
+  database.function(
+    "pg_nonzero",
+    { deterministic: true, useBigIntArguments: true },
+    (value: SqlValue) => {
+      if (value === 0 || value === BigInt(0)) {
+        throw Object.assign(new Error("division by zero"), { code: "22012" });
+      }
+
+      return value;
+    },
+  );
   define("now", () => context.now());
   define("gen_random_uuid", () => randomUUID());
   define("pg_advisory_xact_lock", () => "");

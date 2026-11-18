@@ -7,7 +7,10 @@ import {
   type RecordAuditEventInput,
 } from "../services/audit.ts";
 import { isSqliteUrl, SqlitePool } from "./sqlite/pool.ts";
-import { openSqliteTestDatabase } from "./sqlite/test-database.ts";
+import {
+  beforeStatement,
+  openSqliteTestDatabase,
+} from "./sqlite/test-database.ts";
 
 // For the tests that need a real Postgres (npm run test:db). They use the
 // same disposable database as the end-to-end test and bring its schema up
@@ -87,6 +90,49 @@ export function openAnotherPool(
   }
 
   return new pg.Pool({ connectionString, ...options });
+}
+
+/**
+ * afterStatement, for a `then` that writes as another session would while
+ * the statement's transaction holds its rows, and waits for that write. On
+ * SQLite nothing can be written while a transaction holds the database, so
+ * there `then` runs right before the statement instead: the last moment the
+ * same write can land.
+ */
+export function afterStatementOrJustBefore(
+  pool: pg.Pool,
+  isTheStatement: (text: string, values: unknown[]) => boolean,
+  then: () => Promise<void>,
+): pg.Pool {
+  return isSqliteUrl(process.env.E2E_DATABASE_URL ?? "")
+    ? beforeStatement(pool, isTheStatement, then)
+    : afterStatement(pool, isTheStatement, then);
+}
+
+/**
+ * Writes made from inside another transaction's work, as another session
+ * would make them meanwhile. On Postgres each goes through at once. SQLite
+ * has one writer, so there it waits for the open transaction to end: it is
+ * started at once and awaited by `settled()`.
+ */
+export function besideOpenTransactions() {
+  const onSqlite = isSqliteUrl(process.env.E2E_DATABASE_URL ?? "");
+  const pending: Promise<unknown>[] = [];
+
+  return {
+    async run(write: () => Promise<unknown>) {
+      const written = write();
+
+      if (!onSqlite) {
+        await written;
+        return;
+      }
+
+      written.catch(() => undefined);
+      pending.push(written);
+    },
+    settled: () => Promise.all(pending),
+  };
 }
 
 type QueryFunction = (text: unknown, values?: unknown[]) => unknown;

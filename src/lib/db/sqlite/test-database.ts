@@ -15,6 +15,55 @@ import { SqlitePool } from "./pool.ts";
 
 const wiped = new Set<string>();
 
+type QueryFunction = (text: unknown, values?: unknown[]) => Promise<unknown>;
+
+/**
+ * The same database, except that `then` runs right before one chosen
+ * statement, whether it goes to the pool or to a client taken from it.
+ * See afterStatementOrJustBefore in ../test-database.ts.
+ */
+export function beforeStatement(
+  pool: pg.Pool,
+  isTheStatement: (text: string, values: unknown[]) => boolean,
+  then: () => Promise<void>,
+): pg.Pool {
+  function intercept<T extends object>(target: T): T {
+    return new Proxy(target, {
+      get(object, property) {
+        const value: unknown = Reflect.get(object, property);
+
+        if (property === "query") {
+          const query: QueryFunction = async (text, values) => {
+            if (
+              typeof text === "string" &&
+              isTheStatement(text, values ?? [])
+            ) {
+              await then();
+            }
+
+            return (value as QueryFunction).call(object, text, values);
+          };
+
+          return query;
+        }
+
+        if (property === "connect") {
+          return async () =>
+            intercept(
+              await (value as () => Promise<pg.PoolClient>).call(object),
+            );
+        }
+
+        return typeof value === "function"
+          ? (value.bind(object) as unknown)
+          : value;
+      },
+    });
+  }
+
+  return intercept(pool);
+}
+
 export async function openSqliteTestDatabase(
   connectionString: string,
 ): Promise<pg.Pool> {

@@ -77,6 +77,32 @@ function sqlStateFor(error: { errcode?: number; message: string }): string {
   }
 }
 
+/**
+ * The message Postgres would give, with SQLite's own after it: what a
+ * constraint error says is matched on by code that reports it.
+ */
+function postgresMessage(code: string, message: string): string {
+  const name = /constraint failed: ([A-Za-z_][A-Za-z0-9_]*)$/.exec(
+    message,
+  )?.[1];
+
+  switch (code) {
+    case "23505":
+      return `duplicate key value violates unique constraint (${message})`;
+    case "23503":
+      return `insert or update violates foreign key constraint (${message})`;
+    case "23514":
+      // The approver trigger's own words stand as they are.
+      return /CHECK constraint failed/.test(message)
+        ? `new row violates check constraint "${name ?? "unknown"}" (${message})`
+        : message;
+    case "23502":
+      return `null value violates not-null constraint (${message})`;
+    default:
+      return message;
+  }
+}
+
 function toDatabaseError(error: unknown): unknown {
   if (error instanceof SqliteDatabaseError || !(error instanceof Error)) {
     return error;
@@ -88,9 +114,11 @@ function toDatabaseError(error: unknown): unknown {
     return error;
   }
 
+  const code = sqlStateFor(error as { errcode?: number; message: string });
+
   return new SqliteDatabaseError(
-    error.message,
-    sqlStateFor(error as { errcode?: number; message: string }),
+    postgresMessage(code, error.message),
+    code,
     error,
   );
 }
@@ -273,13 +301,11 @@ class SqliteFile {
 
     for (const database of [this.writer, this.reader]) {
       registerFunctions(database, {
-        lockWaiters: (kind) =>
-          [...this.waitingHolders].filter(
-            (holder) =>
-              kind === "all" ||
-              holder.waiting?.kind === "advisory" ||
-              (holder.waiting?.kind === "mutex" && holder.waiting.advisory),
-          ).length,
+        // Every wait counts for both views: on SQLite the one write lock
+        // stands in for Postgres's row and advisory locks alike, so a
+        // transaction Postgres would hold up at an advisory lock is held up
+        // here at the write lock, one statement earlier.
+        lockWaiters: () => this.waitingHolders.size,
         now: () => this.currentNow ?? formatTimestamp(new Date()),
       });
       database.exec(CATALOG_VIEWS_SQL);
@@ -647,7 +673,10 @@ export class SqliteClient implements Holder {
     return this.state !== "idle";
   }
 
-  /** Takes the write lock and starts the transaction, on its first statement. */
+  /**
+   * Takes the write lock and starts the transaction, at its first write or
+   * locking read (SELECT … FOR UPDATE/SHARE).
+   */
   private async activate(forAdvisory = false) {
     if (this.state === "active") {
       return;
@@ -662,7 +691,7 @@ export class SqliteClient implements Holder {
       throw toDatabaseError(error);
     }
 
-    this.transactionNow = formatTimestamp(new Date());
+    this.transactionNow ??= formatTimestamp(new Date());
     this.state = "active";
   }
 
@@ -703,6 +732,28 @@ export class SqliteClient implements Holder {
     return command;
   }
 
+  /**
+   * A statement of the transaction failed. As on Postgres, the transaction
+   * is over: only ROLLBACK is accepted from here. Its changes are undone
+   * and its locks freed now, so whatever waits for them goes on even
+   * before the caller gets round to ROLLBACK.
+   */
+  private abort() {
+    this.state = "failed";
+
+    try {
+      if (this.file.lock.owner === this && this.file.writer.isTransaction) {
+        this.file.writer.exec("ROLLBACK");
+      }
+    } finally {
+      if (this.file.lock.owner === this) {
+        this.file.lock.release(this);
+      }
+
+      this.file.releaseKeys(this, this.keys);
+    }
+  }
+
   private failed(): never {
     throw new SqliteDatabaseError(
       "current transaction is aborted, commands ignored until end of transaction block",
@@ -722,6 +773,8 @@ export class SqliteClient implements Holder {
       case "begin":
         if (this.state === "idle") {
           this.state = "pending";
+          // now() is the time the transaction began, as on Postgres.
+          this.transactionNow = formatTimestamp(new Date());
         }
 
         return emptyResult("BEGIN");
@@ -749,12 +802,31 @@ export class SqliteClient implements Holder {
       );
     }
 
+    // Before its first write or locking read, a transaction has nothing of
+    // its own to see: a plain read sees what is committed, without taking
+    // the lock, exactly as a read in a Postgres READ COMMITTED transaction
+    // takes no row lock. So a transaction that has only read does not hold
+    // up writes made meanwhile through the pool.
+    if (this.state === "pending" && rewritten.kind === "read") {
+      try {
+        return this.file.run(
+          this.file.reader,
+          rewritten,
+          values,
+          this.transactionNow,
+        );
+      } catch (error) {
+        this.state = "failed";
+        throw error;
+      }
+    }
+
     await this.activate();
 
     try {
       return this.file.runWrite(rewritten, values, this.transactionNow);
     } catch (error) {
-      this.state = "failed";
+      this.abort();
       throw error;
     }
   }
@@ -811,7 +883,7 @@ async function runOutsideTransaction(
   const now = formatTimestamp(new Date());
 
   // Reads see everything committed, without waiting, as on Postgres.
-  if (rewritten.kind === "read") {
+  if (rewritten.kind === "read" || rewritten.kind === "locking-read") {
     return file.run(file.reader, rewritten, values, now);
   }
 
@@ -932,6 +1004,20 @@ export class SqlitePool {
   /** Column types by table (backups). */
   get schema(): SchemaInfo {
     return this.file.schemaInfo();
+  }
+
+  // pg.Pool's counters. The app tells a pool from a client by them
+  // ("totalCount" in database), and opens a transaction for a pool.
+  get totalCount(): number {
+    return 1;
+  }
+
+  get idleCount(): number {
+    return this.file.lock.owner ? 0 : 1;
+  }
+
+  get waitingCount(): number {
+    return this.file.waitingHolders.size;
   }
 
   on(): this {
