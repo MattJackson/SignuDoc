@@ -91,8 +91,14 @@ type CreateGcsClientOptions = {
   fetchImpl?: FetchLike;
 };
 
-function toBuffer(body: Uint8Array): Buffer {
-  return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+// The same bytes, typed as fetch wants them: a view on a plain ArrayBuffer.
+// Nothing here is ever backed by a SharedArrayBuffer.
+function toBuffer(body: Uint8Array): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(
+    body.buffer as ArrayBuffer,
+    body.byteOffset,
+    body.byteLength,
+  );
 }
 
 function parseMetadata(value: unknown): GcsObjectMetadata {
