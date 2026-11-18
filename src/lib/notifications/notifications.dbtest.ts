@@ -14,6 +14,7 @@ import type {
   SendResult,
 } from "./channel.ts";
 import { queueConditionEvents } from "./conditions.ts";
+import { headlineText } from "./message.ts";
 import {
   deliverDueDeliveries,
   discardQueuedEvents,
@@ -64,10 +65,21 @@ function fakeChannel() {
         : { outcome: "not_found" };
     },
     name: "Fake Slack",
-    async send(destination, message): Promise<SendResult> {
-      sent.push({ destination, headline: message.headline });
+    async send(destination, message, _context, options): Promise<SendResult> {
+      sent.push({ destination, headline: headlineText(message.headline) });
 
-      return results.shift() ?? { outcome: "sent" };
+      return (
+        results.shift() ?? {
+          outcome: "sent",
+          thread:
+            options && options.placement !== "standalone"
+              ? (options.thread ?? {
+                  conversation: destination,
+                  ts: String(sent.length),
+                })
+              : null,
+        }
+      );
     },
     status: () => ({
       configured: true,

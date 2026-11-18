@@ -37,7 +37,44 @@ export type ChannelFailure =
   | { error: string; outcome: "rate_limited"; retryAfterSeconds: number }
   | { error: string; outcome: "retry"; retryAfterSeconds: number | null };
 
-export type SendResult = { outcome: "sent" } | ChannelFailure;
+/**
+ * The message a later event about the same envelope edits or replies to:
+ * the tool's conversation id and the message's own id (Slack's "ts").
+ */
+export type ThreadRef = { conversation: string; ts: string };
+
+/**
+ * How a message is placed.
+ *
+ * * "standalone": one message, nothing remembered (the install's own
+ *   events, tests).
+ * * "channel_thread": the first message about an envelope starts a thread;
+ *   later ones edit that first message to show where the envelope stands
+ *   and reply in its thread.
+ * * "in_place": one message per envelope, edited as it moves along.
+ * * "new_message": a new message (an outcome that needs attention), and
+ *   the in-place message, if there is one, edited to match.
+ */
+export type MessagePlacement =
+  "channel_thread" | "in_place" | "new_message" | "standalone";
+
+export type SendOptions = {
+  placement: MessagePlacement;
+  /** The remembered message for this envelope and place, if any. */
+  thread: ThreadRef | null;
+  /** False when the remembered message already shows a newer event. */
+  updateThread: boolean;
+};
+
+export const STANDALONE: SendOptions = {
+  placement: "standalone",
+  thread: null,
+  updateThread: false,
+};
+
+/** `thread`: the message to remember from now on, or null for none. */
+export type SendResult =
+  { outcome: "sent"; thread: ThreadRef | null } | ChannelFailure;
 
 export type LookupResult =
   | { externalId: string; outcome: "found" }
@@ -63,6 +100,7 @@ export interface NotificationChannel {
     destination: string,
     message: NotificationMessage,
     context: ChannelContext,
+    options?: SendOptions,
   ): Promise<SendResult>;
 }
 
