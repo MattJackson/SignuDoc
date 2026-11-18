@@ -47,8 +47,12 @@ jobs:
         include:
           - backend: postgres
             database: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
+            dbtest-database: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_e2e
           - backend: sqlite
             database: sqlite:/tmp/signudoc-sqlite/signudoc_e2e.db
+            # Its own file: the end-to-end server opens its database as it
+            # starts, before the test wipes it, and should find no leftovers.
+            dbtest-database: sqlite:/tmp/signudoc-sqlite/signudoc_e2e_dbtest.db
     services:
       postgres:
         image: postgres:17
@@ -74,7 +78,7 @@ jobs:
       # the cleanup job's lock.
       - run: npm run test:db
         env:
-          E2E_DATABASE_URL: ${{ matrix.database }}
+          E2E_DATABASE_URL: ${{ matrix.dbtest-database }}
       - run: npx playwright install --with-deps chromium
       # Starts the app with the eID Easy and Google stand-ins beside it
       # (playwright.config.ts). The Google project (e2e/google-workspace.spec.ts)

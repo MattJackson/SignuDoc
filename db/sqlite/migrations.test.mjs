@@ -117,3 +117,21 @@ test("sqlite: connection strings name a file", () => {
   assert.equal(sqliteFilePath("sqlite:///data/x.db"), "/data/x.db");
   assert.equal(sqliteFilePath("sqlite:rel/x.db"), path.resolve("rel/x.db"));
 });
+
+test("the app's copy of open.mjs reads sqlite: URLs the same way", async () => {
+  const copy = await import("../../src/lib/db/sqlite/open.ts");
+
+  for (const url of [
+    "sqlite:/data/x.db",
+    "sqlite:///data/x.db",
+    "sqlite:rel/x.db",
+    "SQLITE:/data/a%20b.db?mode=rw",
+    "postgres://a@b/c",
+  ]) {
+    assert.equal(copy.isSqliteUrl(url), isSqliteUrl(url), url);
+
+    if (isSqliteUrl(url)) {
+      assert.equal(copy.sqliteFilePath(url), sqliteFilePath(url), url);
+    }
+  }
+});

@@ -10,7 +10,7 @@ import path from "node:path";
 import type pg from "pg";
 
 import { runMigrations } from "../../../../db/migrate.mjs";
-import { sqliteFilePath } from "../../../../db/sqlite/open.mjs";
+import { sqliteFilePath } from "./open.ts";
 import { SqlitePool } from "./pool.ts";
 
 const wiped = new Set<string>();

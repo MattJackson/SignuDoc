@@ -7,11 +7,7 @@
 // See docs/design/database-backends.md, "Transactions and concurrency".
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 
-import {
-  isSqliteUrl,
-  openSqliteDatabase,
-  sqliteFilePath,
-} from "../../../../db/sqlite/open.mjs";
+import { isSqliteUrl, openSqliteDatabase, sqliteFilePath } from "./open.ts";
 import {
   CATALOG_VIEWS_SQL,
   formatTimestamp,
