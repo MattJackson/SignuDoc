@@ -24,6 +24,7 @@ import {
   readDriveExportConfig,
   readPickerConfig,
 } from "../integrations/google/drive-config.ts";
+import { describeNotificationSetup } from "../notifications/registry.ts";
 import { resolveEmailDriver, resolveResendApiKey } from "../services/email.ts";
 import { getSettings, type ResolvedSettings } from "../settings.ts";
 import { describeStorageDriver } from "../storage-check.ts";
@@ -50,7 +51,8 @@ export type OnboardingStepId =
   | "storage"
   | "seal"
   | "backups"
-  | "retention";
+  | "retention"
+  | "notifications";
 
 export type OnboardingCheck = {
   /** One line on where the step stands. */
@@ -412,6 +414,31 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     settingsHref: "/settings#organization",
     summary: "How long finished documents are kept before they are deleted.",
     title: "Retention",
+  },
+  {
+    check: async ({ env, marks, stored }) => {
+      const { configured } = describeNotificationSetup(env, stored);
+
+      if (configured.length > 0) {
+        return {
+          detail: `Notifications go to ${configured.join(", ")}.`,
+          status: "done",
+        };
+      }
+
+      return marks.notifications === "confirmed"
+        ? { detail: "No chat notifications; email only.", status: "done" }
+        : {
+            detail: "Nothing is sent to a chat tool yet.",
+            status: "not_started",
+          };
+    },
+    confirmable: true,
+    id: "notifications",
+    settingsHref: "/settings/notifications",
+    summary:
+      "Tell people in Slack when their envelopes are signed, completed or stuck.",
+    title: "Notifications",
   },
 ];
 

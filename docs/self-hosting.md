@@ -155,13 +155,14 @@ A deployment made with the button needs no environment variables. These are ther
 | `DIRECTORY_SYNC`, `DIRECTORY_SYNC_MAX_PER_RUN`                                                                                                   | `on` blocks sign-in for people your Google Workspace directory says have left, and hands their open envelopes on. Needs a job secret and a scheduler. See [Offboarding](google-workspace.md#4-offboarding).     |
 | `MANAGER_APPROVAL`                                                                                                                               | `off`, `suggest` or `require`: the sender's manager, from the Workspace directory, approves first. Can also be set in the app. See [The sender's manager](google-workspace.md#5-the-senders-manager).           |
 | `GOOGLE_SIGNING`                                                                                                                                 | `off`, `offer` or `require`: employees confirm who they are with Google sign-in when they sign. Can also be set in the app. See [Employees sign with Google](google-workspace.md#6-employees-sign-with-google). |
+| `SLACK_BOT_TOKEN`, `NOTIFICATION_EXPIRING_DAYS`, `NOTIFICATION_STUCK_DAYS`                                                                       | Notifications in Slack, and when the job warns about a deadline or an idle envelope, fixed from the environment instead of in Settings. See [Notifications](notifications.md).                                  |
 | `MAX_SIGNERS_PER_ENVELOPE`                                                                                                                       | The most signers one envelope can have, from 1 to 100. 25 when not set. See [Teams and signing order](teams-and-signing-order.md).                                                                              |
 
 ## Set the site up
 
 The first time you open a new install it takes you to `/setup`. There you name your organization, give its support address, and create the first account, which becomes the administrator. After that the setup page is gone for good.
 
-Setup then continues in the app, at `/onboarding`: one step at a time through the organization, [email](#email), Google sign-in, the Workspace directory and administrator group, managers, employees and leavers, Google Drive and the Gmail and Drive add-on ([Google Workspace](google-workspace.md)), storage (shown, with a read and write test), [seal and timestamp](#signed-pdfs-and-the-seal), [backups](backup-and-restore.md) and retention. Each step can be skipped and opened again; Settings has a setup checklist with every step's status. Everything there is also an environment variable for those who prefer one, and a variable that is set wins and shows as fixed in the app.
+Setup then continues in the app, at `/onboarding`: one step at a time through the organization, [email](#email), Google sign-in, the Workspace directory and administrator group, managers, employees and leavers, Google Drive and the Gmail and Drive add-on ([Google Workspace](google-workspace.md)), storage (shown, with a read and write test), [seal and timestamp](#signed-pdfs-and-the-seal), [backups](backup-and-restore.md), retention and [notifications](#notifications). Each step can be skipped and opened again; Settings has a setup checklist with every step's status. Everything there is also an environment variable for those who prefer one, and a variable that is set wins and shows as fixed in the app.
 
 - **Support address.** Setup does not finish without one. It is the address signers and people with an account are told to write to, and where replies to the site's emails go. It is saved in your install's own settings and nowhere else; there is no SignuDoc address that it falls back to. The administrator can change it under Settings, Organization, but not remove it.
 
@@ -362,6 +363,19 @@ To close the route, set a secret. A caller then has to send `Authorization: Bear
 - `RETENTION_JOB_SECRET` does the same for a scheduler of your own. On Vercel, a deployment that sets only this one turns Vercel's cron call away, so store the secret as `CRON_SECRET` there instead.
 
 The same secrets guard the offboarding job, `/api/internal/directory-sync` (see [Offboarding](google-workspace.md#4-offboarding)). Unlike the cleanup, that route never runs without one, because it decides who can sign in.
+
+## Notifications
+
+Slack can tell senders, their teammates and channels when envelopes are signed, completed, declined or stuck, and administrators when a backup fails. An administrator sets it up under Settings, Notifications; [Notifications](notifications.md) has the steps. Most messages go out within seconds of what they are about. The rest (retries, deadlines coming up, envelopes with no activity) wait for a request to:
+
+```text
+/api/internal/notifications
+```
+
+- **On Vercel** `vercel.json` calls it once a day, which is as often as a Hobby plan allows. On a Pro plan, change its schedule to every few minutes for quicker retries.
+- **Anywhere else**, have your scheduler (Cloud Scheduler, say) send it a `GET` or `POST` every 5 to 15 minutes.
+
+It takes the same secrets as the daily cleanup: with `CRON_SECRET` or `RETENTION_JOB_SECRET` set, a caller has to send `Authorization: Bearer <secret>`. Without one it runs at most once a minute and answers with an empty response.
 
 ## Rate limits
 

@@ -17,8 +17,10 @@ import { resolveDatabaseUrl, type EnvSource } from "./utils/env.ts";
 // Settings for the services this install connects to, set by an
 // administrator in the app instead of with environment variables: the
 // Resend API key, single sign-on, the Google Workspace directory, Google
-// Drive, the seal certificate and timestamp server (seal-settings.ts), and
-// where first-run onboarding stands. One row each in integration_settings.
+// Drive, the add-on, the people features, the seal certificate and
+// timestamp server (seal-settings.ts), notifications (the Slack bot token
+// among them), and where first-run onboarding stands. One row each in
+// integration_settings.
 //
 // An environment variable that sets the same thing always wins; the code
 // that uses a setting decides that, and the page shows the setting as fixed.
@@ -44,6 +46,9 @@ export const INTEGRATION_SETTINGS = {
   "google.customerId": { secret: false },
   "google.directory": { secret: false },
   "google.workspaceDomains": { secret: false },
+  "notifications.expiringDays": { secret: false },
+  "notifications.slack.directMessages": { secret: false },
+  "notifications.stuckDays": { secret: false },
   "onboarding.steps": { secret: false },
   // People features (people-policy.ts, directory-sync.ts).
   "people.directorySync": { secret: false },
@@ -55,6 +60,7 @@ export const INTEGRATION_SETTINGS = {
   "seal.p12": { secret: true },
   "seal.p12Password": { secret: true },
   "seal.timestampUrl": { secret: false },
+  "slack.botToken": { secret: true },
   "sso.clientId": { secret: false },
   "sso.clientSecret": { secret: true },
   "sso.issuer": { secret: false },

@@ -69,6 +69,7 @@ test("the steps come in the order onboarding walks them", () => {
       "seal",
       "backups",
       "retention",
+      "notifications",
     ],
   );
 });
@@ -369,6 +370,31 @@ test("the seal step needs attention when the uploaded certificate cannot be used
           "seal.p12": "MIIB",
         },
       }),
+    ),
+    "done",
+  );
+});
+
+test("notifications are done once a Slack token is set, or confirmed without", async () => {
+  assert.equal(await check("notifications", context()), "not_started");
+  assert.equal(
+    await check(
+      "notifications",
+      context({ marks: { notifications: "confirmed" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ stored: { "slack.botToken": "xoxb-stored-token-1234" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ env: { SLACK_BOT_TOKEN: "xoxb-environment-token-1234" } }),
     ),
     "done",
   );
