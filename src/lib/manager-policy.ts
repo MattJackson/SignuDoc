@@ -315,8 +315,23 @@ export async function checkManagerPolicy(
     return { status: "not_applicable" };
   }
 
-  const found = await findSenderManager(sender.email, { directory });
+  return judgeManagerPolicy(
+    current,
+    await findSenderManager(sender.email, { directory }),
+    signers,
+  );
+}
 
+/**
+ * What the rule says about a signing order, given the sender's manager as
+ * already looked up. Asks nobody, so it can be used where no outside call
+ * may be made.
+ */
+export function judgeManagerPolicy(
+  current: ManagerPolicy,
+  found: SenderManager,
+  signers: readonly SigningOrderEntry[],
+): ManagerPolicyCheck {
   if (found.status !== "found") {
     const problem = describeSenderManagerProblem(found);
 

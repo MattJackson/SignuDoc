@@ -118,8 +118,8 @@ export async function loadGoogleSigningPolicy(
 
 /**
  * For the signing page, which only decides what to offer and records
- * nothing: when the settings cannot be read, Google signing is left off
- * for now rather than failing the page.
+ * nothing: when the settings cannot be read, it is decided by the
+ * environment alone rather than failing the page.
  */
 export async function loadGoogleSigningPolicyOrOff(
   env: EnvSource = process.env,
@@ -129,13 +129,11 @@ export async function loadGoogleSigningPolicyOrOff(
   } catch (error) {
     console.error("Could not read the Google signing setting:", error);
 
-    return {
-      available: false,
-      domains: [],
-      mode: "off",
-      source: "default",
-      ssoIsGoogle: false,
-    };
+    // What the environment alone says, as the pages did before.
+    return resolveGoogleSigningPolicy(
+      resolveSignInConfig(null, env),
+      readGoogleSigningSetting(env, null),
+    );
   }
 }
 

@@ -594,6 +594,8 @@ type OffboardInput = {
   breakGlass: ReadonlySet<string>;
   /** Accounts a dry run has already blocked, in its imagination. */
   excludedIds: readonly string[];
+  /** The manager could not be looked up: their work waits for a later run. */
+  managerUnknown?: boolean;
   /** The manager, when the directory says they are still active. */
   managerEmail: string | null;
   now: number;
@@ -686,8 +688,14 @@ async function offboardAccount(
           input.excludedIds,
         )
       : null;
+  // Work that would go to a manager nobody could look up stays where it is
+  // for now, not with an administrator.
+  const waitsForManager = (envelope: { handedOverAt: number | null }) =>
+    envelope.handedOverAt === null && !manager && input.managerUnknown === true;
   const needsKeeper = open.some(
-    (envelope) => envelope.handedOverAt !== null || !manager,
+    (envelope) =>
+      envelope.handedOverAt !== null ||
+      (!manager && !waitsForManager(envelope)),
   );
   const keeper = needsKeeper ? await lockKeeper(tx, excludedIds) : null;
   const handedOver: HandedOverEnvelope[] = [];
@@ -697,7 +705,7 @@ async function offboardAccount(
     const toManager = envelope.handedOverAt === null && manager !== null;
     const recipient = toManager ? manager : keeper;
 
-    if (!recipient) {
+    if (waitsForManager(envelope) || !recipient) {
       envelopesKept += 1;
       continue;
     }
@@ -1145,17 +1153,13 @@ async function syncAccounts({
 
         const manager = await managerIfActive(plan.managerEmail);
 
-        if ("error" in manager) {
+        // The block and the end of sessions go ahead; only the hand-over
+        // of work that has no manager to go to waits for a later run.
+        const managerUnknown = "error" in manager;
+
+        if (managerUnknown) {
           counts.lookupFailures += 1;
           lookupFailedIds.add(account.id);
-          results.push({
-            action: "skipped",
-            email: account.email,
-            error: manager.error,
-            userId: account.id,
-            why: "lookup_failed",
-          });
-          break;
         }
 
         const outcome = await inTransaction(dryRun, database, (tx) =>
@@ -1163,7 +1167,8 @@ async function syncAccounts({
             account,
             breakGlass,
             excludedIds: imaginedBlocked,
-            managerEmail: manager.email,
+            managerEmail: "email" in manager ? manager.email : null,
+            managerUnknown,
             now,
             reason: plan.reason,
           }),

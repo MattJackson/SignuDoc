@@ -175,8 +175,8 @@ Needs the directory (part 2). A sender's manager is the person in the "manager" 
 An administrator chooses the rule, for everyone or only for the members of chosen [teams](teams-and-signing-order.md#teams):
 
 - **Off**: the button is there, nothing more is said.
-- **Suggest**: the signers and review pages suggest adding the manager when they are not an approver in the first step. The envelope can still be sent.
-- **Require**: an envelope is not sent unless the sender's manager is an approver in the **first step** of the signing order. The review page says why and the send is refused, also when the manager cannot be found, so the sender knows to ask their Workspace administrator to set it. The check is made again at the moment of sending, so a change in the directory since the page was opened counts.
+- **Suggest**: the signers and review pages suggest adding the manager when they are not an approver in a first step of their own. The envelope can still be sent.
+- **Require**: an envelope is not sent unless the sender's manager is an approver in a **first step of their own** in the signing order (anyone sharing the step would be invited at the same moment). The review page says why and the send is refused, also when the manager cannot be found, so the sender knows to ask their Workspace administrator to set it. The check is made again at the moment of sending, so a change in the directory since the page was opened counts. Correcting a sent approver's address is checked against the rule again.
 
 The rule does not apply in Part 11 mode, which has no approvers (see [Known gaps](part11/known-gaps.md)). `MANAGER_APPROVAL` (`off`, `suggest` or `require`) sets the rule from the environment and locks it in Settings; the team choice is made in Settings. Changes are in the site audit trail as a settings change.
 

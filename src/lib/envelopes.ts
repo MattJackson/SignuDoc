@@ -73,6 +73,11 @@ import {
 import { getBranding, readStoredSettings } from "./settings.ts";
 import {
   checkManagerPolicy,
+  findSenderManager,
+  judgeManagerPolicy,
+  loadManagerPolicy,
+  managerPolicyAppliesTo,
+  type SenderManager,
   type ManagerPolicy,
   type ManagerPolicyCheck,
 } from "./manager-policy.ts";
@@ -3418,6 +3423,45 @@ const SENT_ENVELOPE_SIGNER_CORRECTION_MESSAGE =
   "Only an envelope that is out for signature can have a signer corrected.";
 
 /**
+ * For a change of an approver's address: the rule in force and the sender's
+ * manager as the directory has them, looked up before the envelope is
+ * locked. Null when the rule is off or the person is not an approver.
+ */
+async function lookUpManagerForApproverCorrection(
+  userId: string,
+  envelopeId: string,
+  signerId: string,
+  database: DbExecutor,
+  directory: DirectoryClient | null | undefined,
+): Promise<{ found: SenderManager; policy: ManagerPolicy } | null> {
+  const approver = await queryOne<{ role: string }>(
+    database,
+    `SELECT role FROM signers WHERE id = $1 AND envelope_id = $2`,
+    [signerId, envelopeId],
+  );
+
+  if (approver?.role !== "approver") {
+    return null;
+  }
+
+  const policy = await loadManagerPolicy(process.env, database);
+  const sender = await queryOne<{ email: string }>(
+    database,
+    `SELECT email FROM "user" WHERE id = $1`,
+    [userId],
+  );
+
+  if (policy.mode === "off" || !sender) {
+    return null;
+  }
+
+  return {
+    found: await findSenderManager(sender.email, { directory }),
+    policy,
+  };
+}
+
+/**
  * Fixes the name and/or email of a signer who has not signed or declined on
  * an envelope that is out for signature. The signing link they already have
  * stops working. If it is their turn, a new invitation goes to the
@@ -3456,7 +3500,30 @@ export async function correctSentEnvelopeSigner(
   // requirement for an employee; someone outside the organization is never
   // asked. Read before the lock, like the settings above. Part 11
   // envelopes are not corrected at all.
-  const googleSigning = await loadGoogleSigningPolicy();
+  const googleSigning = await loadGoogleSigningPolicy().catch(
+    (error: unknown) => {
+      // The setting could not be read. Going on would quietly drop a
+      // requirement, so the correction stops instead.
+      console.error("Could not read the Google signing setting:", error);
+      throw new EnvelopeMutationError(
+        "The site's settings could not be read just now. Try again in a moment.",
+        503,
+      );
+    },
+  );
+  // The administrator's rule about the sender's manager, for a change of an
+  // approver's address. The directory is asked here, before the lock, and
+  // the lock only judges what was found.
+  const managerLookup =
+    parsedInput.email === undefined
+      ? null
+      : await lookUpManagerForApproverCorrection(
+          userId,
+          envelopeId,
+          signerId,
+          database,
+          directory,
+        );
   const googleRequiredFor = (email: string, requiredBefore: boolean) =>
     isWorkspaceAddress(email, googleSigning.domains) &&
     (requiredBefore ||
@@ -3607,16 +3674,18 @@ export async function correctSentEnvelopeSigner(
     // this was sent. Changing an approver's address must not swap out the
     // manager it required, so the rule is checked again with the new one.
     if (
+      managerLookup &&
       signer.role === "approver" &&
-      nextEmail.toLowerCase() !== signer.email.toLowerCase()
+      nextEmail.toLowerCase() !== signer.email.toLowerCase() &&
+      (await managerPolicyAppliesTo(userId, managerLookup.policy, tx))
     ) {
       const current = await listSignersForEnvelopeId(envelopeId, tx);
-      const managerCheck = await checkManagerPolicyForSender(
-        userId,
+      const managerCheck = judgeManagerPolicy(
+        managerLookup.policy,
+        managerLookup.found,
         current.map((person) =>
           person.id === signerId ? { ...person, email: nextEmail } : person,
         ),
-        { database: tx, directory, part11: false },
       );
 
       if (managerCheck.status === "blocked") {
