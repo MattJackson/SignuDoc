@@ -5,7 +5,12 @@ import { after, before, mock, test } from "node:test";
 import type pg from "pg";
 import { z } from "zod";
 
-import { withTransaction } from "../db/connection.ts";
+import { replaceDbPoolForTests, withTransaction } from "../db/connection.ts";
+import {
+  getIntegrationSettings,
+  invalidateIntegrationSettingsCache,
+  saveIntegrationSettings,
+} from "../integration-settings.ts";
 import { openTestDatabase } from "../db/test-database.ts";
 import { recordAuditEvent } from "../services/audit.ts";
 import type {
@@ -23,6 +28,8 @@ import {
   type OutboxDeps,
 } from "./outbox.ts";
 import { savePreferenceChoices } from "./preferences.ts";
+import { SLACK_TOKEN_SETTING } from "./slack/channel.ts";
+import { saveNotificationSettings } from "./settings.ts";
 import {
   createNotificationRule,
   NotificationSettingsError,
@@ -922,4 +929,165 @@ test("a delivery left 'sending' after its last attempt is failed, not taken agai
     rows.map((row) => row.status).join(","),
   );
   assert.equal(fake.sent.length, 0);
+});
+
+const TOKEN_A = "xoxb-1111111111-tokenAAAAAA";
+const TOKEN_B = "xoxb-2222222222-tokenBBBBBB";
+const settingsEnv = { ...process.env, BETTER_AUTH_SECRET: "a".repeat(40) };
+
+async function seedSlackMemory() {
+  const envelopeId = await createEnvelope(owner.id, {
+    sentAt: Math.floor(Date.now() / 1000),
+  });
+
+  await database.query(
+    `
+      insert into notification_identities (
+        user_id, channel, lookup_email, external_id, checked_at
+      ) values ($1, 'slack', $2, 'UOLD', 1)
+      on conflict (user_id, channel) do update set external_id = 'UOLD'
+    `,
+    [owner.id, owner.email.toLowerCase()],
+  );
+  await database.query(
+    `
+      insert into notification_threads (
+        envelope_id, channel, target_kind, target, conversation, message_ts,
+        created_at, updated_at
+      ) values ($1, 'slack', 'user', $2, 'DOLD', '1.1', 1, 1)
+    `,
+    [envelopeId, owner.id],
+  );
+
+  return envelopeId;
+}
+
+async function slackMemoryCounts(envelopeId: string) {
+  const identities = await database.query(
+    `select 1 from notification_identities where user_id = $1 and channel = 'slack'`,
+    [owner.id],
+  );
+  const threads = await database.query(
+    `select 1 from notification_threads where envelope_id = $1`,
+    [envelopeId],
+  );
+
+  return { identities: identities.rows.length, threads: threads.rows.length };
+}
+
+test("a new Slack token wipes the old workspace's memory even when the cached token looked the same", async () => {
+  const replaced = replaceDbPoolForTests(database);
+  const actor = { email: admin.email, id: admin.id };
+
+  try {
+    await database.query(
+      `delete from public.integration_settings where key = $1`,
+      [SLACK_TOKEN_SETTING],
+    );
+    invalidateIntegrationSettingsCache();
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    const cachedWithA = globalThis.__signudocIntegrationSettings;
+    const envelopeId = await seedSlackMemory();
+
+    // Another instance saves token B; this one's cache still holds A.
+    await saveIntegrationSettings({ [SLACK_TOKEN_SETTING]: TOKEN_B }, actor, {
+      area: "test",
+      database,
+      env: settingsEnv,
+    });
+    globalThis.__signudocIntegrationSettings = cachedWithA;
+
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    assert.deepEqual(await slackMemoryCounts(envelopeId), {
+      identities: 0,
+      threads: 0,
+    });
+  } finally {
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
+});
+
+test("a failed wipe leaves the old Slack token in place", async () => {
+  const replaced = replaceDbPoolForTests(database);
+  const actor = { email: admin.email, id: admin.id };
+
+  try {
+    await database.query(
+      `delete from public.integration_settings where key = $1`,
+      [SLACK_TOKEN_SETTING],
+    );
+    invalidateIntegrationSettingsCache();
+    await saveNotificationSettings(
+      { slackBotToken: TOKEN_A },
+      actor,
+      settingsEnv,
+    );
+
+    const envelopeId = await seedSlackMemory();
+    const guard = <T extends object>(target: T): T =>
+      new Proxy(target, {
+        get(inner, property) {
+          if (property === "query") {
+            return (text: unknown, ...rest: unknown[]) =>
+              typeof text === "string" &&
+              /DELETE FROM notification_identities/i.test(text)
+                ? Promise.reject(new Error("the delete failed"))
+                : (
+                    inner as unknown as {
+                      query: (...args: unknown[]) => unknown;
+                    }
+                  ).query(text, ...rest);
+          }
+
+          if (property === "connect") {
+            return async () =>
+              guard(
+                await (
+                  inner as unknown as { connect: () => Promise<object> }
+                ).connect(),
+              );
+          }
+
+          const value = Reflect.get(inner, property, inner) as unknown;
+
+          return typeof value === "function"
+            ? (value as (...args: unknown[]) => unknown).bind(inner)
+            : value;
+        },
+      });
+
+    replaceDbPoolForTests(guard(database));
+
+    await assert.rejects(
+      saveNotificationSettings({ slackBotToken: TOKEN_B }, actor, settingsEnv),
+    );
+
+    replaceDbPoolForTests(database);
+    invalidateIntegrationSettingsCache();
+
+    assert.equal(
+      (await getIntegrationSettings(settingsEnv))[SLACK_TOKEN_SETTING],
+      TOKEN_A,
+    );
+    assert.deepEqual(await slackMemoryCounts(envelopeId), {
+      identities: 1,
+      threads: 1,
+    });
+  } finally {
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
 });

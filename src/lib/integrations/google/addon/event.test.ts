@@ -163,3 +163,18 @@ test("the add-on's settings come from the environment first", () => {
   assert.equal(isAddonTrigger("gmail-message"), true);
   assert.equal(isAddonTrigger("../admin"), false);
 });
+
+test("a long Drive selection or title is cut, not refused", () => {
+  const event = parseAddonEvent({
+    drive: {
+      selectedItems: Array.from({ length: 101 }, (_, index) => ({
+        id: `file-${String(index)}`,
+        title: index === 0 ? "t".repeat(2000) : "Doc",
+      })),
+    },
+  });
+
+  assert.equal(event.drive?.selectedItems.length, 100);
+  assert.equal(event.drive?.selectedItems[0]?.id, "file-0");
+  assert.equal(event.drive?.selectedItems[0]?.title.length, 1024);
+});

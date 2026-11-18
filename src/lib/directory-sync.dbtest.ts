@@ -954,3 +954,43 @@ test("an already blocked account whose open work nobody could take is still repo
   );
   assert.equal(outcome.counts.offboarded, 1);
 });
+
+test("an already blocked account whose work stays unhanded does not use up a per-run slot", async () => {
+  await resetRoles();
+
+  const domain = newDomain();
+  const ada = await createUser(domain, "ada");
+  const bea = await createUser(domain, "bea");
+
+  await createUser(domain, "admin", "admin");
+  await createEnvelope(ada.id, "sent");
+  await database.query(
+    `
+      update public."user"
+      set directory_blocked_at = 1, directory_blocked_reason = 'directory_suspended'
+      where id = $1
+    `,
+    [ada.id],
+  );
+  // Ada was never asked about, so she comes first, ahead of Bea.
+  await database.query(
+    `update public."user" set directory_checked_at = 1 where id = $1`,
+    [bea.id],
+  );
+
+  // Ada's manager cannot be looked up, so her work stays where it is.
+  const managerEmail = `grace@${newDomain()}`;
+  const { directory } = fakeDirectory({
+    [ada.email]: suspended(ada.email, managerEmail),
+    [bea.email]: suspended(bea.email),
+    [managerEmail]: new DirectoryError(
+      "Google's directory did not answer.",
+      503,
+    ),
+  });
+  const { outcome } = await run(domain, directory, { limit: 1 });
+
+  assert.equal(resultFor(outcome, bea.id)?.action, "offboarded");
+  assert.notEqual((await userRow(bea.id)).blockedAt, null);
+  assert.equal(outcome.counts.deferred, 0);
+});

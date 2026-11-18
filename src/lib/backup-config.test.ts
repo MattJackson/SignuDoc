@@ -505,3 +505,31 @@ test("an invalid backup folder in the environment is a configuration problem, no
   assert.equal(status.state, "failing");
   assert.match(status.message, /BACKUP_GCS_PREFIX/);
 });
+
+test("a dotted bucket name can be longer than 63 characters", () => {
+  const part = "a".repeat(50);
+  const long = `${part}.${part}`;
+
+  assert.equal(long.length, 101);
+  assert.equal(
+    (
+      parseBackupConfigInput({
+        destination: { bucket: long, kind: "gcs" },
+        keepDays: 30,
+      }).destination as { bucket: string }
+    ).bucket,
+    long,
+  );
+
+  // A part over 63 characters, or an undotted name over 63, is refused.
+  for (const bucket of [`${"a".repeat(64)}.${part}`, "a".repeat(64)]) {
+    assert.throws(
+      () =>
+        parseBackupConfigInput({
+          destination: { bucket, kind: "gcs" },
+          keepDays: 30,
+        }),
+      BackupConfigError,
+    );
+  }
+});
