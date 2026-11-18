@@ -203,7 +203,7 @@ test("moving to Unicode lower() renames names that now collide and removes no ro
         teams.map((row) => [row.id, row.name]),
         [
           ["t1", "Équipe"],
-          ["t2", "équipe (2)"],
+          ["t2", "équipe (t2)"],
           ["t3", "Plain"],
         ],
       );

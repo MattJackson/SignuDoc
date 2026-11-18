@@ -67,7 +67,13 @@ export function isTransientLeaseError(error) {
   const name = /** @type {{ name?: unknown }} */ (error)?.name;
 
   return (
-    name === "TimeoutError" || name === "AbortError" || name === "TypeError"
+    name === "TimeoutError" ||
+    name === "AbortError" ||
+    // What fetch throws when the network fails; any other TypeError is a bug.
+    (name === "TypeError" &&
+      /fetch failed/.test(
+        String(/** @type {{ message?: unknown }} */ (error).message),
+      ))
   );
 }
 /**
@@ -471,7 +477,8 @@ export function createLease({
  *   written or uploaded, and the refreshes go on. If a write goes through
  *   again, nobody took the lease meanwhile, and they continue. If the lease
  *   turns out to be taken, they are killed and the process exits. Before
- *   there is anything to suspend, the process exits.
+ *   there is anything to suspend, nothing happens: confirm() is the check
+ *   that gates the start, and it retries an error that comes and goes.
  * - A handover keeps the refreshes going while the app stops: SIGTERM, then
  *   the app server alone is killed after `graceServerMs` (Litestream then
  *   makes its final sync), then everything after `graceGroupMs` more.
@@ -537,8 +544,13 @@ export function holdLease({
     }
 
     if (!child) {
-      log("the lease could not be refreshed in time; stopping");
-      exit(1);
+      // Nothing is replicated yet, and the check before it (confirm) is what
+      // keeps a holder that lost the lease from starting. A restore or a
+      // migration may block the loop for longer than the ttl on a healthy
+      // lease, so this is no reason to stop.
+      log(
+        "the lease was not refreshed in time; it is checked before replicating",
+      );
       return;
     }
 
@@ -680,7 +692,15 @@ export function holdLease({
         timer = null;
       }
 
-      const state = await enqueue();
+      // A few tries, for an error that comes and goes.
+      let state = await enqueue();
+
+      for (let attempt = 0; attempt < 3 && state === "failed"; attempt += 1) {
+        await new Promise((resolve) => {
+          setTimer(() => resolve(undefined), retryMs * 2 ** attempt);
+        });
+        state = await enqueue();
+      }
 
       schedule(intervalMs);
 
