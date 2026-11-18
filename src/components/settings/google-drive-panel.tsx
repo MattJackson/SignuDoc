@@ -11,6 +11,7 @@ import {
   SetupSteps,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
+import { readExports } from "@/components/settings/drive-exports";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   GoogleDriveView,
@@ -211,12 +212,26 @@ export function GoogleDriveSection({
     }
   }
 
-  async function loadExports() {
-    const payload = await postAction<{ exports?: DriveExportListItem[] }>({
-      action: "list_exports",
-    });
+  async function fetchExports(): Promise<DriveExportListItem[] | null> {
+    const list = readExports(
+      await postAction<{ exports?: DriveExportListItem[] }>({
+        action: "list_exports",
+      }),
+    );
 
-    setExports(payload?.exports ?? []);
+    if (list === null) {
+      setNotice({ message: "Could not load the export list.", tone: "error" });
+    }
+
+    return list;
+  }
+
+  async function loadExports() {
+    const list = await fetchExports();
+
+    if (list !== null) {
+      setExports(list);
+    }
   }
 
   useEffect(() => {
@@ -226,11 +241,9 @@ export function GoogleDriveSection({
 
     let cancelled = false;
 
-    void postAction<{ exports?: DriveExportListItem[] }>({
-      action: "list_exports",
-    }).then((payload) => {
-      if (!cancelled) {
-        setExports(payload?.exports ?? []);
+    void fetchExports().then((list) => {
+      if (!cancelled && list !== null) {
+        setExports(list);
       }
     });
 

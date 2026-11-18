@@ -3,5 +3,7 @@
 export function readExports<T>(
   payload: { exports?: T[] } | null | undefined,
 ): T[] | null {
-  return payload?.exports ?? [];
+  const list = payload?.exports;
+
+  return Array.isArray(list) ? list : null;
 }

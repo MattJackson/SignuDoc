@@ -4,8 +4,9 @@ export function saveFailureMessage(
   fieldErrors: Record<string, string>,
   error: string | null,
 ): string {
-  void fieldErrors;
-  void error;
+  if (Object.keys(fieldErrors).length === 0 && error) {
+    return error;
+  }
 
   return "Check the highlighted fields.";
 }

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { preferenceCheckboxLabel } from "@/components/settings/preference-label";
 import { ShellButton } from "@/components/shared/form-shell";
 import type { PreferenceChoice } from "@/lib/notifications/preferences";
 import type { NotificationPreferencesView } from "@/lib/notifications/settings";
@@ -124,7 +125,11 @@ export function NotificationPreferencesPanel({
     }
   }
 
-  function checkbox(event: PreferenceChoice["event"], scope: "own" | "team") {
+  function checkbox(
+    event: PreferenceChoice["event"],
+    label: string,
+    scope: "own" | "team",
+  ) {
     const key = choiceKey({ event, scope });
 
     if (!available.has(key)) {
@@ -133,7 +138,7 @@ export function NotificationPreferencesPanel({
 
     return (
       <input
-        aria-label={`${event} ${scope === "own" ? "for my envelopes" : "for my teams' envelopes"}`}
+        aria-label={preferenceCheckboxLabel(label, scope)}
         checked={choices[key] ?? false}
         className="size-4 accent-(--accent)"
         disabled={pending !== null}
@@ -208,9 +213,13 @@ export function NotificationPreferencesPanel({
                     {event.audience === "admin" ? " (administrators)" : ""}
                   </span>
                 </td>
-                <td className="py-3 pr-4">{checkbox(event.kind, "own")}</td>
+                <td className="py-3 pr-4">
+                  {checkbox(event.kind, event.label, "own")}
+                </td>
                 {view.onTeam ? (
-                  <td className="py-3 pr-4">{checkbox(event.kind, "team")}</td>
+                  <td className="py-3 pr-4">
+                    {checkbox(event.kind, event.label, "team")}
+                  </td>
                 ) : null}
               </tr>
             ))}

@@ -4,5 +4,5 @@ export function preferenceCheckboxLabel(
   label: string,
   scope: "own" | "team",
 ): string {
-  return `${label} ${scope === "own" ? "for my envelopes" : "for my teams' envelopes"}`;
+  return `${label}, ${scope === "own" ? "for my envelopes" : "for my teams' envelopes"}`;
 }
