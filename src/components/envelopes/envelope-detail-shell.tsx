@@ -60,6 +60,8 @@ type EnvelopeDetailSigner = {
   order: number;
   status: SignerStatus;
   statusDateLabel?: string;
+  /** Signers who share a step sign at the same time. */
+  step?: number;
   tint?: string;
 };
 
@@ -230,6 +232,13 @@ export function EnvelopeDetailShell({
     activeRecord.status === "sent"
       ? activeRecord.signers.find((signer) => signer.status === "waiting")
       : null;
+  // Someone on the sender's team, or an administrator, sees the envelope
+  // but cannot change it. The server refuses their changes too.
+  const canManage = record.canManage !== false;
+  const stepOf = (signer: EnvelopeDetailSigner) => signer.step ?? signer.order;
+  const signsAtTheSameTime =
+    new Set(activeRecord.signers.map(stepOf)).size <
+    activeRecord.signers.length;
 
   function handleDownload(fileType: DownloadFileType) {
     // This starts a file download from an API route, not a page navigation.
@@ -498,6 +507,7 @@ export function EnvelopeDetailShell({
           <div className="flex min-w-0 items-center gap-5">
             <span className="hidden h-28 shrink-0 items-center justify-center rounded-2xl bg-(--surface) px-4 py-3 sm:flex">
               <DocumentThumbnail
+                canBackfill={canManage}
                 envelopeId={envelopeId}
                 title={activeRecord.title}
               />
@@ -531,11 +541,17 @@ export function EnvelopeDetailShell({
                   </span>
                 ) : null}
               </div>
+              {record.sentByLabel ? (
+                <p className="text-sm text-(--secondary)">
+                  Sent by {record.sentByLabel}. You can follow it and download
+                  its finished files; only the sender can change it.
+                </p>
+              ) : null}
             </div>
           </div>
 
           <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
-            {activeRecord.status === "draft" ? (
+            {canManage && activeRecord.status === "draft" ? (
               <>
                 <ShellButton
                   onClick={() => setActiveModal("delete-draft")}
@@ -549,7 +565,7 @@ export function EnvelopeDetailShell({
               </>
             ) : null}
 
-            {activeRecord.status === "sent" ? (
+            {canManage && activeRecord.status === "sent" ? (
               <>
                 <ShellButton
                   onClick={() => setActiveModal("void-envelope")}
@@ -598,15 +614,17 @@ export function EnvelopeDetailShell({
 
             {activeRecord.status !== "draft" ? (
               <>
-                <ShellButton
-                  onClick={() => {
-                    setActionError(null);
-                    setActiveModal("copy-draft");
-                  }}
-                  variant="secondary"
-                >
-                  Copy to new draft
-                </ShellButton>
+                {canManage ? (
+                  <ShellButton
+                    onClick={() => {
+                      setActionError(null);
+                      setActiveModal("copy-draft");
+                    }}
+                    variant="secondary"
+                  >
+                    Copy to new draft
+                  </ShellButton>
+                ) : null}
                 <ShellButton
                   onClick={() =>
                     // A file download from an API route, not a page navigation.
@@ -622,7 +640,8 @@ export function EnvelopeDetailShell({
               </>
             ) : null}
 
-            {canDeleteFinished &&
+            {canManage &&
+            canDeleteFinished &&
             (activeRecord.status === "completed" ||
               activeRecord.status === "declined" ||
               activeRecord.status === "voided") ? (
@@ -658,16 +677,18 @@ export function EnvelopeDetailShell({
             >
               {deadlineText}
             </p>
-            <button
-              className="btn-quiet shrink-0"
-              onClick={() => {
-                setActionError(null);
-                setActiveModal("change-deadline");
-              }}
-              type="button"
-            >
-              {isExpired ? "Set a new deadline" : "Change deadline"}
-            </button>
+            {canManage ? (
+              <button
+                className="btn-quiet shrink-0"
+                onClick={() => {
+                  setActionError(null);
+                  setActiveModal("change-deadline");
+                }}
+                type="button"
+              >
+                {isExpired ? "Set a new deadline" : "Change deadline"}
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -676,16 +697,18 @@ export function EnvelopeDetailShell({
             <p className="text-sm leading-6 text-(--secondary)">
               {remindersText}
             </p>
-            <button
-              className="btn-quiet shrink-0"
-              onClick={() => {
-                setActionError(null);
-                setActiveModal("change-reminders");
-              }}
-              type="button"
-            >
-              Change reminders
-            </button>
+            {canManage ? (
+              <button
+                className="btn-quiet shrink-0"
+                onClick={() => {
+                  setActionError(null);
+                  setActiveModal("change-reminders");
+                }}
+                type="button"
+              >
+                Change reminders
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -704,7 +727,7 @@ export function EnvelopeDetailShell({
               View templates
             </Link>
           </div>
-        ) : activeRecord.signers.length > 0 ? (
+        ) : canManage && activeRecord.signers.length > 0 ? (
           <div
             className={`well flex flex-col gap-3 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between ${
               deadlineText || deadline ? "mt-3" : "mt-5"
@@ -766,7 +789,7 @@ export function EnvelopeDetailShell({
                         color: palette.color,
                       }}
                     >
-                      {signer.order}
+                      {signsAtTheSameTime ? stepOf(signer) : signer.order}
                     </span>
 
                     <div className="min-w-0 flex-1">
@@ -796,7 +819,8 @@ export function EnvelopeDetailShell({
                               {signer.statusDateLabel}
                             </p>
                           ) : null}
-                          {activeRecord.status === "sent" &&
+                          {canManage &&
+                          activeRecord.status === "sent" &&
                           !record.part11 &&
                           (signer.status === "waiting" ||
                             signer.status === "pending") ? (

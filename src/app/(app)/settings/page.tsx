@@ -3,6 +3,7 @@ import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-pan
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { SetupChecklist } from "@/components/settings/setup-checklist";
+import { TeamsPanel } from "@/components/settings/teams-panel";
 import { UpdatesPanel } from "@/components/settings/updates-panel";
 import { isAdminUser } from "@/lib/auth/admin";
 import { getBackupSettingsView } from "@/lib/backup-config";
@@ -54,6 +55,7 @@ export default async function SettingsPage() {
         <GoogleWorkspacePanel initialView={googleWorkspace} />
       ) : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
+      {isAdmin ? <TeamsPanel /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );

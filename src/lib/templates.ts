@@ -26,6 +26,7 @@ import {
   type TemplateRole,
 } from "./schemas/template.ts";
 import { buildTemplatePdfKey } from "./services/storage-keys.ts";
+import { normalizeSigningSteps } from "./signing-steps.ts";
 import {
   createStorageService,
   StorageObjectNotFoundError,
@@ -290,8 +291,15 @@ export async function saveEnvelopeAsTemplate(
     );
   }
 
+  // Each role keeps its signer's step, so roles that signed at the same
+  // time still do when the template is used.
+  const steps = normalizeSigningSteps(signers.map((signer) => signer.step));
   const roles = templateRolesSchema.parse(
-    roleNames.map((name) => ({ id: randomUUID(), name })),
+    roleNames.map((name, index) => ({
+      id: randomUUID(),
+      name,
+      step: steps[index],
+    })),
   );
   const roleIdBySignerId = new Map(
     signers.map((signer, index) => [signer.id, roles[index]!.id] as const),
@@ -470,10 +478,20 @@ export async function createDraftFromTemplate(
   const envelopeId = draft.envelope.id;
 
   try {
+    // The roles' steps, when the template has them. One saved before steps
+    // existed has none, and its people sign one after the other.
+    const roleSteps = roles.data.every((role) => role.step !== undefined)
+      ? roles.data.map((role) => role.step)
+      : null;
     const saved = await replaceDraftEnvelopeSigners(
       userId,
       envelopeId,
-      { signers: parsedInput.signers },
+      {
+        signers: parsedInput.signers.map((signer, index) => ({
+          ...signer,
+          ...(roleSteps ? { signingStep: roleSteps[index] } : {}),
+        })),
+      },
       database,
     );
     const signerIdByOrder = new Map(

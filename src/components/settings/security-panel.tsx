@@ -43,6 +43,11 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   signed_out: "Signed out",
   signing_locked: "Signing locked",
   signing_unlocked: "Signing unlocked",
+  team_created: "Team made",
+  team_deleted: "Team deleted",
+  team_member_added: "Added to a team",
+  team_member_removed: "Removed from a team",
+  team_updated: "Team changed",
   two_factor_backup_codes_regenerated: "New backup codes made",
   two_factor_disabled: "Two-step sign-in turned off",
   two_factor_enabled: "Two-step sign-in turned on",
@@ -99,6 +104,18 @@ function describeEvent(event: SystemAuditEvent): string {
       return typeof metadata.domain === "string" ? metadata.domain : "";
     case "backup_settings_changed":
       return Array.isArray(metadata.changes) ? metadata.changes.join(", ") : "";
+    case "team_created":
+    case "team_deleted":
+    case "team_updated":
+      return typeof metadata.teamName === "string" ? metadata.teamName : "";
+    case "team_member_added":
+    case "team_member_removed":
+      return [
+        typeof metadata.teamName === "string" ? metadata.teamName : null,
+        target,
+      ]
+        .filter(Boolean)
+        .join(": ");
     case "envelope_deleted":
       return [
         typeof metadata.title === "string" ? `"${metadata.title}"` : null,
