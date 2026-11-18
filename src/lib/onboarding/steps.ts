@@ -7,6 +7,10 @@ import {
 } from "../integration-settings.ts";
 import { getGoogleCredentials } from "../integrations/google/credentials.ts";
 import { readDirectoryConfig } from "../integrations/google/directory.ts";
+import {
+  readDriveExportConfig,
+  readPickerConfig,
+} from "../integrations/google/drive-config.ts";
 import { resolveEmailDriver, resolveResendApiKey } from "../services/email.ts";
 import { getSettings, type ResolvedSettings } from "../settings.ts";
 import { describeStorageDriver } from "../storage-check.ts";
@@ -19,14 +23,14 @@ import { type EnvSource } from "../utils/env.ts";
 // a step that has a sensible "leave it as it is" can be confirmed as done.
 //
 // Other parts of the app add a step by adding it here (and its form to
-// components/onboarding/steps.tsx under the same id). A Google Drive step
-// belongs after "google-directory" when Drive features arrive.
+// components/onboarding/steps.tsx under the same id).
 
 export type OnboardingStepId =
   | "organization"
   | "email"
   | "google-sign-in"
   | "google-directory"
+  | "google-drive"
   | "storage"
   | "backups"
   | "retention";
@@ -186,6 +190,54 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "Suggest colleagues as recipients, and make a Google Group's members administrators.",
     title: "Workspace directory and admin group",
+  },
+  {
+    check: async ({ env, stored }) => {
+      const picker = readPickerConfig(env, stored);
+      const exportConfig = readDriveExportConfig(env, stored);
+
+      if (!picker.ready && !exportConfig.enabled) {
+        return {
+          detail: "Documents are uploaded from this computer only.",
+          status: "not_started",
+        };
+      }
+
+      if (exportConfig.enabled) {
+        let credentials;
+
+        try {
+          credentials = getGoogleCredentials();
+        } catch {
+          credentials = null;
+        }
+
+        if (!credentials) {
+          return {
+            detail:
+              "Executed copies go to a Shared Drive, but this site has no Google credentials.",
+            status: "needs_attention",
+          };
+        }
+      }
+
+      return {
+        detail: [
+          picker.ready ? "Envelopes can start from Google Drive." : null,
+          exportConfig.enabled
+            ? "Executed copies are kept in a Shared Drive."
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        status: "done",
+      };
+    },
+    id: "google-drive",
+    settingsHref: "/settings#google-drive",
+    summary:
+      "Start envelopes from Drive, open files with this site, and keep executed copies in a Shared Drive.",
+    title: "Google Drive",
   },
   {
     check: async ({ env }) => {

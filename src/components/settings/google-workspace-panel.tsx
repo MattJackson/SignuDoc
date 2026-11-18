@@ -2,7 +2,9 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 
+import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import type { GoogleDriveView } from "@/lib/google-drive";
 import type {
   DirectoryTestResult,
   GoogleWorkspaceView,
@@ -13,8 +15,8 @@ import type {
 // Each part is a step-by-step checklist: what to do in Google's consoles,
 // with this site's own values to paste there, and live checks of what is
 // already in place. Values fixed by an environment variable are shown and
-// locked. A Google Drive section can be added after the directory one, on
-// the same service account.
+// locked. The Google Drive section (google-drive-panel.tsx) comes after the
+// directory one, on the same service account.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 const GOOGLE_AUTH_CLIENTS_URL = "https://console.cloud.google.com/auth/clients";
@@ -85,8 +87,11 @@ type Workspace = ReturnType<typeof useGoogleWorkspace>;
 
 /** The whole Google Workspace area of Settings. */
 export function GoogleWorkspacePanel({
+  driveView = null,
   initialView,
 }: {
+  /** The Google Drive settings, shown after the directory. */
+  driveView?: GoogleDriveView | null;
   initialView: GoogleWorkspaceView;
 }) {
   const workspace = useGoogleWorkspace(initialView);
@@ -105,11 +110,13 @@ export function GoogleWorkspacePanel({
         <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
           Let everyone in your organization sign in with their Google account,
           suggest colleagues as recipients, and make a Google Group&apos;s
-          members administrators. The full guide is in docs/google-workspace.md.
+          members administrators, and work with Google Drive. The full guide is
+          in docs/google-workspace.md.
         </p>
       </div>
       <GoogleSignInSection workspace={workspace} />
       <GoogleDirectorySection workspace={workspace} />
+      {driveView ? <GoogleDriveSection initialView={driveView} /> : null}
     </section>
   );
 }

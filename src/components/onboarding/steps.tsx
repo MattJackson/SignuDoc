@@ -4,11 +4,13 @@ import { useState, type ComponentType, type FormEvent } from "react";
 
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { EmailSetupPanel } from "@/components/settings/email-setup-panel";
+import { GoogleDriveSection } from "@/components/settings/google-drive-panel";
 import {
   GoogleDirectorySection,
   GoogleSignInSection,
   useGoogleWorkspace,
 } from "@/components/settings/google-workspace-panel";
+import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -19,6 +21,7 @@ import type { OrganizationSettingsView } from "@/lib/organization-settings";
 // drift apart.
 
 export type OnboardingData = {
+  googleDrive: GoogleDriveView;
   googleWorkspace: GoogleWorkspaceView;
   organization: OrganizationSettingsView;
   storage: { driver: string | null; problem: string | null };
@@ -245,6 +248,10 @@ function GoogleDirectoryStep({ data }: StepFormProps) {
   return <GoogleDirectorySection workspace={workspace} />;
 }
 
+function GoogleDriveStep({ data }: StepFormProps) {
+  return <GoogleDriveSection initialView={data.googleDrive} />;
+}
+
 function StorageStep({ data }: StepFormProps) {
   const [result, setResult] = useState<Feedback>(null);
   const [checking, setChecking] = useState(false);
@@ -390,6 +397,7 @@ export const STEP_FORMS: Record<
   backups: BackupsStep,
   email: EmailStep,
   "google-directory": GoogleDirectoryStep,
+  "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
   retention: RetentionStep,

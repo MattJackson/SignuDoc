@@ -25,8 +25,11 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   account_deleted: "Account deleted",
   backup_run_requested: "Backup started by hand",
   backup_settings_changed: "Backup settings changed",
+  drive_export_retried: "Drive export tried again",
   email_domain_changed: "Email domain changed",
   envelope_deleted: "Finished envelope deleted",
+  google_drive_connected: "Google Drive connected",
+  google_drive_disconnected: "Google Drive disconnected",
   identity_verification_revoked: "Identity confirmation taken back",
   identity_verified: "Identity confirmed",
   logo_changed: "Logo changed",
@@ -124,6 +127,12 @@ function describeEvent(event: SystemAuditEvent): string {
       ]
         .filter(Boolean)
         .join(", ");
+    case "google_drive_connected":
+      return typeof metadata.googleEmail === "string"
+        ? metadata.googleEmail
+        : "";
+    case "drive_export_retried":
+      return typeof metadata.title === "string" ? `"${metadata.title}"` : "";
     default:
       return target ?? "";
   }
