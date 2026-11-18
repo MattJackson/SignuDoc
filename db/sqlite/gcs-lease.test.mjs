@@ -818,3 +818,91 @@ test("Cloud Storage and metadata calls are given up on after a timeout", async (
     timedOut,
   );
 });
+
+test("a migration that blocks the loop past the ttl does not stop a start nobody contests", async () => {
+  const startWithLease = needs(startModule, "startWithLease");
+  const rig = holderRig();
+  const order = [];
+
+  const code = await startWithLease({
+    holdOptions: rig.options,
+    lease: rig.lease,
+    log: () => {},
+    migrate: async () => {
+      // The loop was blocked for 40 s, so the fence timer is overdue and runs
+      // as soon as the loop is free again.
+      rig.time.advance(40_000);
+      await rig.timers.advance(0);
+    },
+    replicate: () => {
+      order.push("replicate");
+      return { ...fakeChild(rig.events), exited: Promise.resolve(0) };
+    },
+    restore: async () => {},
+    startWaiting: () => async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(order, ["replicate"]);
+  assert.deepEqual(rig.exits, []);
+});
+
+test("the check before replicating retries an error that comes and goes", async () => {
+  const startWithLease = needs(startModule, "startWithLease");
+  const rig = holderRig();
+  const order = [];
+  const done = startWithLease({
+    holdOptions: rig.options,
+    lease: rig.lease,
+    log: () => {},
+    migrate: async () => {
+      rig.storage.faults.write = "reject";
+      rig.timers.setTimer(() => {
+        rig.storage.faults.write = "ok";
+      }, 2_500);
+    },
+    replicate: () => {
+      order.push("replicate");
+      return { ...fakeChild(rig.events), exited: Promise.resolve(0) };
+    },
+    restore: async () => {},
+    startWaiting: () => async () => {},
+  });
+
+  await rig.timers.advance(10_000);
+  assert.equal(await done, 0);
+  assert.deepEqual(order, ["replicate"]);
+  assert.deepEqual(rig.exits, []);
+});
+
+test("only a network failure is a TypeError worth retrying", async () => {
+  const failing = (error) =>
+    createLease({
+      holder: "a",
+      revision: "s-00001-a",
+      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      storage: {
+        read: async () => {
+          throw error;
+        },
+        remove: async () => false,
+        write: async () => null,
+      },
+    });
+
+  await assert.rejects(
+    failing(new TypeError("Cannot read properties of null")).acquire(),
+    /Cannot read properties/,
+  );
+
+  const retried = failing(new TypeError("fetch failed")).acquire();
+  const outcome = await Promise.race([
+    retried.then(
+      () => "done",
+      () => "rejected",
+    ),
+    new Promise((resolve) => setTimeout(() => resolve("still trying"), 50)),
+  ]);
+
+  assert.equal(outcome, "still trying");
+});
