@@ -21,6 +21,8 @@ export function describeSsoError(code: string): string {
       return "Sign in with your organization's Google Workspace account, not a personal Google account.";
     case "workspace_domain_not_allowed":
       return "This Google account belongs to a different organization's Workspace. Sign in with your account at this organization.";
+    case "directory_blocked":
+      return "This account was suspended or removed in your organization's Google Workspace, so it can no longer sign in here. Ask an administrator if this is a mistake.";
     case "access_denied":
       return "Sign-in was cancelled.";
     case "email_not_found":

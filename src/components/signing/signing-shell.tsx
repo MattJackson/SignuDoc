@@ -37,8 +37,9 @@ const tokenStateCopy: Record<
     description: "Request a new signing link from the sender.",
   },
   "already-signed": {
-    title: "You've already signed",
-    description: "You already completed your signature for this document.",
+    title: "You've already finished",
+    description:
+      "You already signed or approved this document. No further action is needed.",
   },
   voided: {
     title: "This envelope has been voided",
@@ -48,7 +49,7 @@ const tokenStateCopy: Record<
   declined: {
     title: "This envelope has been declined",
     description:
-      "A signer declined this document. No further action is needed.",
+      "A signer declined, or an approver rejected, this document. No further action is needed.",
   },
 };
 
@@ -61,7 +62,11 @@ export function SigningShell({
 }: SigningShellProps) {
   if (record) {
     return (
-      <SigningLiveShell record={record} signatureProblem={signatureProblem} />
+      <SigningLiveShell
+        record={record}
+        signatureProblem={signatureProblem}
+        token={token}
+      />
     );
   }
 

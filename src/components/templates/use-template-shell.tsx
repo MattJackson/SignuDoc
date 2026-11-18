@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { DirectoryEmailInput } from "@/components/envelopes/directory-email-input";
 import { getSignerPalette } from "@/components/envelopes/signer-palette";
@@ -70,6 +70,52 @@ export function UseTemplateShell({
   const [showErrors, setShowErrors] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Why the sender's manager could not be filled in, for a template with a
+  // "Sender's manager" role. The server looks the manager up again anyway.
+  const [managerProblem, setManagerProblem] = useState<string | null>(null);
+  const hasManagerRole = (template?.roles ?? []).some(
+    (role) => role.fill === "sender_manager",
+  );
+
+  useEffect(() => {
+    if (!hasManagerRole) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    fetch("/api/directory/manager", { signal: controller.signal })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as {
+          manager?: { email: string; name: string } | null;
+          message?: string | null;
+        } | null;
+        const manager = payload?.manager;
+
+        if (!response.ok || !manager) {
+          setManagerProblem(
+            payload?.message ??
+              "Your manager could not be looked up in the directory.",
+          );
+          return;
+        }
+
+        setPeople((current) =>
+          current.map((person, index) =>
+            template?.roles[index]?.fill === "sender_manager"
+              ? { email: manager.email, name: manager.name }
+              : person,
+          ),
+        );
+      })
+      .catch(() => {
+        // Leaving the page cancels the request.
+      });
+
+    return () => controller.abort();
+    // Looked up once, when the form opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasManagerRole]);
 
   if (!template) {
     return (
@@ -221,8 +267,29 @@ export function UseTemplateShell({
                       {template.roles[index - 1]?.name}.
                     </p>
                   ) : null}
+                  {role.kind === "approver" ? (
+                    <p className="mt-2 text-[0.8125rem] leading-5 text-(--secondary)">
+                      Approves or rejects the document, with no fields.
+                    </p>
+                  ) : null}
+                  {role.fill === "sender_manager" ? (
+                    <p
+                      className={`mt-2 text-[0.8125rem] leading-5 ${
+                        managerProblem
+                          ? "font-semibold text-(--danger)"
+                          : "text-(--secondary)"
+                      }`}
+                      role={managerProblem ? "alert" : undefined}
+                    >
+                      {managerProblem ??
+                        "Your manager, from the Google Workspace directory."}
+                    </p>
+                  ) : null}
 
-                  <div className="mt-3 grid gap-x-4 gap-y-3 md:grid-cols-2">
+                  <div
+                    className="mt-3 grid gap-x-4 gap-y-3 md:grid-cols-2"
+                    hidden={role.fill === "sender_manager" && !person.email}
+                  >
                     <label className="grid auto-rows-min gap-1.5">
                       <span className="text-[0.8125rem] font-semibold text-(--secondary)">
                         Name

@@ -157,6 +157,10 @@ function redactAuditEventMetadataForRecipients(
   delete nextMetadata.recipient;
   // A correction's previous address is the same kind of third-party email.
   delete nextMetadata.previousEmail;
+  // Whose envelope it was and who took it over (directory-sync.ts) are the
+  // organization's own accounts.
+  delete nextMetadata.fromEmail;
+  delete nextMetadata.toEmail;
 
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
@@ -806,9 +810,26 @@ function buildAuditLines(input: {
     },
   );
 
-  pushParagraph("Signers", input.fonts.bold, sectionFontSize, {
-    gapAfter: 4,
-  });
+  const approvers = input.signers.filter(
+    (signer) => signer.role === "approver",
+  );
+
+  pushParagraph(
+    approvers.length > 0 ? "Signers and approvers" : "Signers",
+    input.fonts.bold,
+    sectionFontSize,
+    {
+      gapAfter: 4,
+    },
+  );
+
+  if (approvers.length > 0) {
+    pushParagraph(
+      "Approvers reviewed the document and approved or rejected it. They placed no signature and nothing of theirs is stamped on the document.",
+      input.fonts.regular,
+      bodyFontSize,
+    );
+  }
 
   // Each signer is numbered by their step of the signing order. With every
   // signer in a step of their own that is their place in the list, as it
@@ -825,9 +846,10 @@ function buildAuditLines(input: {
   for (const signer of input.signers) {
     const actionLabel = getSignerCertificateActionLabel(input.envelope, signer);
     const step = signingStepOf(signer);
+    const roleLabel = signer.role === "approver" ? " | Approver" : "";
     const signerLabel = input.redactForRecipients
-      ? `${step}. ${signer.name} | ${actionLabel}`
-      : `${step}. ${signer.name} <${signer.email}> | ${actionLabel}`;
+      ? `${step}. ${signer.name}${roleLabel} | ${actionLabel}`
+      : `${step}. ${signer.name} <${signer.email}>${roleLabel} | ${actionLabel}`;
 
     pushParagraph(signerLabel, input.fonts.regular, bodyFontSize);
 
@@ -837,6 +859,34 @@ function buildAuditLines(input: {
       Boolean(input.redactForRecipients),
     )) {
       pushParagraph(`   ${detail}`, input.fonts.regular, bodyFontSize);
+    }
+  }
+
+  // Approvals on their own, so they are never read as signatures.
+  const decided = approvers.filter(
+    (signer) => signer.status === "signed" || signer.status === "declined",
+  );
+
+  if (decided.length > 0) {
+    pushParagraph("Approvals", input.fonts.bold, sectionFontSize, {
+      gapAfter: 4,
+      gapBefore: 10,
+    });
+
+    for (const approver of decided) {
+      const who = input.redactForRecipients
+        ? approver.name
+        : `${approver.name} <${approver.email}>`;
+
+      pushParagraph(
+        approver.status === "signed"
+          ? `Approved by ${who} at ${formatAuditTimestamp(approver.signedAt)}`
+          : `Rejected by ${who} at ${formatAuditTimestamp(approver.declinedAt)}${
+              approver.declineReason ? `: ${approver.declineReason}` : ""
+            }`,
+        input.fonts.regular,
+        bodyFontSize,
+      );
     }
   }
 
@@ -869,8 +919,7 @@ function buildAuditLines(input: {
 
   for (const event of auditEvents) {
     const actorLabel = describeAuditActor(event);
-    const eventLabel =
-      event.event === "signer_corrected" ? "Signer corrected" : event.event;
+    const eventLabel = AUDIT_EVENT_LABELS[event.event] ?? event.event;
 
     pushParagraph(
       `${formatAuditTimestamp(event.createdAt)} | ${eventLabel} | ${actorLabel}`,
@@ -896,10 +945,17 @@ function buildAuditLines(input: {
   return lines;
 }
 
+/** Event names printed in words where the bare name would not read well. */
+const AUDIT_EVENT_LABELS: Partial<Record<AuditEventRecord["event"], string>> = {
+  handed_over: "handed over",
+  signer_corrected: "Signer corrected",
+};
+
 const AUTHENTICATION_LABELS: Record<string, string> = {
   access_code: "access code from the sender",
   account: "own account, with email address and password to open it",
   email_code: "one-time code sent by email",
+  google: "identity confirmed by Google Workspace sign-in",
 };
 
 function readStringArray(value: unknown): string[] {
@@ -1017,7 +1073,16 @@ function describeSignerEvidence(
     (event) => event.metadata?.signerId === signer.id,
   );
   const details: string[] = [];
-  const signed = forSigner.find((event) => event.event === "signed");
+  const approver = signer.role === "approver";
+  // The signature, or an approver's approval.
+  const signed = forSigner.find(
+    (event) => event.event === (approver ? "approved" : "signed"),
+  );
+  // A decline or a rejection, which since these events carry them also
+  // say which checks the person had passed.
+  const ended = forSigner.find(
+    (event) => event.event === "declined" || event.event === "rejected",
+  );
   // A correction clears the row's consent. The first consented event for
   // this signer id can still be the previous person's, so only agreement
   // recorded after the latest standing correction counts as this
@@ -1037,10 +1102,24 @@ function describeSignerEvidence(
 
   const checks = [
     "possession of the emailed signing link",
-    ...readStringArray(signed?.metadata?.authMethods).map(
+    ...readStringArray((signed ?? ended)?.metadata?.authMethods).map(
       (method) => AUTHENTICATION_LABELS[method] ?? method,
     ),
   ];
+
+  // A Google sign-in the signer chose to make when it was only offered is
+  // not in the signature's checks, which list what was asked of them. It
+  // is evidence all the same.
+  const googleConfirmed = forSigner
+    .slice(identityStart)
+    .some(
+      (event) =>
+        event.event === "verified" && event.metadata?.method === "google",
+    );
+
+  if (googleConfirmed && !checks.includes(AUTHENTICATION_LABELS.google!)) {
+    checks.push(AUTHENTICATION_LABELS.google!);
+  }
 
   const part11 =
     signed?.metadata?.part11 && typeof signed.metadata.part11 === "object"
@@ -1086,7 +1165,9 @@ function describeSignerEvidence(
   details.push(...describeProviderSignatureEvidence(signed, redacted));
 
   if (!redacted && signed?.ipAddress) {
-    details.push(`Signed from IP ${signed.ipAddress}`);
+    details.push(
+      `${approver ? "Approved" : "Signed"} from IP ${signed.ipAddress}`,
+    );
   }
 
   return details;
@@ -1147,7 +1228,15 @@ function describeEventEvidence(event: AuditEventRecord): string[] {
     );
   }
 
-  if (
+  if (event.event === "verification_failed" && metadata.method === "google") {
+    details.push(
+      `Google Workspace sign-in not accepted${
+        typeof metadata.reason === "string"
+          ? ` (${metadata.reason.replaceAll("_", " ")})`
+          : ""
+      }`,
+    );
+  } else if (
     event.event === "verification_failed" &&
     typeof metadata.method === "string"
   ) {
@@ -1163,21 +1252,25 @@ function getSignerCertificateActionLabel(
   envelope: EnvelopeRecord,
   signer: SignerRecord,
 ): string {
+  // An approver's turn done is an approval, and their decline a rejection.
+  const approver = signer.role === "approver";
+  const awaiting = approver ? "Awaiting approval" : "Awaiting signature";
+
   switch (signer.status) {
     case "signed":
-      return `Signed at ${formatAuditTimestamp(signer.signedAt)}`;
+      return `${approver ? "Approved" : "Signed"} at ${formatAuditTimestamp(signer.signedAt)}`;
     case "declined":
-      return `Declined at ${formatAuditTimestamp(signer.declinedAt)}`;
+      return `${approver ? "Rejected" : "Declined"} at ${formatAuditTimestamp(signer.declinedAt)}`;
     case "notified":
       if (envelope.status === "voided") {
-        return "Awaiting signature when envelope was voided";
+        return `${awaiting} when envelope was voided`;
       }
 
       if (envelope.status === "declined") {
-        return "Awaiting signature when envelope was declined";
+        return `${awaiting} when envelope was declined`;
       }
 
-      return "Awaiting signature";
+      return awaiting;
     case "pending":
       return "Not reached";
     default: {

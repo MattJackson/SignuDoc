@@ -9,6 +9,7 @@ import {
   buildUserQueries,
   createDirectoryClient,
   DirectoryError,
+  managerFromRelations,
   readDirectoryConfig,
   type DirectoryConfig,
 } from "./directory.ts";
@@ -233,4 +234,74 @@ test("errors carry Google's status and not its words", async () => {
     assert.doesNotMatch(error.message, /secret detail/);
     return true;
   });
+});
+
+test("a user's entry gives their state and the manager relation", async () => {
+  const { credentials } = fakeCredentials();
+  const { fetchImpl, urls } = fakeFetch((url) => {
+    if (url.pathname.endsWith("/gone%40example.com")) {
+      return {
+        body: { error: { message: "Resource Not Found" } },
+        status: 404,
+      };
+    }
+
+    return {
+      body: {
+        name: { fullName: "Pat Lee" },
+        primaryEmail: "Pat@example.com",
+        relations: [
+          { customType: "mentor", type: "custom", value: "sam@example.com" },
+          { type: "manager", value: "Boss@Example.com" },
+        ],
+        suspended: true,
+      },
+    };
+  });
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl,
+  });
+
+  assert.deepEqual(await client.getUser("PAT@example.com"), {
+    archived: false,
+    email: "pat@example.com",
+    managerEmail: "boss@example.com",
+    name: "Pat Lee",
+    suspended: true,
+  });
+  assert.equal(
+    urls[0]!.pathname,
+    "/admin/directory/v1/users/pat%40example.com",
+  );
+  assert.equal(await client.getUser("gone@example.com"), null);
+});
+
+test("a failed lookup of a user is an error, never a missing user", async () => {
+  const { credentials } = fakeCredentials();
+  const { fetchImpl } = fakeFetch(() => ({ status: 503 }));
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl,
+  });
+
+  await assert.rejects(client.getUser("pat@example.com"), DirectoryError);
+});
+
+test("only a relation of type manager names the manager", () => {
+  assert.equal(managerFromRelations(undefined), null);
+  assert.equal(
+    managerFromRelations([{ type: "assistant", value: "a@example.com" }]),
+    null,
+  );
+  assert.equal(
+    managerFromRelations([{ type: "manager", value: "not an address" }]),
+    null,
+  );
+  assert.equal(
+    managerFromRelations([{ type: "manager", value: " M@example.com " }]),
+    "m@example.com",
+  );
 });

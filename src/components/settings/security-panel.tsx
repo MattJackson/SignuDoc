@@ -51,6 +51,10 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   team_member_added: "Added to a team",
   team_member_removed: "Removed from a team",
   team_updated: "Team changed",
+  directory_sync_run: "Directory check run",
+  directory_sign_in_blocked: "Sign-in blocked by the directory",
+  directory_sign_in_restored: "Sign-in allowed again by the directory",
+  envelopes_handed_over: "Envelopes handed over",
   two_factor_backup_codes_regenerated: "New backup codes made",
   two_factor_disabled: "Two-step sign-in turned off",
   two_factor_enabled: "Two-step sign-in turned on",
@@ -66,6 +70,26 @@ const SIGN_IN_FAILURE_REASONS: Record<string, string> = {
   INVALID_EMAIL_OR_PASSWORD: "wrong email or password",
   TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE: "too many wrong codes, signed out",
 };
+
+function describeDirectoryReason(reason: unknown): string | null {
+  switch (reason) {
+    case "directory_suspended":
+      return "suspended in Google Workspace";
+    case "directory_archived":
+      return "archived in Google Workspace";
+    case "directory_deleted":
+      return "no longer in Google Workspace";
+    default:
+      return null;
+  }
+}
+
+/** "3 blocked", or null for none. */
+function describeCount(value: unknown, what: string): string | null {
+  return typeof value === "number" && value > 0
+    ? `${String(value)} ${what}`
+    : null;
+}
 
 function describeEvent(event: SystemAuditEvent): string {
   const metadata = event.metadata ?? {};
@@ -119,6 +143,37 @@ function describeEvent(event: SystemAuditEvent): string {
       ]
         .filter(Boolean)
         .join(": ");
+    case "directory_sign_in_blocked":
+      return [target, describeDirectoryReason(metadata.reason)]
+        .filter(Boolean)
+        .join(": ");
+    case "directory_sign_in_restored":
+      return [
+        target,
+        metadata.why === "break_glass"
+          ? "break-glass address"
+          : "active in the directory again",
+      ]
+        .filter(Boolean)
+        .join(": ");
+    case "envelopes_handed_over":
+      return `${typeof metadata.count === "number" ? String(metadata.count) : "Some"} from ${typeof metadata.fromEmail === "string" ? metadata.fromEmail : "an account"} to ${typeof metadata.toEmail === "string" ? metadata.toEmail : "another account"}${metadata.handedTo === "manager" ? " (their manager)" : metadata.handedTo === "administrator" ? " (an administrator)" : ""}`;
+    case "directory_sync_run":
+      return [
+        metadata.dryRun === true ? "Dry run" : null,
+        metadata.stoppedEarly === true
+          ? "stopped: the directory could not be asked"
+          : null,
+        typeof metadata.checked === "number"
+          ? `${String(metadata.checked)} checked`
+          : null,
+        describeCount(metadata.offboarded, "blocked"),
+        describeCount(metadata.restored, "restored"),
+        describeCount(metadata.deferred, "left for the next run"),
+        describeCount(metadata.skipped, "skipped"),
+      ]
+        .filter(Boolean)
+        .join(", ");
     case "envelope_deleted":
       return [
         typeof metadata.title === "string" ? `"${metadata.title}"` : null,

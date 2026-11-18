@@ -53,6 +53,10 @@ export const systemAuditEventTypes = [
   "google_drive_connected",
   "google_drive_disconnected",
   "drive_export_retried",
+  "directory_sync_run",
+  "directory_sign_in_blocked",
+  "directory_sign_in_restored",
+  "envelopes_handed_over",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];

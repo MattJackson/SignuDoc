@@ -58,6 +58,8 @@ type EnvelopeDetailSigner = {
   metaLabel: string;
   name: string;
   order: number;
+  /** An approver's "signed" is shown as approved, "declined" as rejected. */
+  role?: "approver" | "signer";
   status: SignerStatus;
   statusDateLabel?: string;
   /** Signers who share a step sign at the same time. */
@@ -812,7 +814,13 @@ export function EnvelopeDetailShell({
                               className="size-3.5"
                               strokeWidth={2.6}
                             />
-                            {signerStatusLabelMap[signer.status]}
+                            {signer.role === "approver" &&
+                            signer.status === "signed"
+                              ? "Approved"
+                              : signer.role === "approver" &&
+                                  signer.status === "declined"
+                                ? "Rejected"
+                                : signerStatusLabelMap[signer.status]}
                           </span>
                           {signer.statusDateLabel ? (
                             <p className="text-xs text-(--tertiary)">
@@ -967,7 +975,11 @@ export function EnvelopeDetailShell({
           }}
           signers={[...activeRecord.signers]
             .sort((left, right) => left.order - right.order)
-            .map((signer) => ({ id: signer.id, name: signer.name }))}
+            .map((signer) => ({
+              id: signer.id,
+              name: signer.name,
+              role: signer.role,
+            }))}
         />
       ) : null}
 

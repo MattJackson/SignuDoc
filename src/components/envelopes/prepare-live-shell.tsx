@@ -266,16 +266,19 @@ const autosaveDelayMs = 450;
 function buildLiveSigners(
   signers: PrepareEnvelopeData["signers"],
 ): PrepareShellSigner[] {
-  return signers
-    .slice()
-    .sort((left, right) => left.order - right.order)
-    .map((signer, index) => ({
-      ...getSignerPalette(index),
-      email: signer.email,
-      id: signer.id,
-      name: signer.name,
-      order: signer.order,
-    }));
+  return (
+    signers
+      // Approvers approve or reject the document and have no fields.
+      .filter((signer) => signer.role !== "approver")
+      .sort((left, right) => left.order - right.order)
+      .map((signer, index) => ({
+        ...getSignerPalette(index),
+        email: signer.email,
+        id: signer.id,
+        name: signer.name,
+        order: signer.order,
+      }))
+  );
 }
 
 function buildLiveFields(
@@ -365,9 +368,7 @@ async function parseJsonResponse<T>(
   response: Response,
 ): Promise<{ data: T | null; error: string | null }> {
   const payload = (await response.json().catch(() => null)) as
-    | { error?: string }
-    | T
-    | null;
+    { error?: string } | T | null;
 
   if (!response.ok) {
     return {
@@ -831,16 +832,12 @@ function PrepareLiveShellContent({
                 <DocumentZoomControls
                   onDecrease={() =>
                     setZoomLevel((currentZoom) =>
-                      clampDocumentZoomLevel(
-                        currentZoom - DOCUMENT_ZOOM_STEP,
-                      ),
+                      clampDocumentZoomLevel(currentZoom - DOCUMENT_ZOOM_STEP),
                     )
                   }
                   onIncrease={() =>
                     setZoomLevel((currentZoom) =>
-                      clampDocumentZoomLevel(
-                        currentZoom + DOCUMENT_ZOOM_STEP,
-                      ),
+                      clampDocumentZoomLevel(currentZoom + DOCUMENT_ZOOM_STEP),
                     )
                   }
                   onReset={() => setZoomLevel(DEFAULT_DOCUMENT_ZOOM_LEVEL)}
@@ -893,7 +890,9 @@ function PrepareLiveShellContent({
 
               <div className="flex justify-center lg:justify-end">
                 <SaveStatusIndicator
-                  onRetrySave={() => void persistFields(currentFieldsRef.current)}
+                  onRetrySave={() =>
+                    void persistFields(currentFieldsRef.current)
+                  }
                   saveError={saveError}
                   saveState={saveState}
                 />
@@ -1263,7 +1262,9 @@ function SignerCard({
             .join("")}
         </span>
         <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-(--fg)">{signer.name}</p>
+          <p className="truncate text-sm font-bold text-(--fg)">
+            {signer.name}
+          </p>
           <p className="mt-0.5 text-xs text-(--secondary)">
             {fieldCount} field{fieldCount === 1 ? "" : "s"} placed
           </p>
@@ -1292,7 +1293,9 @@ function EmptyFieldInspector({
   return (
     <div className="well px-4 py-4">
       <p className="text-sm font-bold text-(--fg)">
-        {activeTool ? `${activeTool.label} ready to place` : "No field selected"}
+        {activeTool
+          ? `${activeTool.label} ready to place`
+          : "No field selected"}
       </p>
       <p className="mt-1.5 text-sm leading-6 text-(--secondary)">
         {activeTool
@@ -1808,20 +1811,18 @@ function setFieldRequired(
   required: boolean,
   setFields: Dispatch<SetStateAction<PrepareField[]>>,
 ) {
-  setFields((currentFields) =>
-    {
-      const target = currentFields.find((field) => field.id === fieldId);
+  setFields((currentFields) => {
+    const target = currentFields.find((field) => field.id === fieldId);
 
-      if (!target || !canBeOptional(target.type)) {
-        return currentFields;
-      }
+    if (!target || !canBeOptional(target.type)) {
+      return currentFields;
+    }
 
-      // A radio group is required or optional as a whole.
-      return currentFields.map((field) =>
-        isSameChoice(target, field) ? { ...field, required } : field,
-      );
-    },
-  );
+    // A radio group is required or optional as a whole.
+    return currentFields.map((field) =>
+      isSameChoice(target, field) ? { ...field, required } : field,
+    );
+  });
 }
 
 function deleteField(

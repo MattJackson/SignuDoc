@@ -16,6 +16,7 @@ import { SealSettingsSection } from "@/components/settings/seal-settings-section
 import type { BackupSettingsView } from "@/lib/backup-config";
 import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleAddonView } from "@/lib/google-addon";
+import { PeopleSettingsForm } from "@/components/settings/people-settings-panel";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { OnboardingStepId } from "@/lib/onboarding/steps";
 import type { OrganizationSettingsView } from "@/lib/organization-settings";
@@ -327,6 +328,18 @@ function SealStep({ data, onChanged }: StepFormProps) {
   return <SealSettingsSection initialView={data.seal} onChange={onChanged} />;
 }
 
+function PeopleStep({ onChanged }: StepFormProps) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm leading-6 text-(--secondary)">
+        Each of these is optional and off until you turn it on. To leave them
+        all off, choose &quot;Mark as done&quot;.
+      </p>
+      <PeopleSettingsForm onSaved={onChanged} />
+    </div>
+  );
+}
+
 function BackupsStep({ data, onChanged }: StepFormProps) {
   return (
     <div className="space-y-4">
@@ -415,6 +428,7 @@ export const STEP_FORMS: Record<
   "google-drive": GoogleDriveStep,
   "google-sign-in": GoogleSignInStep,
   organization: OrganizationStep,
+  people: PeopleStep,
   retention: RetentionStep,
   seal: SealStep,
   storage: StorageStep,

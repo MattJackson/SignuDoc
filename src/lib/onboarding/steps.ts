@@ -17,6 +17,9 @@ import {
 import { getGoogleCredentials } from "../integrations/google/credentials.ts";
 import { readAddonConfig } from "../integrations/google/addon/config.ts";
 import { readDirectoryConfig } from "../integrations/google/directory.ts";
+import { readDirectorySyncSetting } from "../directory-sync.ts";
+import { readGoogleSigningSetting } from "../google-signing.ts";
+import { readManagerPolicy } from "../manager-policy.ts";
 import {
   readDriveExportConfig,
   readPickerConfig,
@@ -41,6 +44,7 @@ export type OnboardingStepId =
   | "email"
   | "google-sign-in"
   | "google-directory"
+  | "people"
   | "google-drive"
   | "google-addon"
   | "storage"
@@ -208,6 +212,43 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     summary:
       "Suggest colleagues as recipients, and make a Google Group's members administrators.",
     title: "Workspace directory and admin group",
+  },
+  {
+    check: async ({ env, marks, stored }) => {
+      const manager = readManagerPolicy(env, stored).mode;
+      const google = readGoogleSigningSetting(env, stored).mode;
+      const offboarding = readDirectorySyncSetting(env, stored).enabled;
+
+      if (manager === "off" && google === "off" && !offboarding) {
+        return marks.people === "confirmed"
+          ? {
+              detail: "No manager approval, Google signing or offboarding.",
+              status: "done",
+            }
+          : {
+              detail:
+                "Choose whether managers approve first, employees sign with Google, and leavers are offboarded.",
+              status: "not_started",
+            };
+      }
+
+      return {
+        detail: [
+          manager === "off" ? null : `Manager approval: ${manager}.`,
+          google === "off" ? null : `Employees sign with Google: ${google}.`,
+          offboarding ? "Offboarding from the directory is on." : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        status: "done",
+      };
+    },
+    confirmable: true,
+    id: "people",
+    settingsHref: "/settings#people",
+    summary:
+      "Have the sender's manager approve first, ask employees to sign with Google, and hand over a leaver's envelopes.",
+    title: "Managers, employees and leavers",
   },
   {
     check: async ({ env, stored }) => {

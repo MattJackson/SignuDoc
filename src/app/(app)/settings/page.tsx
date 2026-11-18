@@ -3,6 +3,7 @@ import { GoogleAddonPanel } from "@/components/settings/google-addon-panel";
 import { GoogleWorkspacePanel } from "@/components/settings/google-workspace-panel";
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
+import { PeopleSettingsPanel } from "@/components/settings/people-settings-panel";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { SetupChecklist } from "@/components/settings/setup-checklist";
 import { TeamsPanel } from "@/components/settings/teams-panel";
@@ -74,6 +75,7 @@ export default async function SettingsPage() {
       {sealView ? <SealSettingsSection initialView={sealView} /> : null}
       {backupView ? <BackupSettingsSection initialView={backupView} /> : null}
       {isAdmin ? <TeamsPanel /> : null}
+      {isAdmin && !settings.hosted ? <PeopleSettingsPanel /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );
