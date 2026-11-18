@@ -4,11 +4,12 @@ SignuDoc works with any organization's Google Workspace. Once it is set up, anyo
 
 Everything here is set in the app, in Settings, Google Workspace, and in the same steps of onboarding (`/onboarding`, where first-run setup ends). Each part is a checklist with live checks and this site's own values to paste into Google's consoles. Every setting also has an environment variable; one that is set wins, and the app shows the setting as fixed.
 
-There are three parts. Only the first is needed for sign-in.
+There are four parts. Only the first is needed for sign-in.
 
 1. [Google sign-in](#1-google-sign-in)
 2. [The Workspace directory](#2-the-workspace-directory): suggest colleagues as recipients
 3. [An administrator group](#3-an-administrator-group)
+4. [Google Drive](#4-google-drive): start envelopes from Drive, and keep executed copies in a Shared Drive
 
 ## 1. Google sign-in
 
@@ -101,6 +102,90 @@ Optional, and needs the directory to be readable. Name a Google Group (for examp
 
 Every change is recorded in the site audit trail as a role change, naming the group. **Test group lookup** checks whether you are in the group before you save it: if you are not, adding yourself first keeps you an administrator when you next sign in with Google.
 
+## 4. Google Drive
+
+Four features, each optional and off until set up, in Settings, Google Workspace, Google Drive (and the Google Drive step of onboarding):
+
+- **Start from Google Drive**: "Choose from Google Drive" on the new-envelope page opens the Google Picker. A PDF, a Word, OpenDocument or RTF document, or a Google Doc, Sheet or Slides file becomes a draft.
+- **Open with**: "Open with" in Drive's own menu, for PDF and Word files and (with importing on) Google Docs.
+- **Executed copies in a Shared Drive**: every completed envelope's sealed PDF and audit certificate, put in a Shared Drive by the site's service account.
+- **Labels on executed copies**: a Drive label on each executed copy, with its fields filled from the envelope.
+
+### Each person's own Drive
+
+Starting from Drive and "Open with" read the person's own files, with their own permission, never the service account's. The first time, the person is sent to Google to allow it ("Connect Google Drive"). This is incremental authorization with the Google sign-in OAuth client of [part 1](#1-google-sign-in), so Google sign-in has to be set up with Google as the provider.
+
+- Only the `https://www.googleapis.com/auth/drive.file` scope is asked for. It reaches only the files the person picks in the Picker or opens with this site, and the files the app makes itself. Nothing else in their Drive.
+- The flow is the authorization code flow with PKCE and a state value, held in a short-lived encrypted cookie. The Google account that agrees has to be the one the person signs in to SignuDoc with.
+- The refresh token Google gives is stored encrypted (`google_drive_tokens`, with a key derived from `BETTER_AUTH_SECRET` and the person's id) and never leaves the server. Access tokens are made from it when needed, and only the short-lived access token is handed to the person's own browser for the Picker.
+- "Disconnect Drive" on the new-envelope page revokes the token at Google and deletes it. If Google stops accepting it (the person removed the app from their Google account), it is deleted and the person is asked to connect again. Connecting and disconnecting are in the site audit trail.
+
+A document that is not a PDF is turned into one with Drive: uploaded to the person's Drive as a temporary Google file (converted on the way in), exported as a PDF, and the temporary file deleted. The PDF then goes through the same checks, limits and storage as an upload (`createDraftFromDocument` in `src/lib/integrations/google/import-draft.ts`), and the draft's "created" event in its audit trail says it came from Google Drive.
+
+In the Google Cloud project of the OAuth client:
+
+1. Enable the **Google Drive API** and the **Google Picker API** (and, for labels, the **Drive Labels API**).
+2. In **Google Auth Platform**, **Data access**, add the `drive.file` scope. For an Internal app Google does not review it.
+3. In the OAuth client, add a second authorized redirect URI, `https://<your site>/api/google/drive/callback`. Settings shows the exact value with a copy button.
+
+### Start from Google Drive
+
+In **APIs & Services**, **Credentials**, create an **API key**. Restrict it to the Google Picker API, and to this site's address as an HTTP referrer (`https://<your site>/*`). In Settings paste it as the browser API key, with the project **number** (from the project's dashboard; the Picker calls it the app ID). Neither is a secret: both are sent to the browser. Or set `GOOGLE_PICKER_API_KEY` and `GOOGLE_DRIVE_APP_ID`.
+
+The Picker is loaded from `apis.google.com` and shows Drive in a frame from `docs.google.com`; the site's Content Security Policy allows those on the app's own pages, and not on the pages signers and downloads use.
+
+### Open with
+
+In the Cloud console, open **Google Drive API**, **Drive UI integration**, give the application name and icons, and enter the values Settings shows with copy buttons:
+
+| Setting                   | Value                                                                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open URL                  | `https://<your site>/api/google/drive/open`                                                                                                          |
+| Default MIME types        | `application/pdf`                                                                                                                                    |
+| Default file extensions   | `pdf`                                                                                                                                                |
+| Secondary MIME types      | `application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,application/vnd.oasis.opendocument.text,application/rtf` |
+| Secondary file extensions | `docx,doc,odt,rtf`                                                                                                                                   |
+| Importing                 | On, with import format `application/pdf`, so Google Docs can be opened too                                                                           |
+
+Drive then sends the person to the open URL with a `state` naming the file. They are asked to sign in to SignuDoc if they are not, and to connect Drive the first time; a draft is made from the file and they continue with choosing its signers. The Google account that opened the file in Drive has to be the one connected.
+
+For "Open with" to show for everyone in the organization, list the app privately with the **Google Workspace Marketplace SDK** (Drive integration on, the `drive.file` scope) and install it for the domain from the Admin console.
+
+### Executed copies in a Shared Drive
+
+When an envelope is completed, its sealed PDF and its audit certificate (the full one, with addresses) are put in a Shared Drive by the site's service account (the same one as for the directory, see [part 2](#the-service-account)), with the Drive API's `drive` scope.
+
+1. Open the Shared Drive, choose **Manage members**, and add the service account as a **Content manager**. Settings shows its address with a copy button.
+2. A service account is not part of your Workspace. If Drive refuses to add it, allow members from outside the organization for this Shared Drive: in the Admin console, **Apps**, **Google Workspace**, **Drive and Docs**, **Sharing settings**, let shared drives have members outside the organization (for the organizational unit that owns the drive), and in the Shared Drive's own settings allow people outside the organization.
+3. In Settings, **List the Shared Drives it can see** and pick one, or paste its ID (or its address from the browser), then **Test Shared Drive access**. Or set `GOOGLE_DRIVE_EXPORT_DRIVE_ID`.
+4. Optionally change the folder layout (`GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`). The default is `{yyyy}/{yyyy-MM-dd} — {title} — {shortId}`: the parts before the last `/` are folders, made as needed; the last part is the file's name, `.pdf` for the sealed PDF and ` — certificate.pdf` for the certificate beside it. The tokens are `{yyyy}`, `{MM}`, `{dd}`, `{yyyy-MM}`, `{yyyy-MM-dd}` (the completion date, in UTC), `{title}`, `{shortId}` (the first 8 characters of the envelope id), `{envelopeId}` and `{senderEmail}`.
+
+How it runs:
+
+- The export is an outbox (`drive_exports`). Its row is written in the same transaction that completes the envelope, so a completion is never missed, even while Google is down.
+- Right after the completion the upload is tried once. What fails is tried again by `/api/internal/drive-export`, waiting 5 minutes after the first failure and twice as long after each next one (at most 12 hours), up to 8 tries. Then it waits for an administrator.
+- Call `/api/internal/drive-export` every 15 minutes, with `Authorization: Bearer <secret>` when `CRON_SECRET` or `RETENTION_JOB_SECRET` is set (like the other internal routes). On Google Cloud, with Cloud Scheduler:
+
+  ```bash
+  gcloud scheduler jobs create http signudoc-drive-export \
+    --schedule="*/15 * * * *" --http-method=POST \
+    --uri="https://<your site>/api/internal/drive-export" \
+    --headers="Authorization=Bearer <secret>"
+  ```
+
+  On Vercel, a cron job that often needs a Pro plan, so it is not in `vercel.json`; add one there (`"schedule": "*/15 * * * *"`) on a plan that allows it. Without the schedule, only the try right after completion and the retries from Settings happen.
+
+- A retry never makes a second copy. Each file in Drive carries `appProperties` with the envelope's id and the file's SHA-256, and the Shared Drive is searched for them before anything is uploaded. Every Drive call passes `supportsAllDrives=true`.
+- Settings lists the latest exports with their state, the last error and a **Try again** button (in the site audit trail). Saving any of these settings is in the audit trail too.
+
+### Labels on executed copies
+
+Optional. In the Admin console, **Labels**, make a label and publish it, and let it be applied in the Shared Drive. In Settings, **Load labels**, pick it, and choose for each field what fills it: the envelope's title, the sender's name, email address or team, the completed date, the counterparty (the first signer, in signing order, whose address is outside your Workspace domains) or their email address, or the envelope id. Text fields take the value as it is, date fields a date, person fields an email address, and a selection field the choice with the same name.
+
+The label is put on the sealed PDF after the upload, with the Drive Labels API (to read it, scope `https://www.googleapis.com/auth/drive.labels.readonly`) and the Drive API's `files.modifyLabels` (scope `https://www.googleapis.com/auth/drive`). A label that cannot be applied, or a field with no value for an envelope, is noted on the export; the copy still counts as made.
+
+A label's permissions are given to people and groups in your Workspace, which a service account is not part of. If **Load labels** finds nothing, give the service account domain-wide delegation for exactly those two scopes, and set "Apply labels as" (`GOOGLE_DRIVE_LABELS_SUBJECT`) to a user who may apply the label and is a member of the Shared Drive. With the environment, `GOOGLE_DRIVE_LABEL_ID` and `GOOGLE_DRIVE_LABEL_FIELDS` (JSON, such as `{"fieldId":"title","otherFieldId":"counterparty"}`) set the label.
+
 ## Environment variables
 
 | Variable                                              | Same as                                                  |
@@ -114,10 +199,18 @@ Every change is recorded in the site audit trail as a role change, naming the gr
 | `GOOGLE_WORKSPACE_ADMIN_SUBJECT`                      | Act as administrator (domain-wide delegation only)       |
 | `GOOGLE_WORKSPACE_CUSTOMER_ID`                        | Customer ID                                              |
 | `GOOGLE_ADMIN_GROUP`                                  | Administrator group                                      |
+| `GOOGLE_PICKER_API_KEY`, `GOOGLE_DRIVE_APP_ID`        | Browser API key and project number, for the Picker       |
+| `GOOGLE_DRIVE_EXPORT_DRIVE_ID`                        | Shared Drive for executed copies                         |
+| `GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`                  | Folder layout                                            |
+| `GOOGLE_DRIVE_LABEL_ID`, `GOOGLE_DRIVE_LABEL_FIELDS`  | Label on executed copies, and what fills its fields      |
+| `GOOGLE_DRIVE_LABELS_SUBJECT`                         | Apply labels as (domain-wide delegation only)            |
 
 ## Troubleshooting
 
 - **"Sign in with your organization's Google Workspace account"**: the account is a personal Google account.
 - **"This Google account belongs to a different organization's Workspace"**: its `hd` claim is not one of your Workspace domains. Add the domain if it is yours (a second Workspace).
 - **redirect_uri_mismatch** from Google: the redirect URI in the OAuth client is not exactly the one Settings shows. Check `APP_URL`.
+- **"Connect Google Drive" ends with redirect_uri_mismatch**: the OAuth client is missing the second redirect URI, `/api/google/drive/callback`.
+- **"That Google account is not the one you sign in to this site with"**: the account chosen at Google, or the one that opened the file in Drive, is not the person's own Workspace account.
+- **Executed copies wait with 403 or 404**: the service account is not a Content manager of the Shared Drive, or the Drive API is not enabled in the project.
 - **Test directory access says 403**: the role is not assigned to the service account (it can take a few minutes to apply), the Admin SDK API is not enabled in the project, or, with delegation, a scope is missing.
