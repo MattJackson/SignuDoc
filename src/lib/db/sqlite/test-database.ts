@@ -5,11 +5,11 @@
 // getDb() in the same process, pointed at the same URL (some tests set
 // DATABASE_URL to it), shares the pool's connections and write lock.
 import { rmSync } from "node:fs";
-import path from "node:path";
 
 import type pg from "pg";
 
 import { runMigrations } from "../../../../db/migrate.mjs";
+import { isDisposableDatabase } from "../disposable-database.ts";
 import { sqliteFilePath } from "./open.ts";
 import { SqlitePool } from "./pool.ts";
 
@@ -69,7 +69,7 @@ export async function openSqliteTestDatabase(
 ): Promise<pg.Pool> {
   const file = sqliteFilePath(connectionString);
 
-  if (!path.basename(file).toLowerCase().includes("e2e")) {
+  if (!isDisposableDatabase(connectionString)) {
     throw new Error(
       `Refusing to run database tests on "${file}". The test database must have "e2e" in its name.`,
     );

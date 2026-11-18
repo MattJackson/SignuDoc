@@ -18,7 +18,8 @@
 #     .github/workflows): it opens an issue in this repository with the same
 #     details, so the run never fails quietly.
 #
-# It uses only the workflow's own token. For it to open pull requests, tick
+# It uses only the workflow's own token, and so starts CI for the branch itself
+# (ci.yml, workflow_dispatch). For it to open pull requests, tick
 # Settings, Actions, General, "Allow GitHub Actions to create and approve
 # pull requests"; without it, the issue is opened instead.
 #
@@ -41,6 +42,7 @@ on:
         default: "main"
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -101,8 +103,14 @@ jobs:
           fi
 
           # A pull request or issue for this very commit is already open.
-          open_pr=$(gh pr list --state open --search "$target in:body" --json url --jq '.[0].url // ""' || true)
-          open_issue=$(gh issue list --state open --search "$target in:body" --json url --jq '.[0].url // ""' || true)
+          open_pr=$(gh pr list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          # Issues are off on some forks, where listing them fails; a failed
+          # check of that setting still stops the run.
+          issues_on=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
+          open_issue=""
+          if [ "$issues_on" = "true" ]; then
+            open_issue=$(gh issue list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          fi
           if [ -n "$open_pr$open_issue" ]; then
             summary "$UPSTREAM $REQUESTED_REF ($short) is already waiting in ${open_pr:-$open_issue}."
             exit 0
@@ -218,6 +226,12 @@ jobs:
             fi
             exit 0
           fi
+
+          # Events from the workflow's own token do not start CI on the pull
+          # request, but a dispatched run is allowed; its checks show on the
+          # branch's head commit.
+          gh workflow run ci.yml --ref "$branch" ||
+            echo "::warning::CI could not be started for $branch; run it from the Actions tab."
 
           if url=$(gh pr create --base "$BASE_BRANCH" --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/body.md"); then
             summary "Opened $url."

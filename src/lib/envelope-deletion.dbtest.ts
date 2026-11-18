@@ -23,6 +23,7 @@ import {
 } from "./services/storage.ts";
 import {
   listSystemAuditEvents,
+  SYSTEM_AUDIT_LOCK_ID,
   verifySystemAuditChain,
 } from "./services/system-audit.ts";
 
@@ -33,8 +34,6 @@ const SOURCE_HASH = "a".repeat(64);
 const SIGNED_HASH = "b".repeat(64);
 const EVIDENCE_HASH = "c".repeat(64);
 const RECIPIENT_EVIDENCE_HASH = "d".repeat(64);
-// The install audit trail's lock (services/system-audit.ts).
-const SYSTEM_AUDIT_LOCK_ID = 746108325;
 
 let database: pg.Pool;
 let storageDir: string;

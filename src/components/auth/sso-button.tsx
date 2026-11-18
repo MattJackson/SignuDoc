@@ -70,8 +70,11 @@ export function SsoButton({
       const response = await fetch("/api/auth/sign-in/social", {
         body: JSON.stringify({
           callbackURL: `${origin}${returnTo}`,
-          errorCallbackURL: `${origin}/login`,
-          newUserCallbackURL: `${origin}/dashboard`,
+          errorCallbackURL:
+            returnTo === "/dashboard"
+              ? `${origin}/login`
+              : `${origin}/login?next=${encodeURIComponent(returnTo)}`,
+          newUserCallbackURL: `${origin}${returnTo}`,
           provider: "sso",
         }),
         headers: { "content-type": "application/json" },

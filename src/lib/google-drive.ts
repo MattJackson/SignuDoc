@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { getDb } from "./db/connection.ts";
+import { getDb, queryOne } from "./db/connection.ts";
 import {
   getIntegrationSettings,
   saveIntegrationSettings,
@@ -560,8 +560,16 @@ export async function retryExportForSettings(
   );
 
   if (!requeued) {
+    const existing = await queryOne<{ envelope_id: string }>(
+      database,
+      `SELECT envelope_id FROM drive_exports WHERE envelope_id = $1`,
+      [envelopeId],
+    );
+
     return {
-      message: "There is no Drive export for this envelope.",
+      message: existing
+        ? "This export is being tried right now."
+        : "There is no Drive export for this envelope.",
       ok: false,
     };
   }

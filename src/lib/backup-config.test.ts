@@ -337,6 +337,58 @@ test("a destination the app may not write to says which role to grant", async ()
   assert.match(own.message, /own files/);
 });
 
+test("a destination the app may write to but not read from fails at the read step", async () => {
+  const { store } = memoryStore({
+    error: new GcsRequestError("download", 403),
+    method: "get",
+  });
+  const result = await testBackupTarget(
+    { bucket: "my-backups", kind: "gcs", prefix: "" },
+    { createTarget: () => store, env, serviceAccountEmail: async () => null },
+  );
+
+  assert.ok(!result.ok);
+  assert.equal(result.step, "read");
+  assert.match(result.message, /403/);
+});
+
+test("a destination whose files cannot be deleted fails at the delete step", async () => {
+  const { store } = memoryStore({
+    error: new GcsRequestError("delete", 403),
+    method: "delete",
+  });
+  const result = await testBackupTarget(
+    { bucket: "my-backups", kind: "gcs", prefix: "" },
+    { createTarget: () => store, env, serviceAccountEmail: async () => null },
+  );
+
+  assert.ok(!result.ok);
+  assert.equal(result.step, "delete");
+});
+
+test("a destination that reads back something else fails at the read step", async () => {
+  const { store } = memoryStore();
+  const wrongBytes: BackupStore = {
+    ...store,
+    get: async () => ({
+      contentType: "text/plain",
+      stream: new Blob(["something else"]).stream(),
+    }),
+  };
+  const result = await testBackupTarget(
+    { bucket: "my-backups", kind: "gcs", prefix: "" },
+    {
+      createTarget: () => wrongBytes,
+      env,
+      serviceAccountEmail: async () => null,
+    },
+  );
+
+  assert.ok(!result.ok);
+  assert.equal(result.step, "read");
+  assert.match(result.message, /did not read back/);
+});
+
 test("a bucket store keeps everything under its folder", async () => {
   const names = new Map<string, { body: string; contentType: string }>();
   const client: GcsClient = {
@@ -432,4 +484,24 @@ test("the local store lists its files without their metadata", async () => {
   } finally {
     await rm(rootDir, { force: true, recursive: true });
   }
+});
+
+test("an invalid backup folder in the environment is a configuration problem, not a crash", () => {
+  const broken = {
+    ...env,
+    BACKUP_GCS_BUCKET: "from-env",
+    BACKUP_GCS_PREFIX: "a//b",
+  };
+  const config = resolveBackupConfig(
+    stored({ destination: "gcs", gcsBucket: "saved" }),
+    broken,
+  );
+
+  assert.equal(config.target, null);
+  assert.match(config.problem ?? "", /BACKUP_GCS_PREFIX/);
+
+  const status = summarizeBackupStatus(config, []);
+
+  assert.equal(status.state, "failing");
+  assert.match(status.message, /BACKUP_GCS_PREFIX/);
 });

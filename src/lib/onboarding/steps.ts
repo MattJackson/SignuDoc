@@ -26,6 +26,7 @@ import {
 } from "../integrations/google/drive-config.ts";
 import { describeNotificationSetup } from "../notifications/registry.ts";
 import { resolveEmailDriver, resolveResendApiKey } from "../services/email.ts";
+import { createStorageService } from "../services/storage.ts";
 import { getSettings, type ResolvedSettings } from "../settings.ts";
 import { describeStorageDriver } from "../storage-check.ts";
 import { type EnvSource } from "../utils/env.ts";
@@ -339,6 +340,19 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
         };
       }
 
+      // Only reads the configuration (nothing is written), so a driver that
+      // is named but missing its bucket or token shows here, not at the
+      // first upload.
+      try {
+        createStorageService({ env });
+      } catch (error) {
+        return {
+          detail:
+            error instanceof Error ? error.message : "Storage is not set up.",
+          status: "needs_attention",
+        };
+      }
+
       return {
         detail: `Documents are kept in ${driver} storage.`,
         status: "done",
@@ -605,18 +619,22 @@ export async function markOnboardingStep(
     );
   }
 
-  const marks = readOnboardingMarks(await getIntegrationSettings(env));
-
-  if (mark === null) {
-    delete marks[id];
-  } else {
-    marks[id] = mark;
-  }
-
+  // Merged into what is stored while the settings are locked, so a mark
+  // saved meanwhile on another instance is not written over.
   await saveIntegrationSettings(
-    {
-      "onboarding.steps":
-        Object.keys(marks).length > 0 ? JSON.stringify(marks) : null,
+    (before) => {
+      const marks = readOnboardingMarks(before);
+
+      if (mark === null) {
+        delete marks[id];
+      } else {
+        marks[id] = mark;
+      }
+
+      return {
+        "onboarding.steps":
+          Object.keys(marks).length > 0 ? JSON.stringify(marks) : null,
+      };
     },
     actor,
     { area: "onboarding", env },

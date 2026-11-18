@@ -18,6 +18,7 @@ import {
   TestResult,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
+import { saveFailureMessage } from "@/components/settings/google-save-notice";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   DirectoryTestResult,
@@ -72,7 +73,11 @@ function consoleUrl(path: string, project: string | null) {
     : `${GOOGLE_CONSOLE_URL}${path}`;
 }
 
-type SaveResult = { fieldErrors: Record<string, string>; ok: boolean };
+type SaveResult = {
+  error?: string;
+  fieldErrors: Record<string, string>;
+  ok: boolean;
+};
 
 type SaveFields = Partial<{
   adminGroup: string;
@@ -110,8 +115,14 @@ export function useGoogleWorkspace(initialView: GoogleWorkspaceView) {
       } | null;
 
       if (!response.ok || !payload?.view) {
-        setError(payload?.error ?? GENERIC_ERROR_MESSAGE);
-        return { fieldErrors: payload?.fieldErrors ?? {}, ok: false };
+        const message = payload?.error ?? GENERIC_ERROR_MESSAGE;
+
+        setError(message);
+        return {
+          error: message,
+          fieldErrors: payload?.fieldErrors ?? {},
+          ok: false,
+        };
       }
 
       setView(payload.view);
@@ -121,7 +132,7 @@ export function useGoogleWorkspace(initialView: GoogleWorkspaceView) {
       return { fieldErrors: {}, ok: true };
     } catch {
       setError(GENERIC_ERROR_MESSAGE);
-      return { fieldErrors: {}, ok: false };
+      return { error: GENERIC_ERROR_MESSAGE, fieldErrors: {}, ok: false };
     }
   }
 
@@ -679,7 +690,13 @@ export function GoogleDirectorySection({
     setNotice(
       result.ok
         ? { message: done, tone: "success" }
-        : { message: "Check the highlighted fields.", tone: "error" },
+        : {
+            message: saveFailureMessage(
+              result.fieldErrors,
+              result.error ?? null,
+            ),
+            tone: "error",
+          },
     );
   }
 
@@ -935,7 +952,7 @@ export function GoogleDirectorySection({
           <div className="max-w-xl">
             <FieldShell
               disabled={pending !== null || view.adminGroup.source === "env"}
-              error={errors.adminGroup}
+              error={errors.adminGroup ?? view.adminGroup.problem}
               helper={
                 view.adminGroup.source === "env"
                   ? fromEnvHelper("GOOGLE_ADMIN_GROUP")

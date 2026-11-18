@@ -10,6 +10,10 @@ export const DEFAULT_MAX_SIGNERS_PER_ENVELOPE = 25;
 /** People who get a copy of the finished document without signing. */
 export const MAX_COPY_RECIPIENTS_PER_ENVELOPE = 10;
 export const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
+/** The largest non-PDF document that is converted to a PDF (Google Drive). */
+export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
+/** What a person is told when a file passes either limit. */
+export const FILE_TOO_LARGE_TO_CONVERT_MESSAGE = `This file is too large: PDFs can be up to ${String(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB, and other documents up to ${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB before conversion.`;
 export const SIGNING_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const RECIPIENT_DOWNLOAD_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const MANUAL_NUDGE_COOLDOWN_SECONDS = 24 * 60 * 60;

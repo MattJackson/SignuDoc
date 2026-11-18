@@ -217,6 +217,11 @@ export function mayUsePassword(
 export type WorkspaceDomains = {
   domains: string[];
   /**
+   * A list was set but none of its entries is a domain. Nobody is let in
+   * until it is corrected, rather than everyone.
+   */
+  invalid?: true;
+  /**
    * Where the list comes from: GOOGLE_WORKSPACE_DOMAINS, the app's Google
    * Workspace settings, or the sign-up rule's domains. "none" means no list
    * is known, so any Google Workspace account passes the check but a
@@ -239,16 +244,27 @@ export function resolveWorkspaceDomains({
   const fromEnv = readEnv(env, "GOOGLE_WORKSPACE_DOMAINS");
 
   if (fromEnv) {
-    return { domains: parseEmailDomainList(fromEnv).domains, source: "env" };
+    const { domains } = parseEmailDomainList(fromEnv);
+
+    if (domains.length === 0) {
+      warnOnce(
+        "GOOGLE_WORKSPACE_DOMAINS has no valid domain, so Google sign-in lets no one in until it is corrected.",
+      );
+
+      return { domains, invalid: true, source: "env" };
+    }
+
+    return { domains, source: "env" };
   }
 
   const fromSettings = stored?.["google.workspaceDomains"];
 
   if (fromSettings?.trim()) {
-    return {
-      domains: parseEmailDomainList(fromSettings).domains,
-      source: "settings",
-    };
+    const { domains } = parseEmailDomainList(fromSettings);
+
+    return domains.length === 0
+      ? { domains, invalid: true, source: "settings" }
+      : { domains, source: "settings" };
   }
 
   if (signupDomains.length > 0) {
@@ -283,14 +299,30 @@ export type WorkspaceAccountDecision =
     };
 
 /**
+ * A domain list as the checks use it: the domains, and whether the list
+ * was set but holds no valid domain (so no one is allowed).
+ */
+export function splitWorkspaceDomains(
+  allowed: readonly string[] | WorkspaceDomains,
+): { domains: readonly string[]; noneAllowed: boolean } {
+  return Array.isArray(allowed)
+    ? { domains: allowed, noneAllowed: false }
+    : {
+        domains: (allowed as WorkspaceDomains).domains,
+        noneAllowed: (allowed as WorkspaceDomains).invalid === true,
+      };
+}
+
+/**
  * Checks the hd claim of a verified Google ID token. A personal Google
  * account has none. An account in another organization's Workspace has that
  * organization's domain.
  */
 export function checkWorkspaceAccount(
   profile: Readonly<Record<string, unknown>> | undefined,
-  domains: readonly string[],
+  allowed: readonly string[] | WorkspaceDomains,
 ): WorkspaceAccountDecision {
+  const { domains, noneAllowed } = splitWorkspaceDomains(allowed);
   const claim = profile?.hd;
   const hd = typeof claim === "string" ? claim.trim().toLowerCase() : "";
 
@@ -302,7 +334,7 @@ export function checkWorkspaceAccount(
     };
   }
 
-  if (domains.length > 0 && !domains.includes(hd)) {
+  if (noneAllowed || (domains.length > 0 && !domains.includes(hd))) {
     return {
       allowed: false,
       code: "workspace_domain_not_allowed",

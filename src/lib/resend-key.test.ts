@@ -28,12 +28,18 @@ test("only something shaped like a Resend key is sent to Resend", async () => {
   assert.equal(looksLikeResendKey(" re_short "), false);
   assert.equal(looksLikeResendKey("sk_live_1234567890"), false);
 
-  const result = await checkResendApiKey(
-    "not a key",
-    lister(new Error("should not be called")),
-  );
+  let calls = 0;
+  const result = await checkResendApiKey("not a key", {
+    list: async () => {
+      calls += 1;
+      throw new Error("should not be called");
+    },
+  } as unknown as Parameters<typeof checkResendApiKey>[1]);
 
+  assert.equal(calls, 0);
   assert.equal(result.ok, false);
+  assert.ok(!result.ok);
+  assert.match(result.message, /start with re_/);
 });
 
 test("a key that can list domains has full access", async () => {

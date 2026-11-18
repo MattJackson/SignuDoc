@@ -176,6 +176,69 @@ test("the directory step waits until the directory is turned on", async () => {
   );
 });
 
+const GOOGLE_CREDENTIAL_VARIABLES = [
+  "CLOUD_RUN_JOB",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CREDENTIALS",
+  "GOOGLE_SERVICE_ACCOUNT_KEY",
+  "K_SERVICE",
+];
+
+/**
+ * Runs with no Google credentials in the process environment. The checks ask
+ * for them with getGoogleCredentials(), which settles that once per process,
+ * so this file only ever sees them missing.
+ */
+async function withoutGoogleCredentials<T>(run: () => Promise<T>): Promise<T> {
+  const saved = GOOGLE_CREDENTIAL_VARIABLES.map((name) => process.env[name]);
+
+  GOOGLE_CREDENTIAL_VARIABLES.forEach((name) => delete process.env[name]);
+
+  try {
+    return await run();
+  } finally {
+    GOOGLE_CREDENTIAL_VARIABLES.forEach((name, index) => {
+      if (saved[index] === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = saved[index];
+      }
+    });
+  }
+}
+
+test("the directory step needs Google credentials once it is on", async () => {
+  await withoutGoogleCredentials(async () => {
+    const step = ONBOARDING_STEPS.find(
+      (item) => item.id === "google-directory",
+    );
+
+    assert.ok(step);
+
+    const result = await step.check(
+      context({ stored: { "google.directory": "on" } }),
+    );
+
+    assert.equal(result.status, "needs_attention");
+    assert.match(result.detail, /no Google credentials/);
+  });
+});
+
+test("a Shared Drive export without Google credentials needs attention", async () => {
+  await withoutGoogleCredentials(async () => {
+    const step = ONBOARDING_STEPS.find((item) => item.id === "google-drive");
+
+    assert.ok(step);
+
+    const result = await step.check(
+      context({ stored: { "drive.exportDriveId": "0AExampleSharedDrive" } }),
+    );
+
+    assert.equal(result.status, "needs_attention");
+    assert.match(result.detail, /no Google credentials/);
+  });
+});
+
 test("the Drive step is done once the Picker is set up", async () => {
   assert.equal(await check("google-drive", context()), "not_started");
   assert.equal(
@@ -407,6 +470,13 @@ test("storage is described from the deployment's setting", async () => {
   );
   assert.equal(
     await check("storage", context({ env: { STORAGE_DRIVER: "floppy" } })),
+    "needs_attention",
+  );
+});
+
+test("storage is not done while the driver cannot be used", async () => {
+  assert.equal(
+    await check("storage", context({ env: { STORAGE_DRIVER: "gcs" } })),
     "needs_attention",
   );
 });

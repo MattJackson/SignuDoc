@@ -121,13 +121,20 @@ export async function managerPolicyAppliesTo(
     return true;
   }
 
+  // A deleted team no longer limits the rule: with none of the listed teams
+  // left, it covers everyone, as Settings shows it.
   const member = await queryOne<{ found: boolean }>(
     database,
     `
       SELECT true AS found
-      FROM team_members
-      WHERE user_id = $1 AND team_id = ANY($2::text[])
-      LIMIT 1
+      WHERE EXISTS (
+          SELECT 1
+          FROM team_members
+          WHERE user_id = $1 AND team_id = ANY($2::text[])
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM teams WHERE id = ANY($2::text[])
+        )
     `,
     [userId, policy.teamIds],
   );
@@ -165,7 +172,8 @@ export async function findSenderManager(
         ? getDirectoryClient(process.env, await getIntegrationSettings())
         : directory;
   } catch {
-    client = null;
+    // The directory is set up, or should be, but could not be read.
+    return { status: "lookup_failed" };
   }
 
   if (!client) {
@@ -198,11 +206,18 @@ export async function findSenderManager(
       status: "found",
     };
   } catch (error) {
-    if (error instanceof DirectoryError) {
-      return { status: "lookup_failed" };
-    }
+    // Whatever went wrong, the directory could not be asked. Only the kind
+    // of failure is logged: Google's own message can echo what was sent.
+    console.error(
+      "[manager-policy] The directory lookup failed:",
+      error instanceof DirectoryError
+        ? `status ${String(error.status)}`
+        : error instanceof Error
+          ? error.name
+          : "unknown error",
+    );
 
-    throw error;
+    return { status: "lookup_failed" };
   }
 }
 
@@ -235,16 +250,27 @@ type SigningOrderEntry = {
   signingStep?: number | null;
 };
 
-/** The manager is an approver in the first step of the signing order. */
+function isManagerApprover(signer: SigningOrderEntry, manager: string) {
+  return (
+    signer.role === "approver" && signer.email.trim().toLowerCase() === manager
+  );
+}
+
+/**
+ * The manager is an approver in a first step of their own. Everyone in a
+ * step is invited at the same moment, so a customer sharing the step would
+ * get their link before the manager has approved.
+ */
 export function hasManagerApprovalFirst(
   signers: readonly SigningOrderEntry[],
   managerEmail: string,
 ): boolean {
   const manager = managerEmail.trim().toLowerCase();
+  const first = firstStepSigners(signers);
 
-  return firstStepSigners(signers).some(
-    (signer) =>
-      signer.role === "approver" && signer.email.toLowerCase() === manager,
+  return (
+    first.length > 0 &&
+    first.every((signer) => isManagerApprover(signer, manager))
   );
 }
 
@@ -289,8 +315,23 @@ export async function checkManagerPolicy(
     return { status: "not_applicable" };
   }
 
-  const found = await findSenderManager(sender.email, { directory });
+  return judgeManagerPolicy(
+    current,
+    await findSenderManager(sender.email, { directory }),
+    signers,
+  );
+}
 
+/**
+ * What the rule says about a signing order, given the sender's manager as
+ * already looked up. Asks nobody, so it can be used where no outside call
+ * may be made.
+ */
+export function judgeManagerPolicy(
+  current: ManagerPolicy,
+  found: SenderManager,
+  signers: readonly SigningOrderEntry[],
+): ManagerPolicyCheck {
   if (found.status !== "found") {
     const problem = describeSenderManagerProblem(found);
 
@@ -306,7 +347,15 @@ export async function checkManagerPolicy(
     return { status: "satisfied" };
   }
 
-  const message = `Add your manager, ${found.manager.name}, as an approver in the first step of the signing order${
+  const managerKey = found.manager.email.trim().toLowerCase();
+  const sharesStep = firstStepSigners(signers).some((signer) =>
+    isManagerApprover(signer, managerKey),
+  );
+  const message = `${
+    sharesStep
+      ? `Put your manager, ${found.manager.name}, as an approver in a step of their own at the start of the signing order`
+      : `Add your manager, ${found.manager.name}, as an approver in the first step of the signing order`
+  }${
     current.mode === "require"
       ? ". This site requires their approval before anyone else is asked."
       : ", so they approve it before anyone else is asked."

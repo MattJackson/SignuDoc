@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { DbExecutor } from "./db/connection.ts";
+import type { Pool } from "pg";
+
+import { replaceDbPoolForTests, type DbExecutor } from "./db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
+import { GoogleCredentialsError } from "./integrations/google/credentials.ts";
 import {
   DirectoryError,
   type DirectoryClient,
@@ -57,7 +61,9 @@ function directoryOf(
 }
 
 const directory = directoryOf({
+  "archived-boss@example.com": { archived: true },
   "boss@example.com": { name: "Bea Boss" },
+  "ex@example.com": { managerEmail: "archived-boss@example.com" },
   "gone-boss@example.com": { suspended: true },
   "loner@example.com": {},
   "pat@example.com": { managerEmail: "boss@example.com" },
@@ -182,7 +188,8 @@ test("only an approver in the first step counts as the manager approving first",
     ),
     false,
   );
-  // At the same time as the customer is still the first step.
+  // At the same time as the customer, the customer is invited at once, so
+  // the manager is not first.
   assert.equal(
     hasManagerApprovalFirst(
       [
@@ -196,8 +203,87 @@ test("only an approver in the first step counts as the manager approving first",
       ],
       manager,
     ),
+    false,
+  );
+  assert.equal(
+    hasManagerApprovalFirst(
+      [
+        { email: manager, role: "approver", signOrder: 1, signingStep: 1 },
+        {
+          email: "client@example.com",
+          role: "signer",
+          signOrder: 2,
+          signingStep: 1,
+        },
+      ],
+      manager,
+    ),
+    false,
+  );
+  // Alone in the first step, with the customer after.
+  assert.equal(
+    hasManagerApprovalFirst(
+      [
+        { email: manager, role: "approver", signOrder: 1, signingStep: 1 },
+        {
+          email: "client@example.com",
+          role: "signer",
+          signOrder: 2,
+          signingStep: 2,
+        },
+      ],
+      manager,
+    ),
     true,
   );
+});
+
+test("an error that is not the directory's own is still a failed lookup", async () => {
+  const broken: DirectoryClient = {
+    ...directory,
+    getUser: () => Promise.reject(new Error("token exchange refused")),
+  };
+
+  assert.deepEqual(
+    await findSenderManager("pat@example.com", { directory: broken }),
+    { status: "lookup_failed" },
+  );
+
+  const suggested = await checkManagerPolicy(
+    { email: "pat@example.com", id: "user-pat" },
+    [
+      {
+        email: "client@example.com",
+        role: "signer",
+        signOrder: 1,
+        signingStep: 1,
+      },
+    ],
+    { database: noDatabase, directory: broken, policy: policy("suggest") },
+  );
+
+  assert.equal(suggested.status, "suggested");
+});
+
+test("a directory that cannot be set up is a failed lookup, not a directory that is off", async () => {
+  const unreachable = {
+    query: () => Promise.reject(new Error("connection refused")),
+  } as unknown as Pool;
+  const replaced = replaceDbPoolForTests(unreachable);
+
+  invalidateIntegrationSettingsCache();
+
+  try {
+    assert.deepEqual(await findSenderManager("pat@example.com"), {
+      status: "lookup_failed",
+    });
+  } finally {
+    invalidateIntegrationSettingsCache();
+
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
 });
 
 const sender = { email: "pat@example.com", id: "user-pat" };
@@ -232,6 +318,7 @@ test("require mode blocks with the reason when the manager cannot be found", asy
   for (const [who, pattern] of [
     [{ email: "loner@example.com", id: "u1" }, /names no manager/],
     [{ email: "sam@example.com", id: "u2" }, /suspended or no longer exists/],
+    [{ email: "ex@example.com", id: "u3" }, /suspended or no longer exists/],
   ] as const) {
     const result = await checkManagerPolicy(who, customerOnly, {
       database: noDatabase,
@@ -281,5 +368,19 @@ test("suggest mode only suggests, and off and Part 11 say nothing", async () => 
       policy: policy("require"),
     }),
     { status: "not_applicable" },
+  );
+});
+
+test("a Google credentials failure is a lookup that could not be done", async () => {
+  const failing: DirectoryClient = {
+    ...directoryOf({}),
+    getUser: async () => {
+      throw new GoogleCredentialsError("The token endpoint refused.");
+    },
+  };
+
+  assert.deepEqual(
+    await findSenderManager("pat@example.com", { directory: failing }),
+    { status: "lookup_failed" },
   );
 });

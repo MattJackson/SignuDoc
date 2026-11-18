@@ -29,8 +29,19 @@ import { readEnv, type EnvSource } from "./utils/env.ts";
 
 export type AdminGroupSetting = {
   group: string | null;
+  /** Why a value that is set could not be used, when it could not. */
+  problem?: string;
   source: "env" | "none" | "settings";
 };
+
+const warned = new Set<string>();
+
+function warnOnce(message: string) {
+  if (!warned.has(message)) {
+    warned.add(message);
+    console.warn(`[auth] ${message}`);
+  }
+}
 
 /** A group is named by its email address, like admins@example.com. */
 export function normalizeGroupAddress(value: string): string | null {
@@ -51,7 +62,18 @@ export function readAdminGroup(
   const fromEnv = readEnv(env, "GOOGLE_ADMIN_GROUP");
 
   if (fromEnv) {
-    return { group: normalizeGroupAddress(fromEnv), source: "env" };
+    const group = normalizeGroupAddress(fromEnv);
+
+    if (!group) {
+      const problem =
+        "GOOGLE_ADMIN_GROUP is not a group email address, so the administrator group is off.";
+
+      warnOnce(problem);
+
+      return { group, problem, source: "env" };
+    }
+
+    return { group, source: "env" };
   }
 
   const fromSettings = stored?.["google.adminGroup"];

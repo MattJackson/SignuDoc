@@ -5,7 +5,10 @@
 # as before. See docs/design/database-backends.md.
 set -e
 
-case "${DATABASE_URL:-}" in
-  sqlite:* | SQLITE:*) exec node db/sqlite/start.mjs ;;
+# The scheme is read as db/sqlite/open.mjs reads it: leading space and case ignored.
+url=$(printf '%s' "${DATABASE_URL:-}" | sed 's/^[[:space:]]*//' | tr '[:upper:]' '[:lower:]')
+
+case "$url" in
+  sqlite:*) exec node db/sqlite/start.mjs ;;
   *) exec node server.js ;;
 esac

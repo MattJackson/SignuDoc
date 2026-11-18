@@ -31,22 +31,23 @@ async function handle(request: Request) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
-  if (caller === "anonymous") {
-    const ration = await consumeRateLimit({
-      key: "job:backup",
-      limit: 1,
-      windowMs: ANONYMOUS_RUN_INTERVAL_MS,
-    });
-
-    if (!ration.allowed) {
-      return new NextResponse(null, { status: 204 });
-    }
-  }
-
   try {
     const outcome = await runConfiguredBackup({
       deadline: startedAt + COPY_BUDGET_MS,
       trigger: "schedule",
+      // An anonymous caller spends the one slot only when a run is about to
+      // start, not on a call that finds nothing to do.
+      claimSlot:
+        caller === "anonymous"
+          ? async () =>
+              (
+                await consumeRateLimit({
+                  key: "job:backup",
+                  limit: 1,
+                  windowMs: ANONYMOUS_RUN_INTERVAL_MS,
+                })
+              ).allowed
+          : undefined,
     });
 
     switch (outcome.status) {

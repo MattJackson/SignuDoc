@@ -918,14 +918,22 @@ export function SignersShell({
     managerInfo.available &&
     managerInfo.status !== "directory_off";
   const managerEmail = managerInfo?.manager?.email.toLowerCase() ?? null;
+  // The manager approves in a first step of their own: anyone sharing the
+  // step is invited at the same moment.
+  const firstStepIndexes = signers.flatMap((_, index) =>
+    signingSteps[index] === 1 ? [index] : [],
+  );
   const managerFirst =
     managerEmail !== null &&
-    signers.some(
-      (signer, index) =>
+    firstStepIndexes.length > 0 &&
+    firstStepIndexes.every((index) => {
+      const signer = signers[index]!;
+
+      return (
         signer.role === "approver" &&
-        signer.email.trim().toLowerCase() === managerEmail &&
-        signingSteps[index] === 1,
-    );
+        signer.email.trim().toLowerCase() === managerEmail
+      );
+    });
   const managerNotice =
     managerMessage ??
     (canAddManager && !managerFirst && managerInfo?.policy !== "off"

@@ -1,4 +1,8 @@
-import { getSignInConfig, type SignInConfig } from "./auth/sign-in-settings.ts";
+import {
+  loadSignInSettings,
+  resolveSignInConfig,
+  type SignInConfig,
+} from "./auth/sign-in-settings.ts";
 import {
   getIntegrationSettings,
   type IntegrationSettings,
@@ -93,18 +97,44 @@ export function resolveGoogleSigningPolicy(
   };
 }
 
+/**
+ * The setting in force. A failed read of the stored settings is an error,
+ * not "off": a caller that records a requirement (sending, correcting a
+ * signer) must not drop it because the database hiccuped.
+ */
 export async function loadGoogleSigningPolicy(
   env: EnvSource = process.env,
 ): Promise<GoogleSigningPolicy> {
-  const [signIn, stored] = await Promise.all([
-    getSignInConfig(env),
-    getIntegrationSettings(env).catch(() => ({}) as IntegrationSettings),
+  const [signInSettings, stored] = await Promise.all([
+    loadSignInSettings(env),
+    getIntegrationSettings(env),
   ]);
 
   return resolveGoogleSigningPolicy(
-    signIn,
+    resolveSignInConfig(signInSettings, env),
     readGoogleSigningSetting(env, stored),
   );
+}
+
+/**
+ * For the signing page, which only decides what to offer and records
+ * nothing: when the settings cannot be read, it is decided by the
+ * environment alone rather than failing the page.
+ */
+export async function loadGoogleSigningPolicyOrOff(
+  env: EnvSource = process.env,
+): Promise<GoogleSigningPolicy> {
+  try {
+    return await loadGoogleSigningPolicy(env);
+  } catch (error) {
+    console.error("Could not read the Google signing setting:", error);
+
+    // What the environment alone says, as the pages did before.
+    return resolveGoogleSigningPolicy(
+      resolveSignInConfig(null, env),
+      readGoogleSigningSetting(env, null),
+    );
+  }
 }
 
 /** The address's domain is one of the Workspace domains. */

@@ -34,7 +34,9 @@ let database: pg.Pool;
 let replaced: pg.Pool | null = null;
 const createdUsers: string[] = [];
 let administratorsBefore: string[] = [];
-let clock = 2_000_000_000;
+// Starts somewhere different on each run, so a database that still holds the
+// audit rows of an earlier run of this file does not answer for this one.
+let clock = 2_000_000_000 + Math.floor(Math.random() * 100_000_000) * 100;
 
 before(async () => {
   database = await openTestDatabase();
@@ -880,4 +882,75 @@ test("two runs never overlap", async () => {
     await holder.query("rollback");
     holder.release();
   }
+});
+
+test("a manager whose standing could not be looked up is not taken as gone", async () => {
+  await resetRoles();
+
+  const domain = newDomain();
+
+  await createUser(domain, "admin", "admin");
+
+  const ada = await createUser(domain, "ada");
+  const sent = await createEnvelope(ada.id, "sent");
+  // The manager is outside the Workspace domains, so they are asked about
+  // only as someone's manager, and the directory cannot answer.
+  await createSession(ada.id);
+  const managerEmail = `grace@${newDomain()}`;
+  const { directory } = fakeDirectory({
+    [ada.email]: suspended(ada.email, managerEmail),
+    [managerEmail]: new DirectoryError(
+      "Google's directory did not answer.",
+      503,
+    ),
+  });
+  const { at, outcome } = await run(domain, directory);
+  const result = resultFor(outcome, ada.id);
+
+  assert.equal(result?.action, "offboarded");
+  assert.equal(result?.action === "offboarded" ? result.blocked : null, true);
+  assert.equal(
+    result?.action === "offboarded" ? result.envelopesKept : null,
+    1,
+  );
+  assert.equal(outcome.counts.lookupFailures, 1);
+  // Access ends at once; only the hand-over waits for the manager.
+  assert.equal((await userRow(ada.id)).blockedAt, at);
+  assert.equal(await sessionCount(ada.id), 0);
+  assert.deepEqual(await envelopeRow(sent), {
+    handedOverAt: null,
+    userId: ada.id,
+  });
+  // Asked again first next time.
+  assert.equal((await userRow(ada.id)).checkedAt, null);
+});
+
+test("an already blocked account whose open work nobody could take is still reported", async () => {
+  await resetRoles();
+
+  const domain = newDomain();
+  const ada = await createUser(domain, "ada");
+
+  await createEnvelope(ada.id, "sent");
+  await database.query(
+    `
+      update public."user"
+      set directory_blocked_at = 1, directory_blocked_reason = 'directory_suspended'
+      where id = $1
+    `,
+    [ada.id],
+  );
+
+  const { directory } = fakeDirectory({
+    [ada.email]: suspended(ada.email),
+  });
+  const { outcome } = await run(domain, directory);
+  const result = resultFor(outcome, ada.id);
+
+  assert.equal(result?.action, "offboarded");
+  assert.equal(
+    result?.action === "offboarded" ? result.envelopesKept : null,
+    1,
+  );
+  assert.equal(outcome.counts.offboarded, 1);
 });

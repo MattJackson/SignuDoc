@@ -1,6 +1,7 @@
 import { type DbPool, getDb, queryOne } from "../../db/connection.ts";
 import { createDraftEnvelope } from "../../envelopes.ts";
 import type { StorageService } from "../../services/storage.ts";
+import { recordEnvelopeSource } from "./addon/contracts.ts";
 import { pdfFileName } from "./convert.ts";
 
 // A draft envelope from a document that came from Google (Drive's Picker,
@@ -73,7 +74,28 @@ export async function createDraftFromDocument(
     { database, ...(storageService ? { storageService } : {}) },
   );
 
-  return { envelopeId: result.envelope.id };
+  const envelopeId = result.envelope.id;
+
+  // Where the document came from, so the add-on can list the envelopes made
+  // from a file. The draft is made either way.
+  if (input.source.kind !== "upload" && input.source.ref) {
+    await recordEnvelopeSource(
+      {
+        envelopeId,
+        kind: input.source.kind,
+        ref: input.source.ref,
+        userId: input.userId,
+      },
+      database,
+    ).catch((error: unknown) => {
+      console.warn(
+        `[drive] Noting the ${input.source.kind} source of draft ${envelopeId} failed:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
+  }
+
+  return { envelopeId };
 }
 
 /** Where a new draft continues: choosing its signers. */

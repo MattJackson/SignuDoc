@@ -102,7 +102,19 @@ put_secret() {
 put_generated_secret() {
   local name="$1"
 
-  if has_secret_value "${name}"; then
+  local versions
+
+  # Created first, so listing its versions only fails for a real reason, and
+  # then a failure stops the script instead of reading as "no value yet".
+  exists secrets describe "${name}" ||
+    cmd secrets create "${name}" --replication-policy=automatic
+  versions="$(gc secrets versions list "${name}" --filter='state=ENABLED' --limit=1 \
+    --format='value(name)')" || {
+    echo "Could not read the versions of secret ${name}." >&2
+    exit 1
+  }
+
+  if [[ -n "${versions}" ]]; then
     put_secret "${name}"
   else
     put_secret "${name}" "$(openssl rand -hex 32)"
@@ -158,7 +170,14 @@ if [[ "${DB_BACKEND}" == postgres ]]; then
       --enable-point-in-time-recovery --retained-transaction-log-days=7
   exists sql databases describe "${DB_NAME}" --instance="${DB_INSTANCE}" ||
     cmd sql databases create "${DB_NAME}" --instance="${DB_INSTANCE}"
-  if ! has_secret_value "$(secret_name database-url)"; then
+  exists secrets describe "$(secret_name database-url)" ||
+    cmd secrets create "$(secret_name database-url)" --replication-policy=automatic
+  db_versions="$(gc secrets versions list "$(secret_name database-url)" --filter='state=ENABLED' \
+    --limit=1 --format='value(name)')" || {
+    echo "Could not read the versions of secret $(secret_name database-url)." >&2
+    exit 1
+  }
+  if [[ -z "${db_versions}" ]]; then
     DB_PASSWORD="$(openssl rand -hex 24)"
     if exists sql users describe "${DB_USER}" --instance="${DB_INSTANCE}"; then
       printf '  + gcloud sql users set-password %s (password not shown)\n' "${DB_USER}"

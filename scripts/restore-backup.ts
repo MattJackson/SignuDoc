@@ -185,6 +185,13 @@ async function main() {
     }
   }
 
+  if (process.exitCode) {
+    console.error(
+      "Not done: some files could not be copied; run again with --files-only before deploying.",
+    );
+    return;
+  }
+
   console.log("Done. Deploy the new install and sign in to check it.");
 }
 

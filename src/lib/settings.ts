@@ -1,5 +1,6 @@
 import { buildBranding, type Branding } from "./branding.ts";
 import {
+  afterCommit,
   type DbExecutor,
   type DbPool,
   getDb,
@@ -183,6 +184,9 @@ const SETTINGS_CACHE_MS = 30_000;
 const SETUP_COMPLETE_CACHE_MS = 60_000;
 
 type SettingsCache = {
+  // Bumped by every clear. A read that began before a clear holds the old
+  // number and so cannot put what it read back into the cache.
+  generation: number;
   settings: { expiresAt: number; value: AppSettings | null } | null;
   setupCompleteUntil: number;
 };
@@ -194,11 +198,13 @@ declare global {
 // Kept on globalThis, like the rate limit store, so every copy of this
 // module in one process shares it and a change clears it for all of them.
 const cache: SettingsCache = (globalThis.__signudocSettingsCache ??= {
+  generation: 0,
   settings: null,
   setupCompleteUntil: 0,
 });
 
 export function invalidateSettingsCache() {
+  cache.generation = (cache.generation ?? 0) + 1;
   cache.settings = null;
   cache.setupCompleteUntil = 0;
 }
@@ -295,9 +301,14 @@ async function getStoredSettings(): Promise<AppSettings | null> {
     return cache.settings.value;
   }
 
+  const generation = cache.generation;
   const value = await readStoredSettings();
 
-  cache.settings = { expiresAt: now + SETTINGS_CACHE_MS, value };
+  // A change cleared the cache while this was reading, so what was read may
+  // be the row from before it.
+  if (cache.generation === generation) {
+    cache.settings = { expiresAt: now + SETTINGS_CACHE_MS, value };
+  }
 
   return value;
 }
@@ -448,7 +459,11 @@ async function saveSettingsLocked(
     ],
   );
 
+  // Cleared now for a save outside a transaction, and again once the
+  // transaction commits: a page that read the old row in between would
+  // otherwise keep it cached for the full cache time.
   invalidateSettingsCache();
+  afterCommit(database, invalidateSettingsCache);
 
   return row ? mapSettingsRow(row) : next;
 }
@@ -573,9 +588,10 @@ export async function getSetupState(): Promise<SetupState> {
     return { status: "complete" };
   }
 
+  const generation = cache.generation;
   const state = await readSetupState();
 
-  if (state.status === "complete") {
+  if (state.status === "complete" && cache.generation === generation) {
     cache.setupCompleteUntil = Date.now() + SETUP_COMPLETE_CACHE_MS;
   }
 

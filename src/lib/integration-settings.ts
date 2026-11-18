@@ -106,6 +106,7 @@ type IntegrationSettingsCache = {
 
 declare global {
   var __signudocIntegrationSettings: IntegrationSettingsCache | undefined;
+  var __signudocIntegrationGeneration: number | undefined;
 }
 
 function isKnownKey(key: string): key is IntegrationSettingKey {
@@ -179,12 +180,17 @@ export async function getIntegrationSettings(
     return cached.value;
   }
 
+  const generation = globalThis.__signudocIntegrationGeneration ?? 0;
   const value = await readIntegrationSettings(getDb(), env);
 
-  globalThis.__signudocIntegrationSettings = {
-    expiresAt: Date.now() + CACHE_MS,
-    value,
-  };
+  // A save or a clear happened while this was reading, so what was read may
+  // be from before it.
+  if ((globalThis.__signudocIntegrationGeneration ?? 0) === generation) {
+    globalThis.__signudocIntegrationSettings = {
+      expiresAt: Date.now() + CACHE_MS,
+      value,
+    };
+  }
 
   return value;
 }
@@ -233,6 +239,8 @@ export async function primeIntegrationSettings(
 }
 
 export function invalidateIntegrationSettingsCache() {
+  globalThis.__signudocIntegrationGeneration =
+    (globalThis.__signudocIntegrationGeneration ?? 0) + 1;
   globalThis.__signudocIntegrationSettings = undefined;
 }
 
@@ -256,9 +264,15 @@ function describeChange(
  * Writes the given settings and records what changed in the install's audit
  * trail, in one transaction. Settings that are not named are left alone.
  * Returns the stored settings after the change.
+ *
+ * The update can be a function of the settings as they are stored once
+ * the rows are locked, for a change made from what is there now (merging
+ * one entry into a JSON value, say).
  */
 export async function saveIntegrationSettings(
-  update: IntegrationSettingsUpdate,
+  update:
+    | IntegrationSettingsUpdate
+    | ((before: IntegrationSettings) => IntegrationSettingsUpdate),
   actor: IntegrationSettingsActor | null,
   {
     area,
@@ -273,48 +287,67 @@ export async function saveIntegrationSettings(
     const changes: Record<string, { from: unknown; to: unknown }> = {};
     const now = Math.floor(Date.now() / 1000);
 
-    for (const [rawKey, rawValue] of Object.entries(update)) {
+    const changesToMake =
+      typeof update === "function" ? update(before) : update;
+
+    for (const [rawKey, rawValue] of Object.entries(changesToMake)) {
       if (!isKnownKey(rawKey) || rawValue === undefined) {
         continue;
       }
 
       const key = rawKey;
-      const value = rawValue === null ? null : rawValue.trim();
+      // A secret is kept as it was given: spaces can be part of a password.
+      const value =
+        rawValue === null
+          ? null
+          : INTEGRATION_SETTINGS[key].secret
+            ? rawValue
+            : rawValue.trim();
       const next = value === "" ? null : value;
       const previous = before[key];
 
-      if ((next ?? undefined) === previous) {
+      if (next !== null && next === previous) {
         continue;
       }
 
       if (next === null) {
-        await tx.query(
+        // Always run, since a stored secret that can no longer be read is
+        // missing from `before` and still has to go.
+        const removed = await tx.query(
           `DELETE FROM public.integration_settings WHERE key = $1`,
           [key],
         );
-      } else {
-        const secret = INTEGRATION_SETTINGS[key].secret;
 
-        await tx.query(
-          `
-            INSERT INTO public.integration_settings (key, value, secret, updated_at, updated_by)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (key) DO UPDATE SET
-              value = excluded.value,
-              secret = excluded.secret,
-              updated_at = excluded.updated_at,
-              updated_by = excluded.updated_by
-          `,
-          [
-            key,
-            secret ? encryptPrivateKey(next, keyFor(key, env)) : next,
-            secret,
-            now,
-            actor?.id ?? null,
-          ],
-        );
+        if (!removed.rowCount) {
+          continue;
+        }
+
+        changes[key] = INTEGRATION_SETTINGS[key].secret
+          ? { from: "set", to: null }
+          : describeChange(key, previous, null);
+        continue;
       }
 
+      const secret = INTEGRATION_SETTINGS[key].secret;
+
+      await tx.query(
+        `
+          INSERT INTO public.integration_settings (key, value, secret, updated_at, updated_by)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (key) DO UPDATE SET
+            value = excluded.value,
+            secret = excluded.secret,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by
+        `,
+        [
+          key,
+          secret ? encryptPrivateKey(next, keyFor(key, env)) : next,
+          secret,
+          now,
+          actor?.id ?? null,
+        ],
+      );
       changes[key] = describeChange(key, previous, next);
     }
 
@@ -336,6 +369,10 @@ export async function saveIntegrationSettings(
   }, database);
 
   // This instance sees the change at once; others within the cache time.
+  // The number moves on so a read that began before the commit cannot
+  // overwrite this with the old values.
+  globalThis.__signudocIntegrationGeneration =
+    (globalThis.__signudocIntegrationGeneration ?? 0) + 1;
   globalThis.__signudocIntegrationSettings = {
     expiresAt: Date.now() + CACHE_MS,
     value: saved,

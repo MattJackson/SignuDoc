@@ -44,6 +44,9 @@ function createFakeGcs() {
   // How many bytes of each resumable piece to take; less than all of it
   // makes the client send the rest again.
   let takeFromPiece: ((length: number) => number) | null = null;
+  // How many non-final pieces are answered with 308 and no Range, which
+  // means nothing was kept.
+  let stalledPieces = 0;
 
   function store(name: string, body: Uint8Array, contentType: string) {
     generation += 1;
@@ -123,6 +126,13 @@ function createFakeGcs() {
       }
 
       const final = empty ? true : match?.[3] !== "*";
+
+      if (!final && stalledPieces > 0) {
+        stalledPieces -= 1;
+
+        return new Response(null, { status: 308 });
+      }
+
       const taken =
         final || !takeFromPiece
           ? piece.byteLength
@@ -134,8 +144,12 @@ function createFakeGcs() {
       session.received = joined;
 
       if (!final) {
+        // With nothing kept yet, Cloud Storage sends no Range header at all.
         return new Response(null, {
-          headers: { range: `bytes=0-${String(joined.byteLength - 1)}` },
+          headers:
+            joined.byteLength > 0
+              ? { range: `bytes=0-${String(joined.byteLength - 1)}` }
+              : {},
           status: 308,
         });
       }
@@ -249,6 +263,9 @@ function createFakeGcs() {
     },
     fetchImpl: fetchImpl as typeof fetch,
     objects,
+    stallNextPieces(count: number) {
+      stalledPieces = count;
+    },
     setPartialPieces(take: ((length: number) => number) | null) {
       takeFromPiece = take;
     },
@@ -606,6 +623,29 @@ test("a failed piece fails the upload", async () => {
   assert.equal(fake.objects.has("broken"), false);
 });
 
+test("an upload Cloud Storage stops taking fails instead of looping", async () => {
+  const { client, fake } = setUp();
+  const bytes = new Uint8Array(9 * 1024 * 1024);
+
+  // It answers 308 with no Range: nothing of the piece was kept.
+  fake.setPartialPieces(() => 0);
+
+  await assert.rejects(
+    client.uploadStream("stuck", chunksOf(bytes, 1024 * 1024), {
+      contentType: "application/gzip",
+    }),
+    (error: unknown) =>
+      error instanceof GcsRequestError && /upload/.test(error.message),
+  );
+  // The first try and at most three more (MAX_STALLED_PIECES), then it
+  // gives up rather than sending the piece for ever.
+  assert.equal(
+    fake.calls.filter((call) => call.url.pathname === "/resumable").length,
+    4,
+  );
+  assert.equal(fake.objects.has("stuck"), false);
+});
+
 test("the driver says what is missing", () => {
   assert.throws(
     () => createGcsStorageService({ credentials, env: {} }),
@@ -636,4 +676,138 @@ test("Cloud Storage is chosen only when STORAGE_DRIVER says so", () => {
   );
   // Uploads go through the app on Cloud Storage.
   assert.equal(supportsDirectUploads({ STORAGE_DRIVER: "gcs" }), false);
+});
+
+test("a piece Cloud Storage kept nothing of is sent again, a few times at most", async () => {
+  const { client, fake } = setUp();
+  const bytes = new Uint8Array(9 * 1024 * 1024);
+
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    bytes[index] = index % 251;
+  }
+
+  // A 308 with no Range header says nothing was persisted: send it again.
+  fake.stallNextPieces(1);
+  await client.uploadStream("stalled-once", chunksOf(bytes, 1024 * 1024), {
+    contentType: "application/octet-stream",
+  });
+  assert.deepEqual(
+    Buffer.from(fake.objects.get("stalled-once")?.body ?? []),
+    Buffer.from(bytes),
+  );
+
+  // Never taking it is still a failure, not a loop that goes round forever.
+  fake.stallNextPieces(100);
+  await assert.rejects(
+    client.uploadStream("never-taken", chunksOf(bytes, 1024 * 1024), {
+      contentType: "application/octet-stream",
+    }),
+    GcsRequestError,
+  );
+});
+
+test("a request that gets no answer fails by the deadline instead of hanging", async () => {
+  // Answers only when the request is given up on; a client that sets no
+  // deadline is told so after a second.
+  const fetchImpl = ((_url: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+
+      if (!signal) {
+        setTimeout(() => reject(new Error("no deadline was set")), 1_000);
+        return;
+      }
+
+      signal.addEventListener("abort", () => reject(signal.reason));
+    })) as typeof fetch;
+  const client = createGcsClient({
+    bucket: BUCKET,
+    credentials,
+    fetchImpl,
+    requestTimeoutMs: 50,
+  });
+
+  await assert.rejects(client.download("a"), GcsRequestError);
+  await assert.rejects(
+    client.upload("a", new Uint8Array(1), { contentType: "text/plain" }),
+    GcsRequestError,
+  );
+  await assert.rejects(client.getMetadata("a"), GcsRequestError);
+});
+
+test("a stream is gathered without copying what is held again for every chunk", async () => {
+  const { client, fake } = setUp();
+  const bytes = new Uint8Array(24 * 1024 * 1024);
+
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    bytes[index] = index % 251;
+  }
+
+  // Counts the bytes copied with Uint8Array.set, which is how the pieces
+  // are put together.
+  const originalSet = Uint8Array.prototype.set;
+  let copied = 0;
+
+  Uint8Array.prototype.set = function (
+    this: Uint8Array,
+    source: ArrayLike<number>,
+    offset?: number,
+  ) {
+    copied += source.length;
+    return originalSet.call(this, source, offset);
+  };
+
+  try {
+    await client.uploadStream("big", chunksOf(bytes, 16 * 1024), {
+      contentType: "application/octet-stream",
+    });
+  } finally {
+    Uint8Array.prototype.set = originalSet;
+  }
+
+  assert.deepEqual(
+    Buffer.from(fake.objects.get("big")?.body ?? []),
+    Buffer.from(bytes),
+  );
+  // Each byte is copied into a piece once (plus the stand-in's own
+  // bookkeeping); copying the whole held piece per chunk would be dozens of
+  // times the input.
+  assert.ok(
+    copied < bytes.byteLength * 8,
+    `${String(copied)} bytes copied for ${String(bytes.byteLength)}`,
+  );
+});
+
+test("a body that stops arriving after the headers fails a buffered read by the deadline", async () => {
+  // Headers at once, then a body that never ends unless the request is
+  // given up on.
+  const fetchImpl = (async (_url: unknown, init?: RequestInit) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () =>
+            controller.error(init.signal?.reason),
+          );
+        },
+      }),
+      { headers: { "content-type": "application/pdf" }, status: 200 },
+    )) as typeof fetch;
+  const client = createGcsClient({
+    bucket: BUCKET,
+    credentials,
+    fetchImpl,
+    requestTimeoutMs: 100,
+  });
+  const storage = createGcsStorageService({
+    client,
+    env: { GCS_BUCKET: BUCKET },
+  });
+  const unbounded = new Promise<never>((_resolve, reject) =>
+    setTimeout(() => reject(new Error("the read was never bounded")), 1_500),
+  );
+
+  await assert.rejects(
+    Promise.race([storage.getObject(KEY), unbounded]),
+    GcsRequestError,
+  );
 });

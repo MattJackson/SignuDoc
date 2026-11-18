@@ -519,6 +519,37 @@ test("a first message in a channel starts a thread; later ones edit it and reply
   assert.equal(bodyOf(calls[2]).thread_ts, "100.1");
 });
 
+test("a deleted channel thread is started again", async () => {
+  const { calls, fetch } = fakeFetch((call) => {
+    if (call.url.endsWith("chat.update")) {
+      return json({ channel: "C0123456", ok: true, ts: "100.1" });
+    }
+
+    // The reply into the thread finds the first message gone.
+    return bodyOf(call).thread_ts
+      ? json({ error: "thread_not_found", ok: false })
+      : json({ channel: "C0123456", ok: true, ts: "300.3" });
+  });
+  const channel = createSlackChannelWithFetch(fetch);
+  const context = { env: { SLACK_BOT_TOKEN: TOKEN }, stored: {} };
+  const result = await channel.send("C0123456", sample(), context, {
+    placement: "channel_thread",
+    thread: { conversation: "C0123456", ts: "100.1" },
+    updateThread: true,
+  });
+
+  assert.deepEqual(result, {
+    outcome: "sent",
+    thread: { conversation: "C0123456", ts: "300.3" },
+  });
+  assert.deepEqual(
+    calls.map((call) => call.url.split("/").at(-1)),
+    ["chat.update", "chat.postMessage", "chat.postMessage"],
+  );
+  assert.equal(bodyOf(calls[1]).thread_ts, "100.1");
+  assert.equal(bodyOf(calls[2]).thread_ts, undefined);
+});
+
 test("a deleted first message is replaced by a new one", async () => {
   const { calls, fetch } = fakeFetch((call) =>
     call.url.endsWith("chat.update")

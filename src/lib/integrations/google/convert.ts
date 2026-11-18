@@ -1,4 +1,8 @@
-import { MAX_UPLOAD_SIZE_BYTES } from "../../types/domain.ts";
+import {
+  FILE_TOO_LARGE_TO_CONVERT_MESSAGE,
+  MAX_CONVERT_SOURCE_BYTES,
+  MAX_UPLOAD_SIZE_BYTES,
+} from "../../types/domain.ts";
 import {
   DRIVE_API_BASE_URL,
   DriveApiError,
@@ -9,6 +13,7 @@ import {
   uploadDriveFile,
   type FetchLike,
 } from "./drive-api.ts";
+import { GOOGLE_MEDIA_TIMEOUT_MS } from "./endpoints.ts";
 
 // Turning a document into a PDF with Google Drive, for starting an envelope
 // from something that is not a PDF yet: a Word file from Gmail, a Google
@@ -29,7 +34,7 @@ export type ConvertedPdf = { bytes: Uint8Array; fileName: string };
 export type ConvertOptions = { fetchImpl?: FetchLike };
 
 /** Largest file sent to Drive for converting. Google's own limit is 50 MB. */
-export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
+export { MAX_CONVERT_SOURCE_BYTES };
 
 export const PDF_MIME_TYPE = "application/pdf";
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
@@ -103,7 +108,7 @@ export type DocumentConversionErrorCode =
 const CONVERSION_MESSAGES: Record<DocumentConversionErrorCode, string> = {
   drive_failed:
     "Google Drive could not turn this file into a PDF. Try again, or save it as a PDF and upload that.",
-  too_large: "This file exceeds the 20 MB limit.",
+  too_large: FILE_TOO_LARGE_TO_CONVERT_MESSAGE,
   unsupported_type:
     "This kind of file cannot be turned into a PDF. Use a PDF, a Word, OpenDocument or RTF document, or a Google Doc, Sheet or Slides file.",
 };
@@ -196,6 +201,8 @@ async function exportPdf(
       accessToken,
       "Exporting from Drive",
       `${DRIVE_API_BASE_URL}/files/${id}/export?mimeType=${encodeURIComponent(PDF_MIME_TYPE)}`,
+      {},
+      GOOGLE_MEDIA_TIMEOUT_MS,
     );
   } catch (error) {
     // files.export stops at 10 MB of output. A larger file can still be
@@ -224,6 +231,8 @@ async function exportPdf(
       accessToken,
       "Exporting from Drive",
       link,
+      {},
+      GOOGLE_MEDIA_TIMEOUT_MS,
     );
   }
 
@@ -380,6 +389,8 @@ export async function exportGoogleFileToPdf(
       input.accessToken,
       "Downloading from Drive",
       `${DRIVE_API_BASE_URL}/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`,
+      {},
+      GOOGLE_MEDIA_TIMEOUT_MS,
     );
     const bytes = await readLimitedBytes(response, limit, "The Drive file");
 

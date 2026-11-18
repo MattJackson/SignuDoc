@@ -1127,6 +1127,21 @@ function handleDrives(context: FakeRequest, rest: string[]) {
   );
 }
 
+const DRIVE_AUTH = "https://www.googleapis.com/auth/drive";
+// Drive honours these scopes for reading, and the first two for changing
+// anything. The labels and add-on scopes that start the same way do not
+// reach files at all.
+const DRIVE_WRITE_SCOPES: ReadonlySet<string> = new Set([
+  DRIVE_AUTH,
+  `${DRIVE_AUTH}.file`,
+]);
+const DRIVE_READ_SCOPES: ReadonlySet<string> = new Set([
+  ...DRIVE_WRITE_SCOPES,
+  `${DRIVE_AUTH}.metadata`,
+  `${DRIVE_AUTH}.metadata.readonly`,
+  `${DRIVE_AUTH}.readonly`,
+]);
+
 /** Handles a Drive API request. False when the path is not one. */
 export function handleDrive(context: FakeRequest): boolean {
   const upload = context.path.startsWith("/upload/drive/v3/");
@@ -1136,8 +1151,9 @@ export function handleDrive(context: FakeRequest): boolean {
     return false;
   }
 
+  const reading = !upload && ["GET", "HEAD"].includes(context.method);
   const token = requireScope(context, (scope) =>
-    scope.startsWith("https://www.googleapis.com/auth/drive"),
+    (reading ? DRIVE_READ_SCOPES : DRIVE_WRITE_SCOPES).has(scope),
   );
 
   if (!token) {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { resolveWorkspaceDomains } from "../../../auth/sso.ts";
 import type { DbExecutor } from "../../../db/connection.ts";
 import { findAddonUser, isEmailInWorkspace } from "./users.ts";
 
@@ -81,4 +82,14 @@ test("no account, an unverified one, or another domain is not a match", async ()
   );
   // The last was refused before the database was asked.
   assert.equal(asked.length, 2);
+});
+
+test("an invalid Workspace domain list lets no address in", async () => {
+  const invalid = resolveWorkspaceDomains({
+    env: { GOOGLE_WORKSPACE_DOMAINS: "acme" },
+    signupDomains: [],
+    stored: null,
+  });
+
+  assert.equal(isEmailInWorkspace("sam@example.com", invalid), false);
 });

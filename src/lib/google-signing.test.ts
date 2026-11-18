@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Pool } from "pg";
+
+import { replaceDbPoolForTests } from "./db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import {
   googleSigningFor,
   isWorkspaceAddress,
+  loadGoogleSigningPolicy,
+  loadGoogleSigningPolicyOrOff,
   readGoogleSigningSetting,
   resolveGoogleSigningPolicy,
   type GoogleSigningPolicy,
@@ -167,4 +173,58 @@ test("a required Google check comes first and keeps every check the sender asked
     }),
     ["email_code"],
   );
+});
+
+test("a settings read that fails is an error, never the setting turned off", async () => {
+  const unreachable = {
+    query: () => Promise.reject(new Error("connection refused")),
+  } as unknown as Pool;
+  const replaced = replaceDbPoolForTests(unreachable);
+
+  invalidateIntegrationSettingsCache();
+
+  try {
+    await assert.rejects(loadGoogleSigningPolicy({}), /connection refused/);
+  } finally {
+    invalidateIntegrationSettingsCache();
+
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
+});
+
+test("when the settings cannot be read, the environment's settings still apply", async () => {
+  const unreachable = {
+    query: () => Promise.reject(new Error("connection refused")),
+  } as unknown as Pool;
+  const replaced = replaceDbPoolForTests(unreachable);
+
+  invalidateIntegrationSettingsCache();
+
+  const originalError = console.error;
+
+  console.error = () => undefined;
+
+  try {
+    const policy = await loadGoogleSigningPolicyOrOff({
+      GOOGLE_SIGNING: "offer",
+      GOOGLE_WORKSPACE_DOMAINS: "example.com",
+      SSO_CLIENT_ID: "client",
+      SSO_CLIENT_SECRET: "secret",
+      SSO_ISSUER: "https://accounts.google.com",
+    });
+
+    assert.equal(policy.mode, "offer");
+    assert.equal(policy.ssoIsGoogle, true);
+    assert.deepEqual(policy.domains, ["example.com"]);
+    assert.equal(policy.available, true);
+  } finally {
+    console.error = originalError;
+    invalidateIntegrationSettingsCache();
+
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
 });

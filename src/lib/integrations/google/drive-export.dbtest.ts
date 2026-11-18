@@ -21,6 +21,7 @@ import {
   claimDriveExport,
   claimDueDriveExports,
   exportClaimedRow,
+  requeueDriveExport,
   settleScheduledDriveExports,
 } from "./drive-export.ts";
 
@@ -443,4 +444,170 @@ test("a failed try waits to retry; a good one records the files", async () => {
     signed_pdf_file_id: "file-1",
     status: "exported",
   });
+});
+
+test("an export being tried is not put back in line under the attempt that holds it", async () => {
+  const now = unixNow();
+  const beingTried = await createExport({
+    attempts: 1,
+    lockedUntil: now + 300,
+    nextAttemptAt: now - 60,
+    status: "pending",
+  });
+
+  assert.equal(await requeueDriveExport(database, beingTried, now), null);
+
+  const held = await database.query<{ attempts: number; locked_until: string }>(
+    `select attempts, locked_until from drive_exports where envelope_id = $1`,
+    [beingTried],
+  );
+
+  assert.equal(Number(held.rows[0]?.locked_until), now + 300);
+  assert.equal(held.rows[0]?.attempts, 1);
+
+  // Once the lock has lapsed it can be retried.
+  const lapsed = await createExport({
+    attempts: 2,
+    lockedUntil: now - 1,
+    nextAttemptAt: now - 60,
+    status: "failed",
+  });
+
+  assert.deepEqual(await requeueDriveExport(database, lapsed, now), {
+    title: "Lease",
+  });
+});
+
+async function lockState(envelopeId: string) {
+  const result = await database.query<{
+    attempts: number;
+    locked_until: number | null;
+    signed_pdf_file_id: string | null;
+    status: string;
+  }>(
+    `select status, attempts, locked_until, signed_pdf_file_id from drive_exports where envelope_id = $1`,
+    [envelopeId],
+  );
+
+  return result.rows[0];
+}
+
+test("an export being tried is not requeued, and a claim that was taken over changes nothing", async () => {
+  const now = unixNow();
+  const id = await createExport({ nextAttemptAt: now - 60, status: "pending" });
+  const first = await claimDriveExport(database, id, now);
+
+  assert.ok(first);
+
+  const claimed = await lockState(id);
+
+  // Retry pressed while the export is running: nothing is reset.
+  assert.equal(await requeueDriveExport(database, id, now), null);
+  assert.deepEqual(await lockState(id), claimed);
+
+  // The first worker is slow: its claim lapses, a second worker takes the
+  // row over and finishes it.
+  await database.query(
+    `update drive_exports set locked_until = $2 where envelope_id = $1`,
+    [id, now - 1],
+  );
+  assert.ok(await claimDriveExport(database, id, now + 700));
+  await database.query(
+    `
+      update drive_exports
+      set status = 'exported', locked_until = null,
+        signed_pdf_file_id = 'file-signed', certificate_file_id = 'file-cert'
+      where envelope_id = $1
+    `,
+    [id],
+  );
+
+  // The first worker then fails: it must not undo the second one's result.
+  await exportClaimedRow(first, {
+    database,
+    getAccessToken: async () => {
+      throw new Error("No Google credentials in this test.");
+    },
+    now: () => now * 1000,
+    storageService,
+  });
+
+  const after = await lockState(id);
+
+  assert.equal(after?.status, "exported");
+  assert.equal(after?.signed_pdf_file_id, "file-signed");
+
+  // A row nobody is trying can be requeued.
+  assert.deepEqual(await requeueDriveExport(database, id, now), {
+    title: "Lease",
+  });
+});
+
+test("a failed look-up of the sender's teams leaves the export to be tried again", async () => {
+  const now = unixNow();
+  const id = await createExport({ nextAttemptAt: now, status: "pending" });
+  const row = await claimDriveExport(database, id, now);
+  let upload = 0;
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+
+    if (method === "GET" && url.startsWith(`${DRIVE_API_BASE_URL}/files?`)) {
+      return Response.json({ files: [] });
+    }
+
+    if (method === "POST" && url.startsWith(`${DRIVE_API_BASE_URL}/files?`)) {
+      return Response.json({ id: "folder-1" });
+    }
+
+    if (method === "POST" && url.startsWith(DRIVE_UPLOAD_BASE_URL)) {
+      upload += 1;
+
+      return new Response(null, {
+        headers: {
+          location: `${DRIVE_UPLOAD_BASE_URL}/files?upload_id=${String(upload)}`,
+        },
+      });
+    }
+
+    if (method === "PUT") {
+      return Response.json({
+        id: `file-${new URL(url).searchParams.get("upload_id") ?? ""}`,
+      });
+    }
+
+    throw new Error(`Unexpected request: ${method} ${url}`);
+  }) as typeof fetch;
+  const flaky = {
+    query: (text: string, values?: unknown[]) =>
+      text.includes("team_members")
+        ? Promise.reject(new Error("The database dropped the connection."))
+        : database.query(text, values),
+  } as unknown as pg.Pool;
+
+  assert.ok(row);
+  assert.equal(
+    await exportClaimedRow(row, {
+      database: flaky,
+      env: {
+        ...process.env,
+        GOOGLE_DRIVE_LABEL_FIELDS: JSON.stringify({ field1: "senderTeam" }),
+        GOOGLE_DRIVE_LABEL_ID: "label-1",
+      },
+      fetchImpl,
+      getAccessToken: async () => "service-account-token",
+      now: () => now * 1000,
+      storageService,
+    }),
+    "pending",
+  );
+
+  const result = await database.query<{
+    label_status: string | null;
+    status: string;
+  }>(`select status, label_status from drive_exports where envelope_id = $1`, [
+    id,
+  ]);
+
+  assert.deepEqual(result.rows[0], { label_status: null, status: "pending" });
 });

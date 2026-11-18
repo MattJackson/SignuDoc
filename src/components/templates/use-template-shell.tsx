@@ -109,7 +109,12 @@ export function UseTemplateShell({
         );
       })
       .catch(() => {
-        // Leaving the page cancels the request.
+        // Leaving the page cancels the request; anything else is shown.
+        if (!controller.signal.aborted) {
+          setManagerProblem(
+            "Your manager could not be looked up right now. Reload to try again.",
+          );
+        }
       });
 
     return () => controller.abort();

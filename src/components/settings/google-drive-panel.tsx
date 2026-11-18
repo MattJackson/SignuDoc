@@ -11,6 +11,7 @@ import {
   SetupSteps,
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
+import { exportsView, readExports } from "@/components/settings/drive-exports";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   GoogleDriveView,
@@ -92,6 +93,14 @@ async function postAction<T>(body: Record<string, unknown>): Promise<T | null> {
   }
 }
 
+async function fetchExports(): Promise<DriveExportListItem[] | null> {
+  return readExports(
+    await postAction<{ exports?: DriveExportListItem[] }>({
+      action: "list_exports",
+    }),
+  );
+}
+
 function formatTime(seconds: number | null): string {
   return seconds
     ? new Date(seconds * 1000).toLocaleString(undefined, {
@@ -166,6 +175,7 @@ export function GoogleDriveSection({
   );
   const [labels, setLabels] = useState<LabelListResult | null>(null);
   const [exportList, setExports] = useState<DriveExportListItem[] | null>(null);
+  const [exportsFailed, setExportsFailed] = useState(false);
   const exportsEnabled = view.export.driveId !== null;
 
   function change(field: keyof typeof values) {
@@ -211,12 +221,18 @@ export function GoogleDriveSection({
     }
   }
 
-  async function loadExports() {
-    const payload = await postAction<{ exports?: DriveExportListItem[] }>({
-      action: "list_exports",
-    });
+  function applyExports(list: DriveExportListItem[] | null) {
+    setExportsFailed(list === null);
 
-    setExports(payload?.exports ?? []);
+    if (list === null) {
+      setNotice({ message: "Could not load the export list.", tone: "error" });
+    } else {
+      setExports(list);
+    }
+  }
+
+  async function loadExports() {
+    applyExports(await fetchExports());
   }
 
   useEffect(() => {
@@ -226,11 +242,9 @@ export function GoogleDriveSection({
 
     let cancelled = false;
 
-    void postAction<{ exports?: DriveExportListItem[] }>({
-      action: "list_exports",
-    }).then((payload) => {
+    void fetchExports().then((list) => {
       if (!cancelled) {
-        setExports(payload?.exports ?? []);
+        applyExports(list);
       }
     });
 
@@ -862,9 +876,13 @@ export function GoogleDriveSection({
               Refresh
             </button>
           </div>
-          {exportList === null ? (
+          {exportsView(exportList, exportsFailed) === "loading" ? (
             <p className="text-sm text-(--secondary)">Loading...</p>
-          ) : exportList.length === 0 ? (
+          ) : exportsView(exportList, exportsFailed) === "failed" ? (
+            <p className="text-sm text-(--secondary)">
+              Could not load the list. Use Refresh to try again.
+            </p>
+          ) : exportList === null || exportList.length === 0 ? (
             <p className="text-sm text-(--secondary)">
               Nothing exported yet. Envelopes completed from now on show here.
             </p>

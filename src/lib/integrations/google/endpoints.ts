@@ -92,3 +92,21 @@ export function googleUrl(url: string, env: EnvSource = process.env): string {
 
   return base ? `${base}${parsed.pathname}${parsed.search}` : url;
 }
+
+/** How long a call to Google for a small answer may take. */
+export const GOOGLE_REQUEST_TIMEOUT_MS = 15_000;
+/** How long a call that moves a file may take. */
+export const GOOGLE_MEDIA_TIMEOUT_MS = 60_000;
+
+/**
+ * A signal that aborts after the time, or when the caller's own signal
+ * does, so a Google endpoint that stalls cannot hold a request for minutes.
+ */
+export function googleTimeoutSignal(
+  timeoutMs: number,
+  callerSignal?: AbortSignal | null,
+): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+
+  return callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
+}

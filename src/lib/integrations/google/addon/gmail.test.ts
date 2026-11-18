@@ -77,6 +77,58 @@ test("PDF and Word attachments are listed, in order, and nothing else", () => {
   assert.deepEqual(listSignableAttachments({}), []);
 });
 
+test("an attachment inside a forwarded message is found", () => {
+  const forwarded: GmailMessage = {
+    id: "msg-2",
+    payload: {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          body: { attachmentId: "a-first", size: 100 },
+          filename: "First.pdf",
+          mimeType: "application/pdf",
+          partId: "1",
+        },
+        {
+          mimeType: "multipart/mixed",
+          partId: "2",
+          parts: [
+            {
+              mimeType: "multipart/related",
+              partId: "2.1",
+              parts: [
+                {
+                  body: { attachmentId: "a-deep", size: 300 },
+                  filename: "Deep.pdf",
+                  mimeType: "application/pdf",
+                  partId: "2.1.1",
+                },
+              ],
+            },
+            {
+              body: { attachmentId: "a-nested", size: 200 },
+              filename: "Nested.pdf",
+              mimeType: "application/pdf",
+              partId: "2.2",
+            },
+          ],
+        },
+        {
+          body: { attachmentId: "a-last", size: 400 },
+          filename: "Last.pdf",
+          mimeType: "application/pdf",
+          partId: "3",
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(
+    listSignableAttachments(forwarded).map((attachment) => attachment.partId),
+    ["1", "2.1.1", "2.2", "3"],
+  );
+});
+
 test("a file's type is read from its MIME type, or else its name", () => {
   assert.equal(signableMimeType("APPLICATION/PDF", "x"), "application/pdf");
   assert.equal(

@@ -1,3 +1,7 @@
+import {
+  splitWorkspaceDomains,
+  type WorkspaceDomains,
+} from "../../../auth/sso.ts";
 import type { AddonConfig } from "./config.ts";
 import {
   IdTokenError,
@@ -60,11 +64,20 @@ export type AuthenticateAddonRequestInput = {
   /** The event's own copy of the system ID token. */
   systemIdToken: string;
   userIdToken: string;
-  workspaceDomains: readonly string[];
+  workspaceDomains: readonly string[] | WorkspaceDomains;
 };
 
 function tokenProblem(error: unknown): string | null {
   return error instanceof IdTokenError ? error.problem : null;
+}
+
+// Not being able to fetch Google's keys is the server's trouble, not a bad
+// request: it passes through as it is, so the route answers 500 and does not
+// count it against the caller.
+function isInfrastructureFailure(error: unknown): boolean {
+  return (
+    !(error instanceof IdTokenError) || error.problem === "keys_unavailable"
+  );
 }
 
 /** Throws AddonRequestError unless Google sent the request for a known user. */
@@ -106,7 +119,7 @@ export async function authenticateAddonRequest({
       );
     }
   } catch (error) {
-    if (error instanceof AddonRequestError) {
+    if (error instanceof AddonRequestError || isInfrastructureFailure(error)) {
       throw error;
     }
 
@@ -127,6 +140,10 @@ export async function authenticateAddonRequest({
       token: userIdToken,
     });
   } catch (error) {
+    if (isInfrastructureFailure(error)) {
+      throw error;
+    }
+
     throw new AddonRequestError(
       "no_user",
       "The request's user ID token did not verify.",
@@ -141,12 +158,14 @@ export async function authenticateAddonRequest({
     );
   }
 
+  const { domains, noneAllowed } = splitWorkspaceDomains(workspaceDomains);
   const hostedDomain =
     typeof user.hd === "string" ? user.hd.trim().toLowerCase() : "";
 
   if (
     !hostedDomain ||
-    (workspaceDomains.length > 0 && !workspaceDomains.includes(hostedDomain))
+    noneAllowed ||
+    (domains.length > 0 && !domains.includes(hostedDomain))
   ) {
     throw new AddonRequestError(
       "outside_workspace",

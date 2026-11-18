@@ -138,6 +138,8 @@ test("a teammate only hears about a teammate's envelope after opting in", () => 
     describe(
       matchNotificationTargets({
         ...optedIn,
+        // A rule that matches everything still never posts a draft.
+        rules: [rule({})],
         envelope: { isDraft: true, ownerId: "owner", ownerTeamIds: ["sales"] },
       }),
     ),

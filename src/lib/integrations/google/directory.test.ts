@@ -278,6 +278,42 @@ test("a user's entry gives their state and the manager relation", async () => {
   assert.equal(await client.getUser("gone@example.com"), null);
 });
 
+test("archived people are not suggested, and getUser says they are archived", async () => {
+  const { credentials } = fakeCredentials();
+  const { fetchImpl } = fakeFetch((url) =>
+    url.pathname === "/admin/directory/v1/users"
+      ? {
+          body: {
+            users: [
+              { name: { fullName: "Jo Park" }, primaryEmail: "jo@example.com" },
+              {
+                archived: true,
+                name: { fullName: "Jo Archived" },
+                primaryEmail: "archived@example.com",
+              },
+            ],
+          },
+        }
+      : {
+          body: {
+            archived: true,
+            name: { fullName: "Jo Archived" },
+            primaryEmail: "archived@example.com",
+          },
+        },
+  );
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl,
+  });
+
+  assert.deepEqual(await client.searchUsers("jo"), [
+    { email: "jo@example.com", name: "Jo Park" },
+  ]);
+  assert.equal((await client.getUser("archived@example.com"))?.archived, true);
+});
+
 test("a failed lookup of a user is an error, never a missing user", async () => {
   const { credentials } = fakeCredentials();
   const { fetchImpl } = fakeFetch(() => ({ status: 503 }));
@@ -304,4 +340,52 @@ test("only a relation of type manager names the manager", () => {
     managerFromRelations([{ type: "manager", value: " M@example.com " }]),
     "m@example.com",
   );
+});
+
+test("a directory request with no answer is given up on", async () => {
+  const { credentials } = fakeCredentials();
+  const client = createDirectoryClient({
+    config: adminRole,
+    credentials,
+    fetchImpl: ((_url: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason);
+        });
+      })) as typeof fetch,
+    timeoutMs: 20,
+  });
+  let timer: NodeJS.Timeout | undefined;
+  const hung = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("Still waiting after the deadline."));
+    }, 2000);
+  });
+
+  await assert.rejects(
+    Promise.race([client.getUser("pat@example.com"), hung]).finally(() => {
+      clearTimeout(timer);
+    }),
+    DirectoryError,
+  );
+});
+
+test("settings that cannot be read are an error, not a directory that is off", async () => {
+  const { resolveDirectoryForSearch } =
+    (await import("./directory.ts")) as Record<string, unknown> as {
+      resolveDirectoryForSearch: (
+        loadSettings: () => Promise<null>,
+        env: Record<string, string | undefined>,
+      ) => Promise<{ client?: unknown; error?: string }>;
+    };
+  const result = await resolveDirectoryForSearch(async () => {
+    throw new Error("database is down");
+  }, {});
+
+  assert.equal(result.error, "database is down");
+  assert.equal(result.client, undefined);
+
+  assert.deepEqual(await resolveDirectoryForSearch(async () => null, {}), {
+    client: null,
+  });
 });

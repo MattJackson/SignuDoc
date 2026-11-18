@@ -10,6 +10,7 @@ import {
   type ConnectionStatus,
 } from "@/components/settings/integration-kit";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import { describeRecordStatus } from "@/lib/email-record-status";
 import type { EmailDnsRecord, EmailStatus } from "@/lib/email-status";
 
 // Email setup, in Settings and in onboarding: the Resend API key (pasted
@@ -599,7 +600,7 @@ function DnsRecordsTable({
                 {record.value}
               </td>
               <td className="px-4 py-3 text-(--secondary)">
-                {record.status === "verified" ? "Found" : "Not found yet"}
+                {describeRecordStatus(record.status)}
               </td>
             </tr>
           ))}

@@ -59,7 +59,7 @@ async function createAccount(role: "admin" | "user"): Promise<Account> {
 async function createEnvelope(
   ownerId: string,
   status: "draft" | "sent",
-  recipient: { email: string; role: "cc" | "signer" },
+  recipient: { email: string; role: "approver" | "cc" | "signer" },
   updatedAt: number,
 ): Promise<string> {
   const envelopeId = randomUUID();
@@ -99,7 +99,7 @@ async function createEnvelope(
       recipient.email,
       recipient.role === "cc" ? 1001 : 1,
       recipient.role === "cc" ? null : 1,
-      recipient.role === "signer" && status === "sent" ? "notified" : "pending",
+      recipient.role !== "cc" && status === "sent" ? "notified" : "pending",
       recipient.role,
     ],
   );
@@ -273,4 +273,30 @@ test("a draft made from a Drive file is listed with that file, for its sender on
     (await listContractsFromDriveFile(owner.id, fileId, { database })).length,
     1,
   );
+});
+
+test("an envelope waiting on an approver can be nudged, as in the app", async () => {
+  const approver = `approver-${randomUUID().slice(0, 8)}@client.example`;
+  const fileId = `drive-${randomUUID()}`;
+  const waiting = await createEnvelope(
+    owner.id,
+    "sent",
+    { email: approver, role: "approver" },
+    Math.floor(Date.now() / 1000),
+  );
+
+  await database.query(
+    `update envelopes set source_kind = 'drive', source_ref = $2 where id = $1`,
+    [waiting, fileId],
+  );
+
+  const byEmail = await listContractsWithEmail(owner.id, approver, {
+    database,
+  });
+  const byFile = await listContractsFromDriveFile(owner.id, fileId, {
+    database,
+  });
+
+  assert.deepEqual([byEmail[0]?.id, byEmail[0]?.canNudge], [waiting, true]);
+  assert.deepEqual([byFile[0]?.id, byFile[0]?.canNudge], [waiting, true]);
 });

@@ -11,6 +11,7 @@ import {
 } from "./drive-config.ts";
 import {
   afterFailedAttempt,
+  ensureFolderPath,
   MAX_DRIVE_EXPORT_ATTEMPTS,
   nextAttemptDelaySeconds,
   uploadExecutedCopies,
@@ -34,7 +35,10 @@ function json(body: unknown, status = 200) {
 }
 
 /** A Shared Drive holding `existing` files, found by their appProperties. */
-function fakeSharedDrive(existing: Record<string, string>) {
+function fakeSharedDrive(
+  existing: Record<string, string>,
+  trashed: ReadonlySet<string> = new Set(),
+) {
   const calls: Call[] = [];
   let uploads = 0;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -47,8 +51,12 @@ function fakeSharedDrive(existing: Record<string, string>) {
       const q = new URL(url).searchParams.get("q") ?? "";
 
       if (q.includes("signudocSha256")) {
-        const match = Object.entries(existing).find(([digest]) =>
-          q.includes(digest),
+        // A file in the trash is only found by a query that does not ask
+        // for "trashed = false", as in Drive.
+        const match = Object.entries(existing).find(
+          ([digest, id]) =>
+            q.includes(digest) &&
+            !(q.includes("trashed = false") && trashed.has(id)),
         );
 
         return json({ files: match ? [{ id: match[1] }] : [] });
@@ -209,6 +217,25 @@ test("a retry after half an upload sends only the missing file", async () => {
   assert.equal(result.folderId, "drive-1");
 });
 
+test("a copy in the trash is not reused", async () => {
+  const drive = fakeSharedDrive(
+    { [sha(signed)]: "trashed-signed" },
+    new Set(["trashed-signed"]),
+  );
+  const result = await uploadExecutedCopies({
+    accessToken: "sa-token",
+    driveId: "drive-1",
+    envelopeId: "env-1",
+    fetchImpl: drive.fetchImpl,
+    files,
+    folders: [],
+  });
+
+  assert.equal(drive.uploads(), 2);
+  assert.equal(result.reused, 0);
+  assert.equal(result.signedPdfFileId, "uploaded-1");
+});
+
 test("the folder layout: folders, then the file name, with the date in UTC", () => {
   const completedAt = Date.UTC(2026, 0, 31, 23, 30) / 1000;
 
@@ -270,4 +297,54 @@ test("a label field mapping keeps known values only", () => {
   );
   assert.deepEqual(parseLabelFieldMapping("not json"), {});
   assert.deepEqual(parseLabelFieldMapping("[]"), {});
+});
+
+test("a folder that exists twice resolves to the oldest one", async () => {
+  const urls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+
+    return json({ files: [{ id: "oldest" }, { id: "newer" }] });
+  }) as typeof fetch;
+
+  assert.equal(
+    await ensureFolderPath({
+      accessToken: "t",
+      driveId: "drive-1",
+      fetchImpl,
+      folders: ["2026"],
+    }),
+    "oldest",
+  );
+  assert.equal(
+    new URL(urls[0] ?? "").searchParams.get("orderBy"),
+    "createdTime",
+  );
+});
+
+test("a folder made at the same moment by another export loses to the older one", async () => {
+  let lists = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+
+    if (method === "POST") {
+      return json({ id: "mine" });
+    }
+
+    lists += 1;
+
+    return json({
+      files: lists === 1 ? [] : [{ id: "older" }, { id: "mine" }],
+    });
+  }) as typeof fetch;
+
+  assert.equal(
+    await ensureFolderPath({
+      accessToken: "t",
+      driveId: "drive-1",
+      fetchImpl,
+      folders: ["2026"],
+    }),
+    "older",
+  );
 });

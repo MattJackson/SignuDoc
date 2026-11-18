@@ -193,3 +193,45 @@ test("reports a failed exchange by status only", async () => {
       error.message === "Google token exchange failed with 400.",
   );
 });
+
+test("a token request with no answer is given up on, and the next call asks again", async () => {
+  let requests = 0;
+  const credentials = createGoogleCredentials({
+    env: { GOOGLE_SERVICE_ACCOUNT_KEY: serviceAccountKey },
+    fetchImpl: ((_url: RequestInfo | URL, init?: RequestInit) => {
+      requests += 1;
+
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason);
+        });
+      });
+    }) as typeof fetch,
+    timeoutMs: 20,
+  });
+
+  assert.ok(credentials);
+
+  const request = { scopes: [GOOGLE_SCOPES.directoryGroupReadonly] };
+  const within = <T>(promise: Promise<T>) => {
+    let timer: NodeJS.Timeout | undefined;
+
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("Still waiting after the deadline."));
+        }, 2000);
+      }),
+    ]).finally(() => {
+      clearTimeout(timer);
+    });
+  };
+  const timedOut = (error: unknown) =>
+    error instanceof Error &&
+    error.message !== "Still waiting after the deadline.";
+
+  await assert.rejects(within(credentials.getAccessToken(request)), timedOut);
+  await assert.rejects(within(credentials.getAccessToken(request)), timedOut);
+  assert.equal(requests, 2);
+});

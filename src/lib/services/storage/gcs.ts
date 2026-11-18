@@ -28,6 +28,13 @@ const DEFAULT_API_URL = "https://storage.googleapis.com";
 // multiple of 256 KiB; 8 MiB keeps the number of requests low without
 // holding much in memory.
 const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+// How long a request may wait for Cloud Storage to answer. Generous enough
+// for an 8 MiB piece; without one, a stalled connection would hold whatever
+// is waiting on it (a database transaction, for one) for good.
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+// A resumable upload that is told "nothing kept" this many times in a row
+// for the same piece gives up, instead of sending it for ever.
+const MAX_STALLED_PIECES = 3;
 
 type FetchLike = typeof fetch;
 
@@ -36,10 +43,15 @@ export type GcsTokenSource = Pick<GoogleCredentials, "getAccessToken">;
 
 /** A failed call to Cloud Storage. Only the status is kept: the body can echo what was sent. */
 export class GcsRequestError extends Error {
-  status: number;
+  /** The HTTP status, or null when there was no answer in time. */
+  status: number | null;
 
-  constructor(action: string, status: number) {
-    super(`Google Cloud Storage ${action} failed with ${String(status)}.`);
+  constructor(action: string, status: number | null) {
+    super(
+      status === null
+        ? `Google Cloud Storage ${action} got no answer in time.`
+        : `Google Cloud Storage ${action} failed with ${String(status)}.`,
+    );
     this.name = "GcsRequestError";
     this.status = status;
   }
@@ -59,8 +71,15 @@ export type GcsUploadResult = "stored" | "already-exists";
 export type GcsClient = {
   bucket: string;
   deleteObject(name: string): Promise<"deleted" | "not-found">;
-  /** The media download, or null when there is no such object. */
-  download(name: string): Promise<Response | null>;
+  /**
+   * The media download, or null when there is no such object. With
+   * buffered, the whole body is read first, under the request's deadline,
+   * for callers that need all of it (and may hold a transaction open).
+   */
+  download(
+    name: string,
+    options?: { buffered?: boolean },
+  ): Promise<Response | null>;
   getMetadata(name: string): Promise<GcsObjectMetadata | null>;
   list(options: {
     pageToken?: string;
@@ -89,6 +108,8 @@ type CreateGcsClientOptions = {
   bucket: string;
   credentials: GcsTokenSource;
   fetchImpl?: FetchLike;
+  /** How long to wait for each answer. */
+  requestTimeoutMs?: number;
 };
 
 // The same bytes, typed as fetch wants them: a view on a plain ArrayBuffer.
@@ -99,6 +120,19 @@ function toBuffer(body: Uint8Array): Uint8Array<ArrayBuffer> {
     body.byteOffset,
     body.byteLength,
   );
+}
+
+// The chunks as one piece of memory.
+function joinChunks(chunks: Uint8Array[], length: number): Uint8Array {
+  const joined = new Uint8Array(length);
+  let at = 0;
+
+  for (const chunk of chunks) {
+    joined.set(chunk, at);
+    at += chunk.byteLength;
+  }
+
+  return joined;
 }
 
 function parseMetadata(value: unknown): GcsObjectMetadata {
@@ -121,8 +155,44 @@ function parseMetadata(value: unknown): GcsObjectMetadata {
   };
 }
 
+// Deadlines that are still running for responses whose body has yet to be
+// read (see readWithinDeadline).
+const deadlines = new WeakMap<
+  Response,
+  { release: () => void; signal: AbortSignal }
+>();
+
+function release(response: Response) {
+  deadlines.get(response)?.release();
+  deadlines.delete(response);
+}
+
 async function discard(response: Response) {
+  release(response);
   await response.body?.cancel().catch(() => undefined);
+}
+
+/**
+ * Reads a response's body while the request's deadline is still running,
+ * so a body that stops arriving fails like a request that is not answered.
+ */
+async function readWithinDeadline<T>(
+  response: Response,
+  read: () => Promise<T>,
+): Promise<T> {
+  const entry = deadlines.get(response);
+
+  try {
+    return await read();
+  } catch (error) {
+    if (entry?.signal.aborted) {
+      throw new GcsRequestError("read", null);
+    }
+
+    throw error;
+  } finally {
+    release(response);
+  }
 }
 
 export function createGcsClient({
@@ -130,6 +200,7 @@ export function createGcsClient({
   bucket,
   credentials,
   fetchImpl = fetch,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 }: CreateGcsClientOptions): GcsClient {
   const base = apiUrl.replace(/\/+$/, "");
   const bucketPath = `b/${encodeURIComponent(bucket)}`;
@@ -140,7 +211,11 @@ export function createGcsClient({
     return `${base}/storage/v1/${bucketPath}/o/${encodeURIComponent(name)}${query}`;
   }
 
-  async function send(url: string, init: RequestInit = {}) {
+  async function send(
+    url: string,
+    init: RequestInit = {},
+    keepDeadline = false,
+  ) {
     const token = await credentials.getAccessToken({
       scopes: [GOOGLE_SCOPES.devstorageReadWrite],
     });
@@ -148,7 +223,39 @@ export function createGcsClient({
 
     headers.set("authorization", `Bearer ${token}`);
 
-    return fetchImpl(url, { ...init, headers });
+    // The wait for an answer is bounded; a body already coming in is not
+    // cut off, since a download can be as long as the person reading it.
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), requestTimeoutMs);
+
+    try {
+      const response = await fetchImpl(url, {
+        ...init,
+        headers,
+        signal: init.signal ?? deadline.signal,
+      });
+
+      // The caller reads the body under the same deadline and then lets
+      // it go; otherwise it ends with the wait for the headers.
+      if (keepDeadline) {
+        deadlines.set(response, {
+          release: () => clearTimeout(timer),
+          signal: deadline.signal,
+        });
+      } else {
+        clearTimeout(timer);
+      }
+
+      return response;
+    } catch (error) {
+      clearTimeout(timer);
+
+      if (deadline.signal.aborted) {
+        throw new GcsRequestError("request", null);
+      }
+
+      throw error;
+    }
   }
 
   async function fail(action: string, response: Response): Promise<never> {
@@ -191,8 +298,8 @@ export function createGcsClient({
       await discard(response);
       return "deleted";
     },
-    async download(name) {
-      const response = await send(objectUrl(name, "?alt=media"));
+    async download(name, { buffered = false } = {}) {
+      const response = await send(objectUrl(name, "?alt=media"), {}, buffered);
 
       if (response.status === 404) {
         await discard(response);
@@ -203,10 +310,21 @@ export function createGcsClient({
         return fail("download", response);
       }
 
-      return response;
+      if (!buffered) {
+        return response;
+      }
+
+      const bytes = await readWithinDeadline(response, () =>
+        response.arrayBuffer(),
+      );
+
+      return new Response(bytes, {
+        headers: response.headers,
+        status: response.status,
+      });
     },
     async getMetadata(name) {
-      const response = await send(objectUrl(name));
+      const response = await send(objectUrl(name), {}, true);
 
       if (response.status === 404) {
         await discard(response);
@@ -217,7 +335,9 @@ export function createGcsClient({
         return fail("metadata read", response);
       }
 
-      return parseMetadata(await response.json());
+      return parseMetadata(
+        await readWithinDeadline(response, () => response.json()),
+      );
     },
     async list({ pageToken, prefix }) {
       const query = new URLSearchParams({
@@ -235,13 +355,17 @@ export function createGcsClient({
 
       const response = await send(
         `${base}/storage/v1/${bucketPath}/o?${query.toString()}`,
+        {},
+        true,
       );
 
       if (!response.ok) {
         return fail("list", response);
       }
 
-      const page = (await response.json()) as {
+      const page = (await readWithinDeadline(response, () =>
+        response.json(),
+      )) as {
         items?: unknown[];
         nextPageToken?: unknown;
       };
@@ -309,18 +433,24 @@ export function createGcsClient({
         throw new GcsRequestError("upload start", started.status);
       }
 
-      // Bytes read but not yet taken by Cloud Storage. A full piece is sent
-      // only once more is known to follow, so the last piece can say how
-      // long the object is.
-      let pending = new Uint8Array(0);
+      // Bytes read but not yet taken by Cloud Storage, as the chunks they
+      // arrived in. They are joined once per piece, not once per chunk. A
+      // full piece is sent only once more is known to follow, so the last
+      // piece can say how long the object is.
+      let queued: Uint8Array[] = [];
+      let queuedBytes = 0;
       let offset = 0;
+      let stalled = 0;
 
       for await (const chunk of body) {
-        const joined = new Uint8Array(pending.byteLength + chunk.byteLength);
+        queued.push(chunk);
+        queuedBytes += chunk.byteLength;
 
-        joined.set(pending);
-        joined.set(chunk, pending.byteLength);
-        pending = joined;
+        if (queuedBytes <= UPLOAD_CHUNK_BYTES) {
+          continue;
+        }
+
+        let pending = joinChunks(queued, queuedBytes);
 
         while (pending.byteLength > UPLOAD_CHUNK_BYTES) {
           const piece = pending.subarray(0, UPLOAD_CHUNK_BYTES);
@@ -331,7 +461,8 @@ export function createGcsClient({
           }
 
           // Range says how much has been kept so far ("bytes=0-N"). What it
-          // does not cover is sent again with the next piece.
+          // does not cover is sent again with the next piece. No Range at
+          // all means nothing has been kept yet.
           const kept = /bytes=0-(\d+)/.exec(
             response.headers.get("range") ?? "",
           );
@@ -339,21 +470,32 @@ export function createGcsClient({
 
           await discard(response);
 
-          // Nothing more taken: sending it again would go round forever.
           if (keptBytes <= offset) {
-            throw new GcsRequestError("upload", response.status);
+            // Nothing more taken: send the piece again, a few times at most.
+            stalled += 1;
+
+            if (stalled > MAX_STALLED_PIECES) {
+              throw new GcsRequestError("upload", response.status);
+            }
+
+            continue;
           }
 
+          stalled = 0;
           pending = pending.subarray(keptBytes - offset);
           offset = keptBytes;
         }
+
+        queued = [pending];
+        queuedBytes = pending.byteLength;
       }
 
+      const rest = joinChunks(queued, queuedBytes);
       const last = await sendChunk(
         sessionUrl,
-        pending,
+        rest,
         offset,
-        offset + pending.byteLength,
+        offset + rest.byteLength,
       );
 
       if (!last.ok) {
@@ -422,9 +564,9 @@ export function createGcsStorageService({
     return { name: `${prefix}${normalizedKey}`, normalizedKey };
   }
 
-  async function download(key: string) {
+  async function download(key: string, buffered = false) {
     const { name, normalizedKey } = resolve(key);
-    const response = await storage.download(name);
+    const response = await storage.download(name, { buffered });
 
     if (!response) {
       throw new StorageObjectNotFoundError(normalizedKey);
@@ -448,7 +590,7 @@ export function createGcsStorageService({
       await storage.deleteObject(resolve(key).name);
     },
     async getObject(key) {
-      const { normalizedKey, response } = await download(key);
+      const { normalizedKey, response } = await download(key, true);
       const body = new Uint8Array(await response.arrayBuffer());
 
       return {

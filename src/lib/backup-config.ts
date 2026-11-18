@@ -5,6 +5,7 @@ import {
   type BackupSummary,
   type BackupTarget,
   DEFAULT_KEEP_DAYS,
+  BackupEnvironmentError,
   isBackupStoreTheAppStore,
   parseKeepDays,
   readBackupTargetFromEnv,
@@ -73,6 +74,8 @@ export type EffectiveBackupConfig = {
   enabled: boolean;
   keepDays: number;
   locked: { destination: boolean; keepDays: boolean };
+  /** The environment names a destination that cannot be used, and why. */
+  problem?: string;
   target: BackupTarget | null;
   /** A saved Blob token that no longer decrypts: the auth secret changed. */
   tokenUnreadable: boolean;
@@ -129,17 +132,43 @@ export async function readStoredBackupConfig(
   );
 }
 
+/**
+ * The destination the environment sets, or what is wrong with it: a
+ * mistake in BACKUP_GCS_PREFIX is a setup problem to show, not a crash.
+ */
+function readEnvTarget(env: EnvSource): {
+  problem?: string;
+  target: BackupTarget | null;
+} {
+  try {
+    return { target: readBackupTargetFromEnv(env) };
+  } catch (error) {
+    if (error instanceof BackupEnvironmentError) {
+      return { problem: error.message, target: null };
+    }
+
+    throw error;
+  }
+}
+
 /** What the backup does: the environment's settings over the stored ones. */
 export function resolveBackupConfig(
   stored: StoredBackupConfig | null,
   env: EnvSource = process.env,
 ): EffectiveBackupConfig {
-  const envTarget = readBackupTargetFromEnv(env);
+  const { problem, target: envTarget } = readEnvTarget(env);
   const envKeepDays = readKeepDaysFromEnv(env);
   let target: BackupTarget | null = envTarget;
   let tokenUnreadable = false;
 
-  if (!target && stored?.destination === "gcs" && stored.gcsBucket) {
+  // A destination the deployment sets but gets wrong is not quietly
+  // replaced by the saved one.
+  if (
+    !target &&
+    !problem &&
+    stored?.destination === "gcs" &&
+    stored.gcsBucket
+  ) {
     target = {
       bucket: stored.gcsBucket,
       kind: "gcs",
@@ -147,7 +176,12 @@ export function resolveBackupConfig(
     };
   }
 
-  if (!target && stored?.destination === "blob" && stored.blobTokenEncrypted) {
+  if (
+    !target &&
+    !problem &&
+    stored?.destination === "blob" &&
+    stored.blobTokenEncrypted
+  ) {
     const token = decryptBackupToken(stored.blobTokenEncrypted, env);
 
     if (token) {
@@ -159,9 +193,13 @@ export function resolveBackupConfig(
 
   return {
     // A destination set by the deployment is meant to run.
-    enabled: envTarget ? true : (stored?.enabled ?? true),
+    enabled: envTarget || problem ? true : (stored?.enabled ?? true),
     keepDays: envKeepDays ?? stored?.keepDays ?? DEFAULT_KEEP_DAYS,
-    locked: { destination: Boolean(envTarget), keepDays: envKeepDays !== null },
+    locked: {
+      destination: Boolean(envTarget) || Boolean(problem),
+      keepDays: envKeepDays !== null,
+    },
+    ...(problem ? { problem } : {}),
     target,
     tokenUnreadable,
   };
@@ -311,7 +349,8 @@ export async function saveBackupConfig(
     env = process.env,
   }: { database?: DbPool; env?: EnvSource } = {},
 ): Promise<void> {
-  const envTarget = readBackupTargetFromEnv(env);
+  const envSet = readEnvTarget(env);
+  const envFixed = Boolean(envSet.target) || Boolean(envSet.problem);
   const envKeepDays = readKeepDaysFromEnv(env);
 
   await withTransaction(async (tx) => {
@@ -327,7 +366,7 @@ export async function saveBackupConfig(
     let blobTokenEncrypted = stored?.blobTokenEncrypted ?? null;
 
     // What the deployment fixes is left as it is.
-    if (!envTarget) {
+    if (!envFixed) {
       const target = targetFromInput(input.destination, stored, env);
 
       if (target && isBackupStoreTheAppStore({ target }, env)) {
@@ -625,6 +664,7 @@ export type BackupRunOutcome =
  * the daily call and by "Run backup now".
  */
 export async function runConfiguredBackup({
+  claimSlot,
   createSource = () => createAppFilesStore(),
   createTarget = (target: BackupTarget) => createBackupTargetStore(target),
   database = getDb(),
@@ -632,6 +672,11 @@ export async function runConfiguredBackup({
   env = process.env,
   trigger,
 }: {
+  /**
+   * Called once a run is about to start, after the checks that decide whether
+   * one can happen at all. Returning false skips the run, reported as busy.
+   */
+  claimSlot?: () => Promise<boolean>;
   createSource?: () => BackupStore;
   createTarget?: (target: BackupTarget) => BackupStore;
   database?: DbPool;
@@ -642,6 +687,10 @@ export async function runConfiguredBackup({
   const config = await getBackupConfig(database, env);
 
   if (!config.target) {
+    if (config.problem) {
+      return { message: config.problem, status: "misconfigured" };
+    }
+
     return config.tokenUnreadable
       ? {
           message:
@@ -663,6 +712,10 @@ export async function runConfiguredBackup({
           : "The backup Blob token is for this install's own store.",
       status: "misconfigured",
     };
+  }
+
+  if (claimSlot && !(await claimSlot())) {
+    return { status: "busy" };
   }
 
   const id = await startRun(trigger, config.target, database);
@@ -815,6 +868,10 @@ export function summarizeBackupStatus(
   at: number = now(),
 ): BackupSetupStatus {
   if (!config.target) {
+    if (config.problem) {
+      return { message: config.problem, state: "failing" };
+    }
+
     return config.tokenUnreadable
       ? {
           message:

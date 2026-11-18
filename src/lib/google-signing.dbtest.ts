@@ -292,6 +292,40 @@ test("only a Google session of the very address the document was sent to passes"
   assert.equal(events.at(-1)?.metadata.accountUserId, pat);
 });
 
+test("a Google session no longer counts once the site's sign-in is not Google", async () => {
+  const email = `pat-${randomUUID()}@${WORKSPACE}`;
+  const envelope = await createEnvelope(email);
+  const pat = await createUser(email);
+
+  await assert.rejects(
+    verifySignerCheck(
+      envelope.token,
+      { method: "google" },
+      {
+        database,
+        googleSigningPolicy: { ...requirePolicy, ssoIsGoogle: false },
+        signedInSessionToken: await createSession(pat, "sso"),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof SigningMutationError &&
+      /not set up on this site/.test(error.message),
+  );
+
+  const events = await verificationEvents(envelope.envelopeId);
+
+  assert.deepEqual(
+    events.map((event) => [event.event, event.metadata.reason ?? null]),
+    [["verification_failed", "google_not_configured"]],
+  );
+  await assert.rejects(
+    getSigningPayloadForToken(envelope.token, { database }),
+    (error: unknown) =>
+      error instanceof SigningVerificationRequiredError &&
+      error.details.pending.join() === "google",
+  );
+});
+
 test("the Google sign-in is recorded with the signature and named on the certificate", async () => {
   const email = `pat-${randomUUID()}@${WORKSPACE}`;
   const envelope = await createEnvelope(email);

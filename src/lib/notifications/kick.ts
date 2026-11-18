@@ -4,6 +4,7 @@ import { peekIntegrationSettings } from "../integration-settings.ts";
 import { onAuditEventCommitted } from "../services/audit.ts";
 import { readEnv, type EnvSource } from "../utils/env.ts";
 import { runNotificationJob } from "./job.ts";
+import { runUntilCaughtUp, type KickState } from "./kick-loop.ts";
 import { SLACK_TOKEN_SETTING } from "./slack/channel.ts";
 
 // Delivery soon after something happens, instead of waiting for the next
@@ -18,15 +19,6 @@ import { SLACK_TOKEN_SETTING } from "./slack/channel.ts";
 // went away) is made up for by the next request or the scheduled run.
 
 const RUN_BUDGET_MS = 15_000;
-/** How many times a run waits for a delivery that is due soon. */
-const MAX_WAITS = 3;
-const WAIT_MARGIN_MS = 1_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-type KickState = { again: boolean; registered: boolean; running: boolean };
 
 declare global {
   var __signudocNotificationKick: KickState | undefined;
@@ -57,51 +49,13 @@ function mightHaveChannel(env: EnvSource): boolean {
   return stored === null || Boolean(stored[SLACK_TOKEN_SETTING]);
 }
 
-async function runUntilCaughtUp() {
-  const current = state();
-
-  if (current.running) {
-    current.again = true;
-    return;
-  }
-
-  current.running = true;
-
-  try {
-    let waits = 0;
-
-    do {
-      current.again = false;
-
-      const summary = await runNotificationJob({
-        deadline: Date.now() + RUN_BUDGET_MS,
-        detectConditions: false,
-      });
-
-      // A signature waits a minute in case more follow (burst collapse).
-      // Wait for it here, a few times at most, rather than leave it to the
-      // next scheduled run; whatever is still waiting goes out then.
-      if (
-        !current.again &&
-        summary.status === "ran" &&
-        summary.nextDueAt !== null &&
-        waits < MAX_WAITS
-      ) {
-        waits += 1;
-        await sleep(
-          Math.max(summary.nextDueAt * 1000 - Date.now(), 0) + WAIT_MARGIN_MS,
-        );
-        current.again = true;
-      }
-    } while (current.again);
-  } catch (error) {
-    console.warn(
-      "[notifications] Delivering notifications failed; the next run tries again:",
-      error instanceof Error ? error.message : error,
-    );
-  } finally {
-    current.running = false;
-  }
+function runUntilCaughtUpHere() {
+  return runUntilCaughtUp(state(), () =>
+    runNotificationJob({
+      deadline: Date.now() + RUN_BUDGET_MS,
+      detectConditions: false,
+    }),
+  );
 }
 
 export function requestNotificationDelivery(env: EnvSource = process.env) {
@@ -110,10 +64,10 @@ export function requestNotificationDelivery(env: EnvSource = process.env) {
   }
 
   try {
-    after(runUntilCaughtUp);
+    after(runUntilCaughtUpHere);
   } catch {
     // Not inside a request: nothing to wait for.
-    void runUntilCaughtUp();
+    void runUntilCaughtUpHere();
   }
 }
 

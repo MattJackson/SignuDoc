@@ -8,6 +8,14 @@ release says when it does.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- An empty `STORAGE_LOCAL_DIR` (the variable set to nothing) now means the
+  default folder, `.data/storage`, for storage and for backups alike. Earlier
+  versions kept files in the working directory itself in that case. If you
+  relied on that, move the files or set `STORAGE_LOCAL_DIR` to the folder in
+  use; the server logs a warning once while the variable is empty.
+
 ## [0.5.0] - Unreleased
 
 The first release of this fork, [MattJackson/SignuDoc](https://github.com/MattJackson/SignuDoc):

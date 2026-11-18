@@ -12,7 +12,7 @@ import {
 import path from "node:path";
 import { Readable } from "node:stream";
 
-import { type EnvSource } from "../../utils/env.ts";
+import { type EnvSource, readEnv } from "../../utils/env.ts";
 import {
   normalizeStorageKey,
   StorageObjectNotFoundError,
@@ -26,6 +26,33 @@ import {
 const LOCAL_BUCKET_NAME = "local";
 const DEFAULT_LOCAL_STORAGE_DIR = ".data/storage";
 const METADATA_SUFFIX = ".meta.json";
+
+let warnedAboutEmptyDirectory = false;
+
+/**
+ * The folder files are kept in: STORAGE_LOCAL_DIR, or the default when it
+ * is not set or is empty. The backup reads the same folder.
+ */
+export function resolveLocalStorageRoot(env: EnvSource = process.env): string {
+  // Earlier versions took an empty value to mean the working directory.
+  if (
+    !warnedAboutEmptyDirectory &&
+    typeof env.STORAGE_LOCAL_DIR === "string" &&
+    env.STORAGE_LOCAL_DIR.trim() === ""
+  ) {
+    warnedAboutEmptyDirectory = true;
+    console.warn(
+      `[storage] STORAGE_LOCAL_DIR is set but empty, so files are kept in ${DEFAULT_LOCAL_STORAGE_DIR} (under ${process.cwd()}). Earlier versions kept them in the working directory itself in this case: move them, or set STORAGE_LOCAL_DIR to the folder you use.`,
+    );
+  }
+
+  // The comment stops Turbopack from tracing the whole project into the
+  // server bundle because of a path it cannot analyse.
+  return path.resolve(
+    /*turbopackIgnore: true*/ readEnv(env, "STORAGE_LOCAL_DIR") ??
+      DEFAULT_LOCAL_STORAGE_DIR,
+  );
+}
 
 type CreateLocalStorageServiceOptions = {
   env?: EnvSource;
@@ -90,13 +117,10 @@ export function createLocalStorageService({
     );
   }
 
-  // The comment stops Turbopack from tracing the whole project into the
-  // server bundle because of a path it cannot analyse.
-  const resolvedRootDir = path.resolve(
-    /*turbopackIgnore: true*/ rootDir ??
-      env.STORAGE_LOCAL_DIR?.trim() ??
-      DEFAULT_LOCAL_STORAGE_DIR,
-  );
+  const resolvedRootDir =
+    rootDir === undefined
+      ? resolveLocalStorageRoot(env)
+      : path.resolve(/*turbopackIgnore: true*/ rootDir);
 
   function resolveObjectPath(key: string) {
     const normalizedKey = normalizeStorageKey(key);

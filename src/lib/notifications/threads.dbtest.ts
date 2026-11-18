@@ -503,3 +503,55 @@ test("a delivery waits a moment while another is posting about the same envelope
   await runAt(slack.fetch, now + 101);
   assert.equal(toChannel(slack.calls).length, 1);
 });
+
+test("two events in the same second are ordered as they happened, not by their ids", async () => {
+  const slack = fakeSlack();
+  const now = Math.floor(Date.now() / 1000) + 4000;
+  const envelope = await createEnvelope(["i@example.test"], now);
+
+  await sign(envelope, 0, "i@example.test", now);
+  await database.query(
+    `update envelopes set status = 'completed' where id = $1`,
+    [envelope.id],
+  );
+  await recordAuditEvent(
+    {
+      actorType: "system",
+      createdAt: now,
+      envelopeId: envelope.id,
+      event: "completed",
+    },
+    database,
+  );
+  // Ids are random. Make the completed event's sort lower than the signed
+  // one's, the way they do about half the time.
+  await database.query(
+    `update notification_events set id = $2 where envelope_id = $1 and event = 'signed'`,
+    [envelope.id, "zzzzzzzz-signed"],
+  );
+  await database.query(
+    `update notification_events set id = $2 where envelope_id = $1 and event = 'completed'`,
+    [envelope.id, "aaaaaaaa-completed"],
+  );
+
+  // The completion goes out at once; the signature was held a minute.
+  await runAt(slack.fetch, now);
+
+  const callsAfterCompleted = toChannel(slack.calls).length;
+
+  assert.equal(callsAfterCompleted, 1);
+
+  await runAt(slack.fetch, now + 61);
+
+  const signed = (await deliveries(envelope.id)).find(
+    (row) => row.event === "signed" && row.targetKind === "channel",
+  );
+
+  assert.equal(signed?.status, "skipped");
+  assert.equal(signed?.lastError, "superseded");
+  assert.equal(
+    toChannel(slack.calls).length,
+    callsAfterCompleted,
+    "the thread was not edited back to the signature",
+  );
+});

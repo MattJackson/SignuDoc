@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { DbExecutor } from "./db/connection.ts";
 import {
   DEFAULT_TIMESTAMP_URL,
   getSealTimestampUrl,
@@ -65,8 +66,32 @@ test("an install with nothing stored (set up before the setting) seals without a
   });
 });
 
-test("the timestamp setting is read without the database when the environment sets it", async () => {
-  // No DATABASE_URL: reading the settings would fail, and is not tried.
+test("the environment's timestamp server is used without reading the database", async () => {
+  let calls = 0;
+  const database = {
+    query: async () => {
+      calls += 1;
+      throw new Error("the settings must not be read");
+    },
+  } as unknown as DbExecutor;
+
+  assert.equal(
+    await getSealTimestampUrl(
+      { SEAL_TIMESTAMP_URL: "https://tsa.example.test" },
+      { database },
+    ),
+    "https://tsa.example.test",
+  );
+  assert.equal(
+    await getSealTimestampUrl({ SEAL_TIMESTAMP_URL: "off" }, { database }),
+    null,
+  );
+  assert.equal(calls, 0);
+});
+
+test("the timestamp setting reads as unset when no database is configured", async () => {
+  // No DATABASE_URL in these environments, so there are no stored settings
+  // to read; only what the environment itself says counts.
   assert.equal(
     await getSealTimestampUrl({
       SEAL_TIMESTAMP_URL: "https://tsa.example.test",
