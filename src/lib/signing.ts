@@ -95,6 +95,11 @@ import {
 } from "./envelope-deadline.ts";
 import { describeEntryProblem, judgeRadioGroups } from "./field-choices.ts";
 import {
+  enqueueDriveExport,
+  readDriveExportTarget,
+  scheduleDriveExport,
+} from "./integrations/google/drive-export.ts";
+import {
   buildElectronicRecordsDisclosure,
   CONSENT_STATEMENT,
   ELECTRONIC_RECORDS_DISCLOSURE_VERSION,
@@ -2783,6 +2788,9 @@ async function submitSigningOnce(
     // The seal's key and the install's name, read before the transaction:
     // sealing inside it then needs no second connection from the pool.
     const seal = await loadInstallSealer();
+    // The Shared Drive executed copies go to, if any, read now for the
+    // same reason: its outbox row is written in the completion below.
+    const driveExportTarget = await readDriveExportTarget();
     // Set once this submission may have stored the final files.
     let finalArtifactsStored = false;
     let finalArtifacts: Awaited<ReturnType<typeof finalizeEnvelope>>;
@@ -2951,6 +2959,16 @@ async function submitSigningOnce(
           );
         }
 
+        // In the same transaction, so a completed envelope always has its
+        // export waiting (drive-export.ts), and a rolled-back one never.
+        if (driveExportTarget) {
+          await enqueueDriveExport(tx, {
+            driveId: driveExportTarget,
+            envelopeId: context.envelope.id,
+            nowSeconds: artifacts.generatedAt,
+          });
+        }
+
         await recordAuditEvent(
           {
             actorEmail: signedAuditEvent.actorEmail,
@@ -2981,6 +2999,11 @@ async function submitSigningOnce(
         return artifacts;
       }, database);
       signingStatePersisted = true;
+
+      if (driveExportTarget) {
+        scheduleDriveExport(context.envelope.id, { database, storageService });
+      }
+
       await deleteReplacedRevision(replacedRevisionKey, storageService);
     } catch (error) {
       if (finalArtifactsStored) {
