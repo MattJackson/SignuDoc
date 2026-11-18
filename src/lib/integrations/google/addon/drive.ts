@@ -1,4 +1,5 @@
 import { MAX_UPLOAD_SIZE_BYTES } from "../../../types/domain.ts";
+import { googleUrl } from "../endpoints.ts";
 
 // The Drive side of the add-on: which selected files can be sent for
 // signature, and reading a PDF or Word file's bytes as the person using
@@ -57,7 +58,9 @@ export async function downloadDriveFile(
 
   try {
     response = await fetchImpl(
-      `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+      googleUrl(
+        `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+      ),
       { headers: { authorization: `Bearer ${accessToken}` } },
     );
   } catch {
@@ -101,7 +104,9 @@ export async function getDriveFileMetadata(
 
   try {
     response = await fetchImpl(
-      `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?fields=id,name,mimeType&supportsAllDrives=true`,
+      googleUrl(
+        `${DRIVE_FILES_API}/${encodeURIComponent(fileId)}?fields=id,name,mimeType&supportsAllDrives=true`,
+      ),
       { headers: { authorization: `Bearer ${accessToken}` } },
     );
   } catch {

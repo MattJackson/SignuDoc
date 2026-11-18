@@ -1,4 +1,5 @@
 import { MAX_UPLOAD_SIZE_BYTES } from "../../../types/domain.ts";
+import { googleUrl } from "../endpoints.ts";
 
 // The open Gmail message, read through the Gmail API with plain fetch, as
 // the person using the add-on. Two tokens go with each call, as Google's
@@ -191,7 +192,7 @@ async function gmailGet(
   let response: Response;
 
   try {
-    response = await fetchImpl(`${GMAIL_API}${path}`, {
+    response = await fetchImpl(googleUrl(`${GMAIL_API}${path}`), {
       headers: gmailHeaders(tokens),
     });
   } catch {

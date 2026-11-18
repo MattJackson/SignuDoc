@@ -10,6 +10,7 @@ import {
 import { resolveAuthUrl, type EnvSource } from "../../utils/env.ts";
 import { GOOGLE_SCOPES } from "./credentials.ts";
 import type { FetchLike } from "./drive-api.ts";
+import { googleUrl } from "./endpoints.ts";
 
 // Each person's own permission for Google Drive, asked for on top of
 // Google sign-in (incremental authorization), with the same OAuth client.
@@ -121,7 +122,7 @@ export function buildAuthorizationUrl(input: {
     params.set("login_hint", input.loginHint);
   }
 
-  return `${GOOGLE_AUTHORIZATION_URL}?${params.toString()}`;
+  return `${googleUrl(GOOGLE_AUTHORIZATION_URL)}?${params.toString()}`;
 }
 
 export type OAuthStateCookie = {
@@ -202,7 +203,7 @@ async function postToken(
   let response: Response;
 
   try {
-    response = await fetchImpl(GOOGLE_TOKEN_URL, {
+    response = await fetchImpl(googleUrl(GOOGLE_TOKEN_URL), {
       body,
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
@@ -289,7 +290,7 @@ export async function revokeToken(
   fetchImpl: FetchLike = fetch,
 ): Promise<boolean> {
   try {
-    const response = await fetchImpl(GOOGLE_REVOKE_URL, {
+    const response = await fetchImpl(googleUrl(GOOGLE_REVOKE_URL), {
       body: new URLSearchParams({ token }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",

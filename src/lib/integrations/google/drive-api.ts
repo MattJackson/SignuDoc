@@ -8,6 +8,8 @@
 // status and Google's short reason code only (such as "notFound" or
 // "exportSizeLimitExceeded"), never the message.
 
+import { googleUrl } from "./endpoints.ts";
+
 export const DRIVE_API_BASE_URL = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD_BASE_URL =
   "https://www.googleapis.com/upload/drive/v3";
@@ -70,7 +72,7 @@ export async function driveFetch(
   let response: Response;
 
   try {
-    response = await fetchImpl(url, { ...init, headers });
+    response = await fetchImpl(googleUrl(url), { ...init, headers });
   } catch {
     throw new DriveApiError(what, null, null);
   }

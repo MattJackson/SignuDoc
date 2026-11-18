@@ -5,6 +5,8 @@ import {
   type KeyObject,
 } from "node:crypto";
 
+import { googleUrl } from "../endpoints.ts";
+
 // Verifies ID tokens signed by Google, with node:crypto and no library.
 //
 // The Workspace add-on sends two on every request
@@ -103,7 +105,7 @@ export function createJwksCache({
   async function refresh(): Promise<void> {
     fetchedAtMs = now();
 
-    const response = await fetchImpl(url);
+    const response = await fetchImpl(googleUrl(url));
 
     if (!response.ok) {
       throw new IdTokenError(
