@@ -568,7 +568,10 @@ const TIMELINE_TONE_MAP: Record<
   AuditEventRecord["event"],
   EnvelopeDetailTimelineItem["tone"]
 > = {
+  approved: "success",
   completed: "success",
+  handed_over: "neutral",
+  rejected: "danger",
   consented: "neutral",
   copied: "accent",
   created: "accent",
@@ -1798,6 +1801,24 @@ function buildTimelineDescription(event: AuditEventRecord): string {
       return declineReason
         ? `Declined by ${targetLabel} — ${declineReason}`
         : `Declined by ${targetLabel}`;
+    case "approved":
+      return `Approved by ${targetLabel}`;
+    case "rejected":
+      return declineReason
+        ? `Rejected by ${targetLabel} — ${declineReason}`
+        : `Rejected by ${targetLabel}`;
+    case "handed_over": {
+      const toLabel =
+        typeof event.metadata?.toEmail === "string"
+          ? event.metadata.toEmail
+          : "another account";
+      const fromLabel =
+        typeof event.metadata?.fromEmail === "string"
+          ? event.metadata.fromEmail
+          : "its sender";
+
+      return `Handed over from ${fromLabel} to ${toLabel}`;
+    }
     case "reminded_manual":
       return `Manual reminder sent to ${targetLabel}`;
     case "reminded_auto":

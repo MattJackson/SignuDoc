@@ -34,6 +34,11 @@ export const INTEGRATION_SETTINGS = {
   "google.directory": { secret: false },
   "google.workspaceDomains": { secret: false },
   "onboarding.steps": { secret: false },
+  // People features (people-policy.ts, directory-sync.ts).
+  "people.directorySync": { secret: false },
+  "people.googleSigning": { secret: false },
+  "people.managerPolicy": { secret: false },
+  "people.managerPolicyTeams": { secret: false },
   "resend.apiKey": { secret: true },
   "sso.clientId": { secret: false },
   "sso.clientSecret": { secret: true },

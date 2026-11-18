@@ -240,7 +240,10 @@ test("a user's entry gives their state and the manager relation", async () => {
   const { credentials } = fakeCredentials();
   const { fetchImpl, urls } = fakeFetch((url) => {
     if (url.pathname.endsWith("/gone%40example.com")) {
-      return { body: { error: { message: "Resource Not Found" } }, status: 404 };
+      return {
+        body: { error: { message: "Resource Not Found" } },
+        status: 404,
+      };
     }
 
     return {
@@ -268,7 +271,10 @@ test("a user's entry gives their state and the manager relation", async () => {
     name: "Pat Lee",
     suspended: true,
   });
-  assert.equal(urls[0]!.pathname, "/admin/directory/v1/users/pat%40example.com");
+  assert.equal(
+    urls[0]!.pathname,
+    "/admin/directory/v1/users/pat%40example.com",
+  );
   assert.equal(await client.getUser("gone@example.com"), null);
 });
 

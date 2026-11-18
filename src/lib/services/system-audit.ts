@@ -50,6 +50,10 @@ export const systemAuditEventTypes = [
   "team_deleted",
   "team_member_added",
   "team_member_removed",
+  "directory_sync_run",
+  "directory_sign_in_blocked",
+  "directory_sign_in_restored",
+  "envelopes_handed_over",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];
