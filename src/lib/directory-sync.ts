@@ -382,7 +382,10 @@ export type DirectorySyncAccountResult = {
       /** False when the account was already blocked by an earlier run. */
       blocked: boolean;
       envelopes: HandedOverEnvelope[];
-      /** Open envelopes nobody could take: no manager, no administrator. */
+      /**
+       * Open envelopes nobody could take: no manager and no administrator,
+       * or waiting for a manager who could not be looked up.
+       */
       envelopesKept: number;
       reason: DirectorySyncReason;
       sessionsEnded: number;
@@ -594,6 +597,8 @@ type OffboardInput = {
   breakGlass: ReadonlySet<string>;
   /** Accounts a dry run has already blocked, in its imagination. */
   excludedIds: readonly string[];
+  /** The manager could not be looked up: their work waits for a later run. */
+  managerUnknown?: boolean;
   /** The manager, when the directory says they are still active. */
   managerEmail: string | null;
   now: number;
@@ -686,8 +691,14 @@ async function offboardAccount(
           input.excludedIds,
         )
       : null;
+  // Work that would go to a manager nobody could look up stays where it is
+  // for now, not with an administrator.
+  const waitsForManager = (envelope: { handedOverAt: number | null }) =>
+    envelope.handedOverAt === null && !manager && input.managerUnknown === true;
   const needsKeeper = open.some(
-    (envelope) => envelope.handedOverAt !== null || !manager,
+    (envelope) =>
+      envelope.handedOverAt !== null ||
+      (!manager && !waitsForManager(envelope)),
   );
   const keeper = needsKeeper ? await lockKeeper(tx, excludedIds) : null;
   const handedOver: HandedOverEnvelope[] = [];
@@ -697,7 +708,7 @@ async function offboardAccount(
     const toManager = envelope.handedOverAt === null && manager !== null;
     const recipient = toManager ? manager : keeper;
 
-    if (!recipient) {
+    if (waitsForManager(envelope) || !recipient) {
       envelopesKept += 1;
       continue;
     }
@@ -1059,9 +1070,13 @@ async function syncAccounts({
 
   // A manager who has left too is no one to hand work to. Their answer is
   // usually in already; otherwise they are asked once.
-  async function managerIfActive(email: string | null): Promise<string | null> {
+  // A manager who could not be looked up is not known to be gone: the
+  // account waits for the next run instead of going to an administrator.
+  async function managerIfActive(
+    email: string | null,
+  ): Promise<{ error: string } | { email: string | null }> {
     if (!email) {
-      return null;
+      return { email: null };
     }
 
     const key = email.trim().toLowerCase();
@@ -1072,13 +1087,19 @@ async function syncAccounts({
       standings.set(key, standing);
     }
 
-    return standing.state === "active" ? key : null;
+    if (standing.state === "unknown") {
+      return { error: standing.error };
+    }
+
+    return { email: standing.state === "active" ? key : null };
   }
 
   // In a dry run nothing is committed, so the accounts it would already
   // have blocked are left out by hand when choosing who takes over and
   // whether an administrator is the last one.
   const imaginedBlocked: string[] = [];
+  // Skipped for want of an answer about their manager: asked again first.
+  const lookupFailedIds = new Set<string>();
   let used = 0;
 
   for (const { account, standing } of looked) {
@@ -1133,13 +1154,24 @@ async function syncAccounts({
           break;
         }
 
-        const managerEmail = await managerIfActive(plan.managerEmail);
+        const manager = await managerIfActive(plan.managerEmail);
+
+        // The block and the end of sessions go ahead; only the hand-over
+        // of work that has no manager to go to waits for a later run.
+        const managerUnknown = "error" in manager;
+
+        if (managerUnknown) {
+          counts.lookupFailures += 1;
+          lookupFailedIds.add(account.id);
+        }
+
         const outcome = await inTransaction(dryRun, database, (tx) =>
           offboardAccount(tx, {
             account,
             breakGlass,
             excludedIds: imaginedBlocked,
-            managerEmail,
+            managerEmail: "email" in manager ? manager.email : null,
+            managerUnknown,
             now,
             reason: plan.reason,
           }),
@@ -1156,7 +1188,11 @@ async function syncAccounts({
           break;
         }
 
-        if (!outcome.blocked && outcome.envelopes.length === 0) {
+        if (
+          !outcome.blocked &&
+          outcome.envelopes.length === 0 &&
+          outcome.envelopesKept === 0
+        ) {
           break;
         }
 
@@ -1211,7 +1247,9 @@ async function syncAccounts({
     const answered = looked
       .filter(
         ({ account, standing }) =>
-          standing.state !== "unknown" && !deferred.has(account.id),
+          standing.state !== "unknown" &&
+          !deferred.has(account.id) &&
+          !lookupFailedIds.has(account.id),
       )
       .map(({ account }) => account.id);
 

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { DbExecutor } from "./db/connection.ts";
+import type { Pool } from "pg";
+
+import { replaceDbPoolForTests, type DbExecutor } from "./db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import {
   DirectoryError,
   type DirectoryClient,
@@ -182,7 +185,8 @@ test("only an approver in the first step counts as the manager approving first",
     ),
     false,
   );
-  // At the same time as the customer is still the first step.
+  // At the same time as the customer, the customer is invited at once, so
+  // the manager is not first.
   assert.equal(
     hasManagerApprovalFirst(
       [
@@ -196,8 +200,87 @@ test("only an approver in the first step counts as the manager approving first",
       ],
       manager,
     ),
+    false,
+  );
+  assert.equal(
+    hasManagerApprovalFirst(
+      [
+        { email: manager, role: "approver", signOrder: 1, signingStep: 1 },
+        {
+          email: "client@example.com",
+          role: "signer",
+          signOrder: 2,
+          signingStep: 1,
+        },
+      ],
+      manager,
+    ),
+    false,
+  );
+  // Alone in the first step, with the customer after.
+  assert.equal(
+    hasManagerApprovalFirst(
+      [
+        { email: manager, role: "approver", signOrder: 1, signingStep: 1 },
+        {
+          email: "client@example.com",
+          role: "signer",
+          signOrder: 2,
+          signingStep: 2,
+        },
+      ],
+      manager,
+    ),
     true,
   );
+});
+
+test("an error that is not the directory's own is still a failed lookup", async () => {
+  const broken: DirectoryClient = {
+    ...directory,
+    getUser: () => Promise.reject(new Error("token exchange refused")),
+  };
+
+  assert.deepEqual(
+    await findSenderManager("pat@example.com", { directory: broken }),
+    { status: "lookup_failed" },
+  );
+
+  const suggested = await checkManagerPolicy(
+    { email: "pat@example.com", id: "user-pat" },
+    [
+      {
+        email: "client@example.com",
+        role: "signer",
+        signOrder: 1,
+        signingStep: 1,
+      },
+    ],
+    { database: noDatabase, directory: broken, policy: policy("suggest") },
+  );
+
+  assert.equal(suggested.status, "suggested");
+});
+
+test("a directory that cannot be set up is a failed lookup, not a directory that is off", async () => {
+  const unreachable = {
+    query: () => Promise.reject(new Error("connection refused")),
+  } as unknown as Pool;
+  const replaced = replaceDbPoolForTests(unreachable);
+
+  invalidateIntegrationSettingsCache();
+
+  try {
+    assert.deepEqual(await findSenderManager("pat@example.com"), {
+      status: "lookup_failed",
+    });
+  } finally {
+    invalidateIntegrationSettingsCache();
+
+    if (replaced) {
+      replaceDbPoolForTests(replaced);
+    }
+  }
 });
 
 const sender = { email: "pat@example.com", id: "user-pat" };

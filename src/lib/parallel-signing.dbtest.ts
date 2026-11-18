@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -676,4 +677,42 @@ test("advanced or qualified signatures are not sent to signers at the same time"
       /one after another/.test(error.message),
   );
   assert.equal(await envelopeStatusOf(draft.envelopeId), "draft");
+});
+
+test("when a later first-step invitation fails, the sender is not told that person was invited", async () => {
+  const draft = await createDraft([1, 1, 2]);
+  const bob = draft.saved.signers[1]!;
+  // The capture email driver writes each message to a file; making that
+  // write fail for Bob's invitation alone stands in for a failed send.
+  const require = createRequire(import.meta.url);
+  const fsPromises = require("node:fs/promises") as {
+    writeFile: (...args: unknown[]) => Promise<unknown>;
+  };
+  const realWriteFile = fsPromises.writeFile;
+
+  fsPromises.writeFile = (...args: unknown[]) =>
+    String(args[1]).includes(bob.email)
+      ? Promise.reject(new Error("mail refused"))
+      : realWriteFile(...args);
+  syncBuiltinESMExports();
+
+  const originalError = console.error;
+
+  console.error = () => undefined;
+
+  try {
+    const sent = await sendDraftEnvelope(
+      draft.userId,
+      draft.envelopeId,
+      { senderEmail: "sam@example.test", senderName: "Sam Sender" },
+      { database },
+    );
+
+    assert.match(sent.notifiedSignerName, /Ann/);
+    assert.doesNotMatch(sent.notifiedSignerName, /Bob/);
+  } finally {
+    console.error = originalError;
+    fsPromises.writeFile = realWriteFile;
+    syncBuiltinESMExports();
+  }
 });

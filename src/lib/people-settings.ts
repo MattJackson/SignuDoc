@@ -21,7 +21,7 @@ import {
   readManagerPolicy,
   type ManagerPolicyMode,
 } from "./manager-policy.ts";
-import { readStoredSettings } from "./settings.ts";
+import { isMissingSchemaError, readStoredSettings } from "./settings.ts";
 import { readEnv, type EnvSource } from "./utils/env.ts";
 
 // The people settings an administrator chooses, in Settings, Google
@@ -74,7 +74,14 @@ export async function getPeopleSettingsView({
     queryMany<{ id: string; name: string }>(
       database,
       `SELECT id, name FROM teams ORDER BY lower(name), id`,
-    ).catch(() => []),
+    ).catch((error: unknown) => {
+      // Only a missing teams table (a database not yet migrated) is no teams.
+      if (isMissingSchemaError(error)) {
+        return [];
+      }
+
+      throw error;
+    }),
   ]);
   const managerPolicy = readManagerPolicy(env, stored);
   const googleSigning = resolveGoogleSigningPolicy(
