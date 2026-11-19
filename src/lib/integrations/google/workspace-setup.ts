@@ -8,34 +8,46 @@ import {
   secretKeyFor,
 } from "../../services/secret-box.ts";
 import { readEnv, type EnvSource } from "../../utils/env.ts";
-import { GOOGLE_SCOPES } from "./credentials.ts";
+import type { AddonDeployment } from "./addon/manifest.ts";
+import { GOOGLE_SCOPES, type GoogleCredentialsSource } from "./credentials.ts";
 import {
   GOOGLE_REQUEST_TIMEOUT_MS,
   googleTimeoutSignal,
   googleUrl,
 } from "./endpoints.ts";
 import {
+  ADDON_DEPLOYMENT_ID,
   DIRECTORY_ROLE_PRIVILEGES,
   directoryRoleName,
   executedDriveName,
+  identitySentence,
+  impersonationFlags,
   pickerKeyName,
   SETUP_APIS,
   SETUP_STEP_ORDER,
   SETUP_STEP_TITLES,
+  workspaceAccountId,
   type SetupEvent,
   type SetupStepId,
 } from "./workspace-setup-names.ts";
 
 export {
+  ADDON_DEPLOYMENT_ID,
   DIRECTORY_ROLE_PRIVILEGES,
   directoryRoleName,
   executedDriveName,
+  identitySentence,
   pickerKeyName,
   SETUP_APIS,
   SETUP_CALLBACK_PATH,
   SETUP_STEP_ORDER,
   SETUP_STEP_TITLES,
+  workspaceAccountId,
+  workspaceProjectId,
+  workspaceProjectName,
   type SetupEvent,
+  type SetupProject,
+  type SetupProjectChoice,
   type SetupStepId,
   type SetupStepStatus,
 } from "./workspace-setup-names.ts";
@@ -45,26 +57,40 @@ export {
 // the server uses it to do what an administrator would otherwise click
 // through in Google's consoles, then revokes it. The token is never stored.
 //
-// The steps, each safe to run again (what is already there is kept):
+// Before the steps, the administrator picks the Cloud project from the
+// ones they can use (Cloud Resource Manager projects.search), or has one
+// made. The steps, each safe to run again (what is already there is kept):
 //
-//   a. enable the APIs the app uses in the Cloud project (Service Usage);
+//   project. make the chosen new project, in the organization when there
+//      is one (projects.create), and save which project is used;
+//   a. enable the APIs the app uses (Service Usage), in that project and
+//      in the projects of the sign-in client and of the site's identity;
+//   identity. on Cloud Run, or with an identity set where the site runs,
+//      use that. Elsewhere, make the "<app>-workspace" service account and
+//      a key for it (IAM), saved encrypted. When the organization forbids
+//      keys, give the administrator Service Account Token Creator on it and
+//      say how to run the container with their gcloud login instead;
 //   b. create the Picker's browser key, held to the Picker API and this
 //      site (API Keys API), and save it with the project number;
 //   c. read the Workspace customer ID (Admin SDK) and save it;
 //   d. create the "<app> directory reader" admin role (Users and Groups,
-//      read) and assign it to the site's service account (Admin SDK roles
-//      and role assignments; the account's unique ID from IAM);
+//      read) and assign it to the service account (Admin SDK roles and
+//      role assignments; the account's unique ID from IAM);
 //   e. create the "<app> Executed" Shared Drive and make the service
 //      account a Content manager (Drive), when executed copies are wanted;
-//   f. run the site's own checks with its service account.
+//   addon. create or update the add-on's HTTP deployment (Workspace
+//      Add-ons API), install it for the administrator, and save the
+//      add-on's service account and client ID. Only with a public HTTPS
+//      address;
+//   f. run the site's own checks with its own identity.
 //
-// Google has no API for the OAuth consent screen or the OAuth client, so
-// those stay a copy-paste step before this one. Each step reports done,
-// skipped (already in place) or failed, with Google's status and a hint.
-// Google's own error wording is not passed on: it can name accounts and
-// projects.
+// Google has no API for the OAuth consent screen, the OAuth client or the
+// Marketplace listing, so those stay copy-paste steps. Each step reports
+// done, skipped (already in place) or failed, with Google's status and a
+// hint. Google's own error wording is not passed on: it can name accounts
+// and projects.
 //
-// The whole run is held to SETUP_TIME_BUDGET_MS, well inside the request's
+// The steps are held to SETUP_TIME_BUDGET_MS, well inside the request's
 // limit, so the caller always gets to revoke the token. When time runs out,
 // the steps not started are named so the administrator can run it again.
 
@@ -196,35 +222,62 @@ export type WorkspaceSetupInput = {
   accessToken: string;
   /** The super admin who signed in, from the ID token. */
   adminEmail: string;
+  /** The add-on to deploy, or why it is not. */
+  addon: { deployment: AddonDeployment } | { skipped: string };
   appName: string;
   env?: EnvSource;
   /** What is stored now, to recognise what is already set up. */
   existing: {
+    addonClientId: string | null;
+    addonServiceAccount: string | null;
     appId: string | null;
+    cloudProject: string | null;
     customerId: string | null;
     directory: string | null;
     exportDriveId: string | null;
     pickerApiKey: string | null;
   };
   exportDrive: boolean;
+  /**
+   * Other projects (IDs or numbers) whose APIs must be on too: the sign-in
+   * client's, whose quota the setup's own calls use, and the one the
+   * site's identity lives in.
+   */
+  extraProjects?: string[];
   fetchImpl?: typeof fetch;
-  projectId: string;
-  projectNumber: string | null;
+  /**
+   * The site's Google identity. fixed: set by where it runs (Cloud Run, or
+   * GOOGLE_SERVICE_ACCOUNT_KEY or GOOGLE_IMPERSONATE_SERVICE_ACCOUNT), so
+   * the setup makes none. saved: one an earlier run made and saved.
+   */
+  identity: {
+    fixed: { email: string; source: GoogleCredentialsSource } | null;
+    saved: { email: string; source: GoogleCredentialsSource } | null;
+  };
+  /** The chosen project, or the one to make. */
+  project:
+    | { create: false; projectId: string; projectNumber: string | null }
+    | {
+        create: true;
+        name: string;
+        /** "organizations/<id>", or null when there is no organization. */
+        parent: string | null;
+        projectId: string;
+      };
   /**
    * When the run has to be over (ms since the epoch), counted from when
    * the caller started; SETUP_TIME_BUDGET_MS from now when not given.
    */
   deadline?: number;
   /**
-   * The checks of step f, run with the site's own service account. Each
-   * check starts only with CHECK_TIME_MS left before the deadline.
+   * The checks of step f, run with the site's own identity. Each check
+   * starts only with CHECK_TIME_MS left before the deadline.
    */
   runTests: (state: {
     deadline: number;
     exportDriveId: string | null;
   }) => Promise<SetupTestResult[]>;
   save: (update: IntegrationSettingsUpdate) => Promise<void>;
-  serviceAccountEmail: string;
   siteUrl: string;
   /** Waits between polls; tests make it instant. */
   sleep?: (ms: number) => Promise<void>;
@@ -234,12 +287,21 @@ export type WorkspaceSetupInput = {
 export class GoogleSetupError extends Error {
   readonly reason: string | null;
   readonly status: number | null;
+  /** The policy constraints of a precondition failure, such as
+   * constraints/iam.disableServiceAccountKeyCreation. */
+  readonly violations: string[];
 
-  constructor(message: string, status: number | null, reason: string | null) {
+  constructor(
+    message: string,
+    status: number | null,
+    reason: string | null,
+    violations: string[] = [],
+  ) {
     super(message);
     this.name = "GoogleSetupError";
     this.reason = reason;
     this.status = status;
+    this.violations = violations;
   }
 }
 
@@ -264,7 +326,10 @@ type Operation<T> = {
 
 type GoogleErrorBody = {
   error?: {
-    details?: Array<{ reason?: string }>;
+    details?: Array<{
+      reason?: string;
+      violations?: Array<{ type?: string }>;
+    }>;
     errors?: Array<{ reason?: string }>;
     message?: string;
     status?: string;
@@ -313,7 +378,13 @@ function isDisabled(error: unknown): boolean {
   );
 }
 
-function createClient(input: WorkspaceSetupInput, deadline: number) {
+function createClient(
+  input: Pick<
+    WorkspaceSetupInput,
+    "accessToken" | "env" | "fetchImpl" | "sleep"
+  >,
+  deadline: number,
+) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const env = input.env ?? process.env;
   const sleep =
@@ -375,6 +446,11 @@ function createClient(input: WorkspaceSetupInput, deadline: number) {
       `Google answered ${String(response.status)}.`,
       response.status,
       reason,
+      (payload?.error?.details ?? []).flatMap((detail) =>
+        (detail.violations ?? []).flatMap((violation) =>
+          violation.type ? [violation.type] : [],
+        ),
+      ),
     );
   }
 
@@ -419,7 +495,7 @@ function createClient(input: WorkspaceSetupInput, deadline: number) {
     return current.response;
   }
 
-  return { call, finish };
+  return { call, finish, wait };
 }
 
 const STILL_TURNING_ON =
@@ -469,8 +545,13 @@ function fail(error: unknown, hints: Partial<Record<number, string>>): never {
 }
 
 const PROJECT_HINT =
-  "Sign in with an account that is an Owner of the Cloud project, or has Service Usage Admin, API Keys Admin and Service Account Viewer on it.";
+  "Sign in with an account that is an Owner of the Cloud project, or has Service Usage Admin, API Keys Admin, Service Account Admin and Service Account Key Admin on it.";
 const SUPER_ADMIN_HINT = "Sign in with a Workspace super admin account.";
+const KEY_REFUSED_CONSTRAINT =
+  "constraints/iam.disableServiceAccountKeyCreation";
+// A service account just made can be "not found" for a few seconds.
+const NEW_ACCOUNT_RETRIES = 6;
+const NEW_ACCOUNT_WAIT_MS = 5000;
 
 type ServiceState = {
   config?: { name?: string };
@@ -491,6 +572,19 @@ type Privilege = {
   childPrivileges?: Privilege[];
   privilegeName?: string;
   serviceId?: string;
+};
+
+type IamPolicy = {
+  bindings?: Array<{ members?: string[]; role?: string }>;
+  etag?: string;
+  version?: number;
+};
+
+type Deployment = {
+  addOns?: unknown;
+  etag?: string;
+  name?: string;
+  oauthScopes?: string[];
 };
 
 function findPrivileges(
@@ -520,6 +614,35 @@ function findPrivileges(
     .map((name) => ({ privilegeName: name, serviceId: found.get(name)! }));
 }
 
+/** JSON with object keys in order, to compare what Google gives back. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`,
+      )
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+/** True when the organization refused to make a service account key. */
+export function isKeyCreationRefused(error: unknown): boolean {
+  return (
+    error instanceof GoogleSetupError &&
+    (error.violations.includes(KEY_REFUSED_CONSTRAINT) ||
+      ((error.status === 400 || error.status === 412) &&
+        error.reason === "FAILED_PRECONDITION"))
+  );
+}
+
 type RunState = {
   deadline: number;
   outOfTime: boolean;
@@ -527,7 +650,7 @@ type RunState = {
 };
 
 /**
- * Runs steps a to f, reporting each as it goes. Returns whether every step
+ * Runs the steps, reporting each as it goes. Returns whether every step
  * ended done or skipped. The token is revoked by the caller.
  */
 export async function runWorkspaceSetup(
@@ -571,14 +694,18 @@ async function runSteps(
   state: RunState,
 ): Promise<boolean> {
   const env = input.env ?? process.env;
-  const { call, finish } = createClient(input, state.deadline);
-  const project = input.projectNumber ?? input.projectId;
+  const { call, finish, wait } = createClient(input, state.deadline);
+  const projectId = input.project.projectId;
   const origin = new URL(input.siteUrl).origin;
-  const encodedEmail = encodeURIComponent(input.serviceAccountEmail);
   let ok = true;
-  let projectNumber = input.projectNumber;
+  let projectNumber = input.project.create ? null : input.project.projectNumber;
   let customerId: string | null = null;
   let exportDriveId = input.existing.exportDriveId;
+  let serviceAccountEmail: string | null = input.identity.fixed?.email ?? null;
+  // A service account the run just made, which Google can take a moment
+  // to find.
+  let accountIsNew = false;
+  const project = () => projectNumber ?? projectId;
 
   async function step(
     id: SetupStepId,
@@ -631,64 +758,145 @@ async function runSteps(
     }
   }
 
-  // a. APIs. A 403 here means the account cannot change the project, and
-  // nothing else can be done either.
-  const servicesBase = `https://serviceusage.googleapis.com/v1/projects/${encodeURIComponent(project)}`;
-  const apisOk = await step("apis", async () => {
-    let states: ServiceState[];
+  /** Tries again while a service account just made is not found yet. */
+  async function whileNew<T>(fresh: boolean, request: () => Promise<T>) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await request();
+      } catch (error) {
+        if (
+          fresh &&
+          error instanceof GoogleSetupError &&
+          error.status === 404 &&
+          attempt < NEW_ACCOUNT_RETRIES
+        ) {
+          await wait(NEW_ACCOUNT_WAIT_MS);
+          continue;
+        }
 
-    try {
-      const names = SETUP_APIS.map(
-        (api) =>
-          `names=${encodeURIComponent(`projects/${project}/services/${api}`)}`,
-      ).join("&");
+        throw error;
+      }
+    }
+  }
 
-      states =
-        (
-          await call<{ services?: ServiceState[] }>(
-            "GET",
-            `${servicesBase}/services:batchGet?${names}`,
-          )
-        ).services ?? [];
-    } catch (error) {
-      fail(error, { 403: PROJECT_HINT, 404: "Check the Cloud project." });
+  // The project: a new one is made, a chosen one is only saved.
+  const projectOk = await step("project", async () => {
+    if (!input.project.create) {
+      if (input.existing.cloudProject !== projectId) {
+        await input.save({ "google.cloudProject": projectId });
+
+        return { detail: `Uses ${projectId}, and saved it.` };
+      }
+
+      return { detail: `Uses ${projectId}.`, skipped: true };
     }
 
-    const enabled = new Set(
-      states
-        .filter((service) => service.state === "ENABLED")
-        .map(
-          (service) => service.config?.name ?? service.name?.split("/").pop(),
-        ),
-    );
-    const missing = SETUP_APIS.filter((api) => !enabled.has(api));
-
-    if (missing.length === 0) {
-      return {
-        detail: `All ${String(SETUP_APIS.length)} APIs were already on.`,
-        skipped: true,
-      };
-    }
+    const { name, parent } = input.project;
 
     try {
-      await finish(
-        "https://serviceusage.googleapis.com/v1",
-        await call<Operation<unknown>>(
+      const created = await finish<{ name?: string }>(
+        "https://cloudresourcemanager.googleapis.com/v3",
+        await call<Operation<{ name?: string }>>(
           "POST",
-          `${servicesBase}/services:batchEnable`,
-          {
-            serviceIds: missing,
-          },
+          "https://cloudresourcemanager.googleapis.com/v3/projects",
+          { displayName: name, projectId, ...(parent ? { parent } : {}) },
         ),
       );
+
+      projectNumber = created?.name?.split("/")[1] ?? null;
     } catch (error) {
       fail(error, {
-        403: PROJECT_HINT,
-        400: "Billing may need to be turned on for the project.",
+        403: "This account may not make projects. Ask for Project Creator in the organization, or choose a project that is there already.",
+        409: "A project with that ID is there already. Run the setup again to try another.",
       });
     }
 
-    return { detail: `Turned on ${missing.join(", ")}.` };
+    await input.save({ "google.cloudProject": projectId });
+
+    return {
+      detail: `Created "${name}" (${projectId})${parent ? " in your organization" : ""}, and saved it. It needs no billing account.`,
+    };
+  });
+
+  if (!projectOk) {
+    return false;
+  }
+
+  // a. APIs, in the chosen project and the others the setup and the site
+  // call Google through. A 403 here means the account cannot change a
+  // project, and nothing else can be done either.
+  const apisOk = await step("apis", async () => {
+    const targets = [
+      project(),
+      ...(input.extraProjects ?? []).filter(
+        (other) => other !== projectId && other !== projectNumber,
+      ),
+    ].filter((value, index, all) => all.indexOf(value) === index);
+    const turnedOn: string[] = [];
+
+    for (const target of targets) {
+      const servicesBase = `https://serviceusage.googleapis.com/v1/projects/${encodeURIComponent(target)}`;
+      let states: ServiceState[];
+
+      try {
+        const names = SETUP_APIS.map(
+          (api) =>
+            `names=${encodeURIComponent(`projects/${target}/services/${api}`)}`,
+        ).join("&");
+
+        states =
+          (
+            await call<{ services?: ServiceState[] }>(
+              "GET",
+              `${servicesBase}/services:batchGet?${names}`,
+            )
+          ).services ?? [];
+      } catch (error) {
+        fail(error, { 403: PROJECT_HINT, 404: "Check the Cloud project." });
+      }
+
+      const enabled = new Set(
+        states
+          .filter((service) => service.state === "ENABLED")
+          .map(
+            (service) => service.config?.name ?? service.name?.split("/").pop(),
+          ),
+      );
+      const missing = SETUP_APIS.filter((api) => !enabled.has(api));
+
+      if (missing.length === 0) {
+        continue;
+      }
+
+      try {
+        await finish(
+          "https://serviceusage.googleapis.com/v1",
+          await call<Operation<unknown>>(
+            "POST",
+            `${servicesBase}/services:batchEnable`,
+            { serviceIds: missing },
+          ),
+        );
+      } catch (error) {
+        fail(error, {
+          403: PROJECT_HINT,
+          400: "Google refused to turn an API on. None of these APIs needs billing; check the project in the Cloud console.",
+        });
+      }
+
+      turnedOn.push(
+        targets.length > 1
+          ? `${missing.join(", ")} in ${target === project() ? projectId : target}`
+          : missing.join(", "),
+      );
+    }
+
+    return turnedOn.length === 0
+      ? {
+          detail: `All ${String(SETUP_APIS.length)} APIs were already on.`,
+          skipped: true,
+        }
+      : { detail: `Turned on ${turnedOn.join("; ")}.` };
   });
 
   if (!apisOk) {
@@ -742,6 +950,145 @@ async function runSteps(
     return false;
   }
 
+  // The site's own identity. Where the site runs decides it when it can;
+  // otherwise a service account of its own, with a key or impersonated.
+  await step("identity", async () => {
+    const { fixed, saved } = input.identity;
+
+    if (fixed) {
+      return { detail: identitySentence(fixed), skipped: true };
+    }
+
+    const email = `${workspaceAccountId(input.appName)}@${projectId}.iam.gserviceaccount.com`;
+    const accountUrl = `https://iam.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/serviceAccounts/${encodeURIComponent(email)}`;
+    let created = false;
+
+    try {
+      created = await call("GET", accountUrl).then(
+        () => false,
+        async (error: unknown) => {
+          if (!(error instanceof GoogleSetupError) || error.status !== 404) {
+            throw error;
+          }
+
+          await call(
+            "POST",
+            `https://iam.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/serviceAccounts`,
+            {
+              accountId: workspaceAccountId(input.appName),
+              serviceAccount: {
+                description: `${input.appName} reads the Workspace directory and keeps executed copies in Drive as this account.`,
+                displayName: `${input.appName} Workspace`.slice(0, 100),
+              },
+            },
+          ).catch((createError: unknown) => {
+            // Made by a run at the same moment, or just now.
+            if (
+              !(createError instanceof GoogleSetupError) ||
+              createError.status !== 409
+            ) {
+              throw createError;
+            }
+          });
+
+          return true;
+        },
+      );
+    } catch (error) {
+      fail(error, { 403: PROJECT_HINT });
+    }
+
+    serviceAccountEmail = email;
+    accountIsNew = created;
+
+    if (saved?.email === email) {
+      return {
+        detail: created
+          ? `Made ${email} again. ${identitySentence(saved)}`
+          : identitySentence(saved),
+        skipped: !created,
+      };
+    }
+
+    let keyData: string | undefined;
+
+    try {
+      keyData = (
+        await whileNew(created, () =>
+          call<{ privateKeyData?: string }>("POST", `${accountUrl}/keys`, {
+            keyAlgorithm: "KEY_ALG_RSA_2048",
+            privateKeyType: "TYPE_GOOGLE_CREDENTIALS_FILE",
+          }),
+        )
+      ).privateKeyData;
+    } catch (error) {
+      if (!isKeyCreationRefused(error)) {
+        fail(error, { 403: PROJECT_HINT });
+      }
+
+      // No key may be made here: the administrator's gcloud login acts as
+      // the account instead, so it is given Token Creator on it.
+      try {
+        const policy = await whileNew(created, () =>
+          call<IamPolicy>("POST", `${accountUrl}:getIamPolicy`, {}),
+        );
+        const role = "roles/iam.serviceAccountTokenCreator";
+        const member = `user:${input.adminEmail}`;
+        const bindings = policy.bindings ?? [];
+        const binding = bindings.find((item) => item.role === role);
+
+        if (!binding?.members?.includes(member)) {
+          await call("POST", `${accountUrl}:setIamPolicy`, {
+            policy: {
+              ...policy,
+              bindings: binding
+                ? bindings.map((item) =>
+                    item === binding
+                      ? { ...item, members: [...(item.members ?? []), member] }
+                      : item,
+                  )
+                : [...bindings, { members: [member], role }],
+            },
+          });
+        }
+      } catch (grantError) {
+        fail(grantError, { 403: PROJECT_HINT });
+      }
+
+      await input.save({
+        "google.impersonateServiceAccount": email,
+        "google.serviceAccountKey": null,
+      });
+
+      throw new StepFailure(
+        `Made ${email}, but your organization does not allow service account keys (${KEY_REFUSED_CONSTRAINT}), so no key was made. ${input.adminEmail} can now act as it.`,
+        `Run gcloud auth application-default login as ${input.adminEmail}, then start the container with ${impersonationFlags(email)}. The rest of the setup uses this account. Or allow keys for this project in the organization policy and run the setup again.`,
+        error instanceof GoogleSetupError ? error.status : null,
+      );
+    }
+
+    const key = keyData ? Buffer.from(keyData, "base64").toString("utf8") : "";
+
+    if (!key.includes('"private_key"')) {
+      throw new StepFailure("Google did not return the new key.");
+    }
+
+    await input.save({
+      "google.impersonateServiceAccount": null,
+      "google.serviceAccountKey": key,
+    });
+
+    return {
+      detail: `${created ? "Made" : "Found"} ${email}, made a key for it and stored it encrypted. ${identitySentence({ email, source: "stored-key" })}`,
+    };
+  });
+
+  const noAccount = () =>
+    new StepFailure(
+      "There is no service account to give it to.",
+      "Fix the step that gives the site its identity, then run the setup again.",
+    );
+
   // b. The Picker's key.
   await step("picker", async () => {
     if (readEnv(env, "GOOGLE_PICKER_API_KEY")) {
@@ -751,7 +1098,7 @@ async function runSteps(
       };
     }
 
-    const keysBase = `https://apikeys.googleapis.com/v2/projects/${encodeURIComponent(project)}/locations/global/keys`;
+    const keysBase = `https://apikeys.googleapis.com/v2/projects/${encodeURIComponent(project())}/locations/global/keys`;
     const displayName = pickerKeyName(input.appName);
     const restrictions = {
       apiTargets: [{ service: "picker.googleapis.com" }],
@@ -762,7 +1109,7 @@ async function runSteps(
       if (!projectNumber) {
         const found = await call<{ projectNumber?: string }>(
           "GET",
-          `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.projectId)}`,
+          `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(projectId)}`,
         );
 
         projectNumber = found.projectNumber ?? null;
@@ -900,6 +1247,13 @@ async function runSteps(
 
   // d. The directory role.
   await step("role", async () => {
+    const account = serviceAccountEmail;
+
+    if (!account) {
+      throw noAccount();
+    }
+
+    const encodedEmail = encodeURIComponent(account);
     const customer = customerId ?? "my_customer";
     const rolesBase = `https://admin.googleapis.com/admin/directory/v1/customer/${encodeURIComponent(customer)}`;
     const roleName = directoryRoleName(input.appName);
@@ -908,16 +1262,18 @@ async function runSteps(
     let createdRole = false;
 
     try {
-      const account = await call<{ uniqueId?: string }>(
-        "GET",
-        `https://iam.googleapis.com/v1/projects/-/serviceAccounts/${encodedEmail}`,
+      const found = await whileNew(accountIsNew, () =>
+        call<{ uniqueId?: string }>(
+          "GET",
+          `https://iam.googleapis.com/v1/projects/-/serviceAccounts/${encodedEmail}`,
+        ),
       );
 
-      if (!account.uniqueId) {
+      if (!found.uniqueId) {
         throw new StepFailure("IAM did not return the service account's ID.");
       }
 
-      uniqueId = account.uniqueId;
+      uniqueId = found.uniqueId;
     } catch (error) {
       fail(error, {
         403: PROJECT_HINT,
@@ -999,7 +1355,7 @@ async function runSteps(
         await turnDirectoryOn();
 
         return {
-          detail: `"${roleName}" was already assigned to ${input.serviceAccountEmail}.`,
+          detail: `"${roleName}" was already assigned to ${account}.`,
           skipped: true,
         };
       }
@@ -1015,7 +1371,7 @@ async function runSteps(
       await turnDirectoryOn();
 
       return {
-        detail: `${createdRole ? "Created" : "Found"} "${roleName}" (Users and Groups, read) and assigned it to ${input.serviceAccountEmail}.`,
+        detail: `${createdRole ? "Created" : "Found"} "${roleName}" (Users and Groups, read) and assigned it to ${account}.`,
       };
     } catch (error) {
       fail(error, { 403: SUPER_ADMIN_HINT });
@@ -1037,6 +1393,12 @@ async function runSteps(
   // Shared Drive is not found by its name, since anyone in the
   // organization can make one called that.
   await step("drive", async () => {
+    const account = serviceAccountEmail;
+
+    if (!account) {
+      throw noAccount();
+    }
+
     const fromEnv = readEnv(env, "GOOGLE_DRIVE_EXPORT_DRIVE_ID");
 
     if (fromEnv) {
@@ -1112,8 +1474,7 @@ async function runSteps(
 
         member = page.permissions?.find(
           (permission) =>
-            permission.emailAddress?.toLowerCase() ===
-            input.serviceAccountEmail.toLowerCase(),
+            permission.emailAddress?.toLowerCase() === account.toLowerCase(),
         );
         membersToken = member ? "" : (page.nextPageToken ?? "");
       } while (membersToken);
@@ -1123,7 +1484,7 @@ async function runSteps(
 
       if (!canAdd) {
         await call("POST", `${membersUrl}&sendNotificationEmail=false`, {
-          emailAddress: input.serviceAccountEmail,
+          emailAddress: account,
           role: "fileOrganizer",
           type: "user",
         });
@@ -1141,13 +1502,108 @@ async function runSteps(
             skipped: true,
           }
         : {
-            detail: `${createdDrive ? "Created" : "Found"} "${name}", made ${input.serviceAccountEmail} a Content manager, and saved it.`,
+            detail: `${createdDrive ? "Created" : "Found"} "${name}", made ${account} a Content manager, and saved it.`,
           };
     } catch (error) {
       fail(error, {
         403: "Shared Drives may be turned off for your organization, or this account cannot create them (Admin console, Apps, Google Workspace, Drive and Docs, Sharing settings).",
       });
     }
+  });
+
+  // The add-on: its HTTP deployment in the project, installed for the
+  // administrator. Everyone else gets it through the Marketplace listing.
+  await step("addon", async () => {
+    if ("skipped" in input.addon) {
+      return { detail: input.addon.skipped, skipped: true };
+    }
+
+    const { deployment } = input.addon;
+    const base = `https://gsuiteaddons.googleapis.com/v1/projects/${encodeURIComponent(projectId)}`;
+    const deploymentUrl = `${base}/deployments/${ADDON_DEPLOYMENT_ID}`;
+    let action: "created" | "kept" | "updated";
+    let installed = false;
+    let authorization: { oauthClientId?: string; serviceAccountEmail?: string };
+
+    try {
+      const current = await call<Deployment>("GET", deploymentUrl).catch(
+        (error: unknown) => {
+          if (error instanceof GoogleSetupError && error.status === 404) {
+            return null;
+          }
+
+          throw error;
+        },
+      );
+
+      if (!current) {
+        await call(
+          "POST",
+          `${base}/deployments?deploymentId=${ADDON_DEPLOYMENT_ID}`,
+          deployment,
+        );
+        action = "created";
+      } else if (
+        stableJson(current.addOns) !== stableJson(deployment.addOns) ||
+        stableJson(current.oauthScopes) !== stableJson(deployment.oauthScopes)
+      ) {
+        await call("PUT", deploymentUrl, {
+          ...deployment,
+          ...(current.etag ? { etag: current.etag } : {}),
+          name: `projects/${projectId}/deployments/${ADDON_DEPLOYMENT_ID}`,
+        });
+        action = "updated";
+      } else {
+        action = "kept";
+      }
+
+      const status = await call<{ installed?: boolean }>(
+        "GET",
+        `${deploymentUrl}/installStatus`,
+      );
+
+      if (!status.installed) {
+        await call("POST", `${deploymentUrl}:install`, {});
+        installed = true;
+      }
+
+      authorization = await call("GET", `${base}/authorization`);
+    } catch (error) {
+      fail(error, { 403: PROJECT_HINT });
+    }
+
+    const update: IntegrationSettingsUpdate = {};
+
+    if (
+      authorization.serviceAccountEmail &&
+      !readEnv(env, "GOOGLE_ADDON_SERVICE_ACCOUNT") &&
+      input.existing.addonServiceAccount !== authorization.serviceAccountEmail
+    ) {
+      update["google.addonServiceAccount"] = authorization.serviceAccountEmail;
+    }
+
+    if (
+      authorization.oauthClientId &&
+      !readEnv(env, "GOOGLE_ADDON_CLIENT_ID") &&
+      input.existing.addonClientId !== authorization.oauthClientId
+    ) {
+      update["google.addonClientId"] = authorization.oauthClientId;
+    }
+
+    if (Object.keys(update).length > 0) {
+      await input.save(update);
+    }
+
+    if (action === "kept" && !installed && Object.keys(update).length === 0) {
+      return {
+        detail: `The deployment "${ADDON_DEPLOYMENT_ID}" was already in place and installed for you.`,
+        skipped: true,
+      };
+    }
+
+    return {
+      detail: `${action === "created" ? "Created" : action === "updated" ? "Updated" : "Kept"} the deployment "${ADDON_DEPLOYMENT_ID}"${installed ? ", installed it for you" : ""}${Object.keys(update).length > 0 ? ", and saved the add-on's service account and client ID" : ""}. To give it to everyone, finish the Marketplace listing.`,
+    };
   });
 
   // f. The site's own checks.
@@ -1163,7 +1619,7 @@ async function runSteps(
       if (failed.length > 0) {
         throw new StepFailure(
           failed.map((result) => `${result.name}: ${result.message}`).join(" "),
-          "Google can take a few minutes to apply a new role or Shared Drive member. Run the tests again from Settings in a little while.",
+          "Google can take a few minutes to apply a new role, key or Shared Drive member. Run the tests again from Settings in a little while.",
         );
       }
 
@@ -1177,4 +1633,121 @@ async function runSteps(
   );
 
   return ok;
+}
+
+// Before the steps: the projects the administrator can choose from.
+
+const PROJECT_PAGES = 5;
+
+/**
+ * The Cloud projects the signed-in administrator can use, and the
+ * organization of their Workspace, for the project choice. The sign-in
+ * client's project gets the Cloud Resource Manager API first, since the
+ * administrator's own calls count against it. A failure to list is
+ * reported, not thrown, so a new project can still be offered.
+ */
+export async function listSetupProjects(input: {
+  accessToken: string;
+  /** The sign-in client's project number, from its client ID. */
+  clientProject: string | null;
+  deadline: number;
+  env?: EnvSource;
+  fetchImpl?: typeof fetch;
+  /** The Workspace domain of the administrator, from the ID token. */
+  hostedDomain: string | null;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<{
+  organization: string | null;
+  problem: string | null;
+  projects: Array<{ name: string; number: string | null; projectId: string }>;
+}> {
+  const { call, finish } = createClient(input, input.deadline);
+  const crm = "cloudresourcemanager.googleapis.com";
+
+  if (input.clientProject) {
+    const services = `https://serviceusage.googleapis.com/v1/projects/${encodeURIComponent(input.clientProject)}/services/${crm}`;
+
+    try {
+      const current = await call<{ state?: string }>("GET", services);
+
+      if (current.state !== "ENABLED") {
+        await finish(
+          "https://serviceusage.googleapis.com/v1",
+          await call<Operation<unknown>>("POST", `${services}:enable`, {}),
+        );
+      }
+    } catch {
+      // Listing says what is wrong, if anything is.
+    }
+  }
+
+  const projects: Array<{
+    name: string;
+    number: string | null;
+    projectId: string;
+  }> = [];
+  let problem: string | null = null;
+
+  try {
+    let pageToken = "";
+
+    for (let pageCount = 0; pageCount < PROJECT_PAGES; pageCount += 1) {
+      const page = await call<{
+        nextPageToken?: string;
+        projects?: Array<{
+          displayName?: string;
+          name?: string;
+          projectId?: string;
+          state?: string;
+        }>;
+      }>(
+        "GET",
+        `https://cloudresourcemanager.googleapis.com/v3/projects:search?query=${encodeURIComponent("state:ACTIVE")}&pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
+      );
+
+      for (const item of page.projects ?? []) {
+        if (item.projectId && (item.state ?? "ACTIVE") === "ACTIVE") {
+          projects.push({
+            name: item.displayName || item.projectId,
+            number: /^projects\/(\d+)$/.exec(item.name ?? "")?.[1] ?? null,
+            projectId: item.projectId,
+          });
+        }
+      }
+
+      pageToken = page.nextPageToken ?? "";
+
+      if (!pageToken) {
+        break;
+      }
+    }
+  } catch (error) {
+    const failure = toStepFailure(error, {
+      403: "This account cannot list Cloud projects. A new project can still be made.",
+    });
+
+    problem = [failure.message, failure.hint].filter(Boolean).join(" ");
+  }
+
+  let organization: string | null = null;
+
+  if (input.hostedDomain) {
+    try {
+      const found = await call<{ organizations?: Array<{ name?: string }> }>(
+        "GET",
+        `https://cloudresourcemanager.googleapis.com/v3/organizations:search?query=${encodeURIComponent(`domain:${input.hostedDomain}`)}`,
+      );
+
+      organization =
+        found.organizations?.find((item) =>
+          /^organizations\/\d+$/.test(item.name ?? ""),
+        )?.name ?? null;
+    } catch {
+      // A project with no organization can still be made.
+    }
+  }
+
+  projects.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { organization, problem, projects };
 }

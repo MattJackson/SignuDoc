@@ -306,7 +306,7 @@ step "Cloud Run service ${SERVICE}"
 cmd run deploy "${SERVICE}" --region="${REGION}" --image="${IMAGE}" \
   --service-account="${RUNTIME_SA}" "${BACKEND_FLAGS[@]}" \
   --no-invoker-iam-check --port=8080 --cpu=1 --memory=1Gi --concurrency=40 \
-  --timeout=300s --cpu-boost --execution-environment=gen2 \
+  --timeout=600s --cpu-boost --execution-environment=gen2 \
   --update-env-vars="${ENV_VARS}" --update-secrets="${SECRETS}" \
   --startup-probe="httpGet.path=/api/health,periodSeconds=3,failureThreshold=40,timeoutSeconds=3" \
   --liveness-probe="httpGet.path=/api/health,periodSeconds=30,failureThreshold=3,timeoutSeconds=5"

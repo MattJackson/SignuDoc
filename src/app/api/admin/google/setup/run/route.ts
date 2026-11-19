@@ -27,14 +27,17 @@ import { isHostedMode } from "@/lib/utils/env";
 
 // Runs the automatic Google Workspace setup with the code Google sent back
 // to /settings/google-setup. The answer is a stream of JSON lines, one per
-// step as it starts and ends, so the page shows each one live. The token
-// lives only for this request and is revoked at the end.
+// step as it starts and ends, so the page shows each one live; one of them
+// offers the Cloud projects, and the page answers through
+// api/admin/google/setup/choose. The token lives only for this request and
+// is revoked at the end.
 
-// runAutomaticSetup counts SETUP_TIME_BUDGET_MS (240 s, workspace-setup.ts)
-// from its start, code exchange included, and starts no Google request
-// after it; one request still under way (15 s) and the revoke (15 s) end
-// well before this limit.
-export const maxDuration = 300;
+// runAutomaticSetup waits up to CHOICE_WAIT_MS (180 s) for the project
+// choice, and counts SETUP_TIME_BUDGET_MS (240 s) for everything else, code
+// exchange included; it starts no Google request after that. One request
+// still under way (15 s) and the revoke (15 s) end well before this limit.
+// Cloud Run's request timeout is set to match (examples/google-cloud-run).
+export const maxDuration = 600;
 
 const bodySchema = z.object({
   code: z.string().trim().min(1).max(2048),

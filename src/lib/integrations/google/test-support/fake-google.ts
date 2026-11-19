@@ -15,7 +15,7 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { handleCloud } from "./fake-cloud.ts";
+import { cloudState, fakeMayImpersonate, handleCloud } from "./fake-cloud.ts";
 import { handleDirectory } from "./fake-directory.ts";
 import { handleDrive } from "./fake-drive.ts";
 import {
@@ -150,6 +150,15 @@ export type FakeGoogle = {
   }): string;
   /** The query of the last authorization request, or null. */
   lastAuthorization(): Record<string, string> | null;
+  /**
+   * A refresh token for this person, as gcloud application-default login
+   * keeps one, for the given OAuth client.
+   */
+  issueRefreshToken(input: {
+    clientId?: string;
+    scopes: string[];
+    user: string;
+  }): string;
   state: FakeGoogleState;
   url: string;
 };
@@ -733,6 +742,61 @@ ${accounts}
     });
   }
 
+  /** A person may act as a service account only with Token Creator on it. */
+  function mayActAs(context: FakeRequest, email: string): boolean {
+    const user = context.token?.user;
+
+    if (!user || fakeMayImpersonate(cloudState(state), email, user)) {
+      return true;
+    }
+
+    sendGoogleError(
+      context.response,
+      403,
+      "forbidden",
+      "Permission 'iam.serviceAccounts.getAccessToken' denied.",
+    );
+    return false;
+  }
+
+  function handleGenerateAccessToken(context: FakeRequest, email: string) {
+    if (
+      !requireScope(context, (scope) => scope === CLOUD_PLATFORM_SCOPE) ||
+      !mayActAs(context, email)
+    ) {
+      return;
+    }
+
+    const input = readJsonBody(context.body);
+    const scopes = Array.isArray(input?.scope)
+      ? input.scope.filter(
+          (scope): scope is string => typeof scope === "string",
+        )
+      : [];
+
+    if (scopes.length === 0) {
+      sendGoogleError(
+        context.response,
+        400,
+        "badRequest",
+        "Request contains an invalid argument.",
+      );
+      return;
+    }
+
+    sendJson(context.response, 200, {
+      accessToken: issueAccessToken({
+        client: email,
+        scopes,
+        serviceAccount: email.toLowerCase(),
+        user: null,
+      }),
+      expireTime: new Date(
+        Date.now() + ACCESS_TOKEN_SECONDS * 1000,
+      ).toISOString(),
+    });
+  }
+
   function handleSignJwt(context: FakeRequest, email: string) {
     if (
       !requireScope(
@@ -740,7 +804,8 @@ ${accounts}
         (scope) =>
           scope === CLOUD_PLATFORM_SCOPE ||
           scope === "https://www.googleapis.com/auth/iam",
-      )
+      ) ||
+      !mayActAs(context, email)
     ) {
       return;
     }
@@ -940,6 +1005,16 @@ ${accounts}
       return;
     }
 
+    const generatePath =
+      /^\/v1\/projects\/-\/serviceAccounts\/([^/]+):generateAccessToken$/.exec(
+        url.pathname,
+      );
+
+    if (generatePath && method === "POST") {
+      handleGenerateAccessToken(context, decodeURIComponent(generatePath[1]!));
+      return;
+    }
+
     const signJwtPath =
       /^\/v1\/projects\/-\/serviceAccounts\/([^/]+):signJwt$/.exec(
         url.pathname,
@@ -1012,6 +1087,17 @@ ${accounts}
         serviceAccount: input.serviceAccount ?? null,
         user: input.user?.toLowerCase() ?? null,
       }),
+    issueRefreshToken: (input) => {
+      const refresh = randomToken("1//fake-");
+
+      state.refreshTokens.set(refresh, {
+        clientId: input.clientId ?? FAKE_GOOGLE_CLIENT.id,
+        email: input.user.toLowerCase(),
+        scope: input.scopes.join(" "),
+      });
+
+      return refresh;
+    },
     lastAuthorization: () => state.authorizations.at(-1) ?? null,
     state,
     url: baseUrl,

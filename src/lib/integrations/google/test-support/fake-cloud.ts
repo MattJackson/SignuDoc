@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 
 import {
   newId,
@@ -40,7 +40,35 @@ export type FakeApiKey = {
 };
 
 export type FakeCloudState = {
+  /** Workspace add-on deployments, by "<project>/<deployment ID>". */
+  addonDeployments: Map<
+    string,
+    { deployment: Record<string, unknown>; etag: string }
+  >;
+  /** Who installed which deployment for themselves: "<project>/<id>/<user>". */
+  addonInstalls: Set<string>;
   apiKeys: Map<string, FakeApiKey>;
+  /** IAM policies of service accounts, by address. */
+  iamPolicies: Map<
+    string,
+    { bindings: Array<{ members: string[]; role: string }>; etag: string }
+  >;
+  /** Keys made for each service account, by address. */
+  keysMade: Map<string, number>;
+  /** Organizations, with the Workspace domain each belongs to. */
+  organizations: Array<{ domain: string; name: string }>;
+  /** Cloud projects every user can see, by project ID. */
+  projects: Map<
+    string,
+    { name: string; number: string; parent: string | null; projectId: string }
+  >;
+  /** The organization forbids service account keys when true. */
+  refuseKeys: boolean;
+  /** Service accounts made through IAM, by address. */
+  serviceAccounts: Map<
+    string,
+    { displayName: string; email: string; projectId: string; uniqueId: string }
+  >;
   customerId: string;
   /** Users the fake treats as having no rights on the Cloud project. */
   deniedProjectUsers: Set<string>;
@@ -81,16 +109,36 @@ export function cloudState(state: FakeGoogleState): FakeCloudState {
 
   if (!cloud) {
     cloud = {
+      addonDeployments: new Map(),
+      addonInstalls: new Set(),
       apiKeys: new Map(),
       customerId: "C0fake123",
       deniedProjectUsers: new Set(),
       drivePermissions: new Map(),
       enabledServices: new Set(["serviceusage.googleapis.com"]),
       hideProjectNumber: false,
+      iamPolicies: new Map(),
+      keysMade: new Map(),
       operations: new Map(),
+      organizations: [
+        { domain: "example.test", name: "organizations/555000111" },
+      ],
       projectNumber: "123456789012",
+      projects: new Map([
+        [
+          "fake-project",
+          {
+            name: "Fake project",
+            number: "123456789012",
+            parent: "organizations/555000111",
+            projectId: "fake-project",
+          },
+        ],
+      ]),
+      refuseKeys: false,
       roleAssignments: [],
       roles: new Map(),
+      serviceAccounts: new Map(),
       slowServices: new Map(),
     };
     cloudStates.set(state, cloud);
@@ -375,11 +423,16 @@ function handleProjects(context: FakeRequest, cloud: FakeCloudState): boolean {
 
   if (project && method === "GET") {
     if (projectAllowed(context, cloud)) {
+      const projectId = decodeURIComponent(project[1]!);
+
       sendJson(response, 200, {
-        projectId: decodeURIComponent(project[1]!),
+        projectId,
         ...(cloud.hideProjectNumber
           ? {}
-          : { projectNumber: cloud.projectNumber }),
+          : {
+              projectNumber:
+                cloud.projects.get(projectId)?.number ?? cloud.projectNumber,
+            }),
       });
     }
 
@@ -658,6 +711,442 @@ function handleDriveMembers(
   return true;
 }
 
+function serviceDisabled(
+  context: FakeRequest,
+  cloud: FakeCloudState,
+  service: string,
+): boolean {
+  if (cloud.enabledServices.has(service)) {
+    return false;
+  }
+
+  sendJson(context.response, 403, {
+    error: {
+      code: 403,
+      details: [{ reason: "SERVICE_DISABLED" }],
+      message: `${service} has not been used in this project before or it is disabled.`,
+      status: "PERMISSION_DENIED",
+    },
+  });
+  return true;
+}
+
+/** One service's state, and turning one on (Service Usage). */
+function handleOneService(
+  context: FakeRequest,
+  cloud: FakeCloudState,
+): boolean {
+  const match = /^\/v1\/projects\/([^/]+)\/services\/([^/:]+)(:enable)?$/.exec(
+    context.path,
+  );
+
+  if (!match) {
+    return false;
+  }
+
+  if (!projectAllowed(context, cloud)) {
+    return true;
+  }
+
+  const service = match[2]!;
+
+  if (match[3] && context.method === "POST") {
+    cloud.enabledServices.add(service);
+    sendJson(
+      context.response,
+      200,
+      startOperation(cloud, "acf", { service: { name: service } }),
+    );
+    return true;
+  }
+
+  sendJson(context.response, 200, {
+    config: { name: service },
+    name: `projects/${match[1]!}/services/${service}`,
+    state: cloud.enabledServices.has(service) ? "ENABLED" : "DISABLED",
+  });
+  return true;
+}
+
+/** Cloud Resource Manager v3: projects and organizations. */
+function handleResourceManager(
+  context: FakeRequest,
+  cloud: FakeCloudState,
+): boolean {
+  const { method, path, query, response } = context;
+  const operation = /^\/v3\/(operations\/[^/]+)$/.exec(path);
+
+  if (operation && method === "GET") {
+    return sendOperation(context, cloud, operation[1]!);
+  }
+
+  if (
+    path !== "/v3/projects:search" &&
+    path !== "/v3/projects" &&
+    path !== "/v3/organizations:search"
+  ) {
+    return false;
+  }
+
+  if (!projectAllowed(context, cloud)) {
+    return true;
+  }
+
+  if (path === "/v3/projects:search" && method === "GET") {
+    const result = page(
+      Array.from(cloud.projects.values()),
+      query,
+      "pageSize",
+      100,
+      100,
+    );
+
+    sendJson(response, 200, {
+      projects: result.items.map((item) => ({
+        displayName: item.name,
+        name: `projects/${item.number}`,
+        projectId: item.projectId,
+        state: "ACTIVE",
+        ...(item.parent ? { parent: item.parent } : {}),
+      })),
+      ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
+    });
+    return true;
+  }
+
+  if (path === "/v3/organizations:search" && method === "GET") {
+    const domain = (query.get("query") ?? "").replace(/^domain:/, "");
+
+    sendJson(response, 200, {
+      organizations: cloud.organizations
+        .filter((item) => item.domain === domain)
+        .map((item) => ({ displayName: item.domain, name: item.name })),
+    });
+    return true;
+  }
+
+  if (path === "/v3/projects" && method === "POST") {
+    const input = readJsonBody(context.body) ?? {};
+    const projectId =
+      typeof input.projectId === "string" ? input.projectId : "";
+
+    if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(projectId)) {
+      sendGoogleError(response, 400, "badRequest", "Bad project ID.");
+      return true;
+    }
+
+    if (cloud.projects.has(projectId)) {
+      sendGoogleError(response, 409, "alreadyExists", "Project exists.");
+      return true;
+    }
+
+    const project = {
+      name: typeof input.displayName === "string" ? input.displayName : "",
+      number: `9${String(cloud.projects.size).padStart(11, "0")}`,
+      parent: typeof input.parent === "string" ? input.parent : null,
+      projectId,
+    };
+
+    cloud.projects.set(projectId, project);
+    sendJson(
+      response,
+      200,
+      startOperation(cloud, "cp", {
+        displayName: project.name,
+        name: `projects/${project.number}`,
+        projectId,
+      }),
+    );
+    return true;
+  }
+
+  sendGoogleError(response, 405, "methodNotAllowed", "Not allowed.");
+  return true;
+}
+
+/** IAM: making service accounts and keys, and their IAM policies. */
+function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
+  const { method, path, response } = context;
+  const create = /^\/v1\/projects\/([^/]+)\/serviceAccounts$/.exec(path);
+  const account =
+    /^\/v1\/projects\/([^/]+)\/serviceAccounts\/([^/:]+)(\/keys|:getIamPolicy|:setIamPolicy)?$/.exec(
+      path,
+    );
+
+  if (!create && !account) {
+    return false;
+  }
+
+  // The lookup by "-" of any account is answered in handleProjects.
+  if (account && account[1] === "-" && !account[3]) {
+    return false;
+  }
+
+  if (
+    !projectAllowed(context, cloud) ||
+    serviceDisabled(context, cloud, "iam.googleapis.com")
+  ) {
+    return true;
+  }
+
+  if (create && method === "POST") {
+    const projectId = decodeURIComponent(create[1]!);
+    const input = readJsonBody(context.body) ?? {};
+    const accountId =
+      typeof input.accountId === "string" ? input.accountId : "";
+    const email = `${accountId}@${projectId}.iam.gserviceaccount.com`;
+    const details = (input.serviceAccount ?? {}) as { displayName?: unknown };
+
+    if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(accountId)) {
+      sendGoogleError(response, 400, "badRequest", "Bad account ID.");
+      return true;
+    }
+
+    if (cloud.serviceAccounts.has(email)) {
+      sendGoogleError(response, 409, "alreadyExists", "Account exists.");
+      return true;
+    }
+
+    const stored = {
+      displayName:
+        typeof details.displayName === "string" ? details.displayName : "",
+      email,
+      projectId,
+      uniqueId: fakeServiceAccountUniqueId(email),
+    };
+
+    cloud.serviceAccounts.set(email, stored);
+    sendJson(response, 200, {
+      ...stored,
+      name: `projects/${projectId}/serviceAccounts/${email}`,
+    });
+    return true;
+  }
+
+  const email = decodeURIComponent(account?.[2] ?? "").toLowerCase();
+  const stored = cloud.serviceAccounts.get(email);
+
+  if (!stored) {
+    sendGoogleError(response, 404, "notFound", "Service account not found.");
+    return true;
+  }
+
+  const action = account?.[3];
+
+  if (!action && method === "GET") {
+    sendJson(response, 200, {
+      ...stored,
+      name: `projects/${stored.projectId}/serviceAccounts/${email}`,
+      oauth2ClientId: stored.uniqueId,
+    });
+    return true;
+  }
+
+  if (action === "/keys" && method === "POST") {
+    if (cloud.refuseKeys) {
+      sendJson(response, 400, {
+        error: {
+          code: 400,
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
+              violations: [
+                {
+                  description:
+                    "Key creation is not allowed on this service account.",
+                  subject: `projects/${stored.projectId}?configvalue=${email}`,
+                  type: "constraints/iam.disableServiceAccountKeyCreation",
+                },
+              ],
+            },
+          ],
+          message: "Key creation is not allowed on this service account.",
+          status: "FAILED_PRECONDITION",
+        },
+      });
+      return true;
+    }
+
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+    });
+    const key = {
+      client_email: email,
+      client_id: stored.uniqueId,
+      private_key: privateKey
+        .export({ format: "pem", type: "pkcs8" })
+        .toString(),
+      private_key_id: newId(context.state, "key"),
+      project_id: stored.projectId,
+      token_uri: "https://oauth2.googleapis.com/token",
+      type: "service_account",
+    };
+
+    cloud.keysMade.set(email, (cloud.keysMade.get(email) ?? 0) + 1);
+    sendJson(response, 200, {
+      name: `projects/${stored.projectId}/serviceAccounts/${email}/keys/${key.private_key_id}`,
+      privateKeyData: Buffer.from(JSON.stringify(key)).toString("base64"),
+      privateKeyType: "TYPE_GOOGLE_CREDENTIALS_FILE",
+    });
+    return true;
+  }
+
+  if (action === ":getIamPolicy" && method === "POST") {
+    sendJson(
+      response,
+      200,
+      cloud.iamPolicies.get(email) ?? { bindings: [], etag: "BwYAAA==" },
+    );
+    return true;
+  }
+
+  if (action === ":setIamPolicy" && method === "POST") {
+    const input = readJsonBody(context.body) ?? {};
+    const policy = (input.policy ?? {}) as {
+      bindings?: Array<{ members?: string[]; role?: string }>;
+    };
+
+    cloud.iamPolicies.set(email, {
+      bindings: (policy.bindings ?? []).map((binding) => ({
+        members: binding.members ?? [],
+        role: binding.role ?? "",
+      })),
+      etag: newId(context.state, "etag"),
+    });
+    sendJson(response, 200, cloud.iamPolicies.get(email));
+    return true;
+  }
+
+  sendGoogleError(response, 405, "methodNotAllowed", "Not allowed.");
+  return true;
+}
+
+/** Whether this user may act as the service account (Token Creator). */
+export function fakeMayImpersonate(
+  cloud: FakeCloudState,
+  email: string,
+  user: string,
+): boolean {
+  return (
+    cloud.iamPolicies
+      .get(email.toLowerCase())
+      ?.bindings.some(
+        (binding) =>
+          binding.role === "roles/iam.serviceAccountTokenCreator" &&
+          binding.members.includes(`user:${user}`),
+      ) ?? false
+  );
+}
+
+/** The Google Workspace Add-ons API: HTTP deployments and installs. */
+function handleAddons(context: FakeRequest, cloud: FakeCloudState): boolean {
+  const { method, path, query, response } = context;
+  const list = /^\/v1\/projects\/([^/]+)\/deployments$/.exec(path);
+  const one =
+    /^\/v1\/projects\/([^/]+)\/deployments\/([^/:]+)(\/installStatus|:install)?$/.exec(
+      path,
+    );
+  const authorization = /^\/v1\/projects\/([^/]+)\/authorization$/.exec(path);
+
+  if (!list && !one && !authorization) {
+    return false;
+  }
+
+  if (
+    !projectAllowed(context, cloud) ||
+    serviceDisabled(context, cloud, "gsuiteaddons.googleapis.com")
+  ) {
+    return true;
+  }
+
+  if (authorization && method === "GET") {
+    const projectId = decodeURIComponent(authorization[1]!);
+    const number = cloud.projects.get(projectId)?.number ?? cloud.projectNumber;
+
+    sendJson(response, 200, {
+      name: `projects/${number}/authorization`,
+      oauthClientId: `1${number}`,
+      serviceAccountEmail: `service-${number}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`,
+    });
+    return true;
+  }
+
+  if (list && method === "POST") {
+    const id = query.get("deploymentId") ?? "";
+    const key = `${decodeURIComponent(list[1]!)}/${id}`;
+
+    if (cloud.addonDeployments.has(key)) {
+      sendGoogleError(response, 409, "alreadyExists", "Deployment exists.");
+      return true;
+    }
+
+    const deployment = readJsonBody(context.body) ?? {};
+
+    cloud.addonDeployments.set(key, {
+      deployment,
+      etag: newId(context.state, "etag"),
+    });
+    sendJson(response, 200, {
+      ...deployment,
+      name: `projects/x/deployments/${id}`,
+    });
+    return true;
+  }
+
+  const key = one ? `${decodeURIComponent(one[1]!)}/${one[2]!}` : "";
+  const stored = cloud.addonDeployments.get(key);
+
+  if (!stored) {
+    sendGoogleError(response, 404, "notFound", "Deployment not found.");
+    return true;
+  }
+
+  const action = one?.[3];
+  const installKey = `${key}/${context.token?.user ?? ""}`;
+
+  if (!action && method === "GET") {
+    sendJson(response, 200, { ...stored.deployment, etag: stored.etag });
+    return true;
+  }
+
+  if (!action && method === "PUT") {
+    const input = readJsonBody(context.body) ?? {};
+
+    if (input.etag && input.etag !== stored.etag) {
+      sendGoogleError(response, 409, "aborted", "Etag mismatch.");
+      return true;
+    }
+
+    const deployment = { ...input };
+
+    delete deployment.etag;
+    delete deployment.name;
+    cloud.addonDeployments.set(key, {
+      deployment,
+      etag: newId(context.state, "etag"),
+    });
+    sendJson(response, 200, deployment);
+    return true;
+  }
+
+  if (action === "/installStatus" && method === "GET") {
+    sendJson(response, 200, {
+      installed: cloud.addonInstalls.has(installKey),
+      name: `projects/x/deployments/${one![2]!}/installStatus`,
+    });
+    return true;
+  }
+
+  if (action === ":install" && method === "POST") {
+    cloud.addonInstalls.add(installKey);
+    sendJson(response, 200, {});
+    return true;
+  }
+
+  sendGoogleError(response, 405, "methodNotAllowed", "Not allowed.");
+  return true;
+}
+
 const SLOW_PATHS: Array<[RegExp, string]> = [
   [/^\/admin\/directory\/v1\//, "admin.googleapis.com"],
   [/^\/v2\/projects\/[^/]+\/locations\/global\/keys/, "apikeys.googleapis.com"],
@@ -695,6 +1184,10 @@ export function handleCloud(context: FakeRequest): boolean {
   return (
     answerSlow(context, cloud) ||
     handleServiceUsage(context, cloud) ||
+    handleOneService(context, cloud) ||
+    handleResourceManager(context, cloud) ||
+    handleIam(context, cloud) ||
+    handleAddons(context, cloud) ||
     handleApiKeys(context, cloud) ||
     handleProjects(context, cloud) ||
     handleAdmin(context, cloud) ||

@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { checkWorkspaceAccount } from "./auth/sso.ts";
 import { getDb } from "./db/connection.ts";
 import { addonWorkspaceDomains } from "./google-addon.ts";
@@ -9,10 +11,16 @@ import {
   saveIntegrationSettings,
   type IntegrationSettingsActor,
 } from "./integration-settings.ts";
+import { addonAddressProblem } from "./integrations/google/addon/config.ts";
 import {
-  getGoogleCredentials,
+  ADDON_OAUTH_SCOPES,
+  buildAddonDeployment,
+} from "./integrations/google/addon/manifest.ts";
+import {
   readGoogleProjectId,
   readGoogleProjectNumber,
+  resolveGoogleCredentials,
+  type GoogleCredentialsSource,
 } from "./integrations/google/credentials.ts";
 import {
   exchangeAuthorizationCode,
@@ -24,28 +32,53 @@ import {
 import { readAdminGroup } from "./google-admin-group.ts";
 import {
   CHECK_TIME_MS,
+  listSetupProjects,
   runWorkspaceSetup,
   SETUP_CALLBACK_PATH,
   SETUP_TIME_BUDGET_MS,
+  workspaceProjectId,
+  workspaceProjectName,
   type SetupEvent,
+  type SetupProject,
+  type SetupProjectChoice,
   type SetupTestResult,
+  type WorkspaceSetupInput,
 } from "./integrations/google/workspace-setup.ts";
 import { logRouteError } from "./security/logging.ts";
-import { getBranding } from "./settings.ts";
-import { resolveAuthUrl, type EnvSource } from "./utils/env.ts";
+import { getBranding, getSettings } from "./settings.ts";
+import { readEnv, resolveAuthUrl, type EnvSource } from "./utils/env.ts";
 
 // The app's side of the automatic Google Workspace setup: where it runs
-// (the Cloud project, the service account, this site's address), the
-// one-time sign-in, and the run itself with this install's settings and
-// checks. The steps are in integrations/google/workspace-setup.ts.
+// (this site's address, its Google identity, the Cloud project), the
+// one-time sign-in, the project choice, and the run itself with this
+// install's settings and checks. The steps are in
+// integrations/google/workspace-setup.ts.
+
+export type GoogleIdentity = {
+  email: string;
+  source: GoogleCredentialsSource;
+};
 
 export type SetupTarget = {
+  /** Why the add-on cannot be deployed from here, when it cannot. */
+  addonProblem: string | null;
+  /** The scopes the add-on asks for, for the Marketplace listing. */
+  addonScopes: string[];
   client: DriveOAuthClient | null;
+  /** The Google identity the site uses now, or null when it has none. */
+  identity: GoogleIdentity | null;
+  /** Why the identity could not be read, when it could not. */
+  identityProblem: string | null;
+  /** A gcloud login is wanted for impersonation, but none is mounted. */
+  impersonationPending: string | null;
   /** Why the automatic setup cannot run, when it cannot. */
   problem: string | null;
+  /** The project used for console links: the one chosen, or where it runs. */
   projectId: string | null;
   projectNumber: string | null;
   redirectUri: string | null;
+  /** The project the site runs in on Google Cloud, if it does. */
+  runningIn: string | null;
   serviceAccountEmail: string | null;
   siteUrl: string | null;
 };
@@ -58,47 +91,86 @@ function siteUrl(env: EnvSource): string | null {
   }
 }
 
+/** The site's Google identity now, and why there is none if there is not. */
+export async function describeGoogleIdentity(
+  env: EnvSource = process.env,
+): Promise<{ identity: GoogleIdentity | null; problem: string | null }> {
+  try {
+    const credentials = await resolveGoogleCredentials(env);
+
+    if (!credentials) {
+      return { identity: null, problem: null };
+    }
+
+    return {
+      identity: {
+        email: await credentials.getServiceAccountEmail(),
+        source: credentials.source,
+      },
+      problem: null,
+    };
+  } catch (error) {
+    return {
+      identity: null,
+      problem:
+        error instanceof Error
+          ? error.message
+          : "The site's Google identity could not be read.",
+    };
+  }
+}
+
+/** An identity set by where the site runs, which the setup does not change. */
+function isFixed(identity: GoogleIdentity, env: EnvSource): boolean {
+  return (
+    identity.source === "metadata" ||
+    identity.source === "service-account-key" ||
+    (identity.source === "impersonation" &&
+      Boolean(readEnv(env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT")))
+  );
+}
+
 export async function describeSetupTarget(
   env: EnvSource = process.env,
 ): Promise<SetupTarget> {
   const stored = await getIntegrationSettings(env);
   const client = readDriveOAuthClient(env, stored);
   const url = siteUrl(env);
-  let serviceAccountEmail: string | null = null;
-
-  try {
-    serviceAccountEmail =
-      (await getGoogleCredentials()?.getServiceAccountEmail()) ?? null;
-  } catch {
-    serviceAccountEmail = null;
-  }
-
-  // One project for every Cloud call and console link: the one the site
-  // runs in (GOOGLE_CLOUD_PROJECT or the metadata server), whose number
-  // the metadata server gives, or else the service account's own, whose
-  // number step b asks Google for.
+  const { identity, problem: identityProblem } =
+    await describeGoogleIdentity(env);
   const runningIn = await readGoogleProjectId({ env });
-  const projectId = runningIn ?? googleProjectId(serviceAccountEmail);
-  const projectNumber = runningIn
-    ? await readGoogleProjectNumber({ env })
-    : null;
+  const projectId =
+    stored["google.cloudProject"] ??
+    runningIn ??
+    googleProjectId(identity?.email ?? null);
+  const projectNumber =
+    runningIn && projectId === runningIn
+      ? await readGoogleProjectNumber({ env })
+      : stored["google.cloudProject"] &&
+          projectId === stored["google.cloudProject"]
+        ? (stored["drive.appId"] ?? null)
+        : null;
+  const impersonate = stored["google.impersonateServiceAccount"] ?? null;
   const problem = !url
     ? "This site does not know its own address. Set APP_URL where it runs."
-    : !serviceAccountEmail
-      ? "This site has no Google service account: run it on Google Cloud, or set GOOGLE_SERVICE_ACCOUNT_KEY."
-      : !projectId
-        ? "The Google Cloud project could not be found. Set GOOGLE_CLOUD_PROJECT where the site runs."
-        : !client
-          ? "Create the OAuth client and save its ID and secret first (step A)."
-          : null;
+    : !client
+      ? "Create the OAuth client and save its ID and secret first (step A)."
+      : null;
 
   return {
+    addonProblem: addonAddressProblem(url),
+    addonScopes: [...ADDON_OAUTH_SCOPES],
     client,
+    identity,
+    identityProblem,
+    impersonationPending:
+      impersonate && identity?.email !== impersonate ? impersonate : null,
     problem,
     projectId,
     projectNumber,
     redirectUri: url ? `${url}${SETUP_CALLBACK_PATH}` : null,
-    serviceAccountEmail,
+    runningIn,
+    serviceAccountEmail: identity?.email ?? null,
     siteUrl: url,
   };
 }
@@ -233,6 +305,107 @@ function readHostedDomain(idToken: string | null): string | null {
   }
 }
 
+// The project choice. The run sends the projects to the page and waits;
+// the page sends the choice to another request, which may reach another
+// instance, so it goes through the database.
+
+/** How long the run waits for the administrator to choose a project. */
+export const CHOICE_WAIT_MS = 180_000;
+const CHOICE_POLL_MS = 1000;
+const WAITING_EVENT_MS = 15_000;
+// Choices nobody collected are removed after this long.
+const CHOICE_TTL_SECONDS = 60 * 60;
+
+/** Records the administrator's choice for a run. False when it is not new. */
+export async function submitProjectChoice(input: {
+  choice: SetupProjectChoice;
+  runId: string;
+  userId: string;
+}): Promise<boolean> {
+  const result = await getDb().query(
+    `INSERT INTO public.google_setup_choices (run_id, user_id, choice, created_at)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (run_id) DO NOTHING`,
+    [
+      input.runId,
+      input.userId,
+      JSON.stringify(input.choice),
+      Math.floor(Date.now() / 1000),
+    ],
+  );
+
+  return (result.rowCount ?? 0) > 0;
+}
+
+function parseChoice(value: string): SetupProjectChoice | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<{
+      create: unknown;
+      projectId: unknown;
+    }>;
+
+    if (parsed.create === true) {
+      return { create: true };
+    }
+
+    return parsed.create === false && typeof parsed.projectId === "string"
+      ? { create: false, projectId: parsed.projectId }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Waits for the choice for this run from this person, and takes it. Null
+ * when none came in time.
+ */
+async function waitForProjectChoice(input: {
+  emit: (event: SetupEvent) => void;
+  runId: string;
+  sleep: (ms: number) => Promise<void>;
+  userId: string;
+  waitMs: number;
+}): Promise<SetupProjectChoice | null> {
+  const database = getDb();
+  const until = Date.now() + input.waitMs;
+  let lastSent = Date.now();
+
+  await database.query(
+    `DELETE FROM public.google_setup_choices WHERE created_at < $1`,
+    [Math.floor(Date.now() / 1000) - CHOICE_TTL_SECONDS],
+  );
+
+  while (Date.now() < until) {
+    const taken = await database.query<{ choice: string }>(
+      `DELETE FROM public.google_setup_choices
+       WHERE run_id = $1 AND user_id = $2
+       RETURNING choice`,
+      [input.runId, input.userId],
+    );
+    const row = taken.rows[0];
+
+    if (row) {
+      return parseChoice(row.choice);
+    }
+
+    // A line now and then keeps proxies from closing a quiet stream.
+    if (Date.now() - lastSent >= WAITING_EVENT_MS) {
+      lastSent = Date.now();
+      input.emit({ type: "waiting" });
+    }
+
+    await input.sleep(CHOICE_POLL_MS);
+  }
+
+  return null;
+}
+
+/** The project number in an OAuth client ID, such as 1234-abc.apps.... */
+function clientProjectNumber(clientId: string): string | null {
+  return /^(\d{6,20})-/.exec(clientId)?.[1] ?? null;
+}
+
 type RunInput = {
   actor: IntegrationSettingsActor;
   code: string;
@@ -240,18 +413,23 @@ type RunInput = {
   emit: (event: SetupEvent) => void;
   env?: EnvSource;
   exportDrive: boolean;
+  /** How long to wait for the project choice; CHOICE_WAIT_MS by default. */
+  choiceWaitMs?: number;
+  /** Waits between polls; tests make it short. */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 /**
- * Exchanges the code from the one-time sign-in, runs every step, and
- * revokes the token whatever happened. Each event is passed on as it
- * happens; one that cannot be sent (the page went away) does not stop the
- * run.
+ * Exchanges the code from the one-time sign-in, offers the projects, runs
+ * every step, and revokes the token whatever happened. Each event is passed
+ * on as it happens; one that cannot be sent (the page went away) does not
+ * stop the run.
  */
 export async function runAutomaticSetup(input: RunInput): Promise<void> {
   // The run's time is counted from here, so the code exchange and the
-  // reads before the steps are inside it too.
-  const deadline = Date.now() + SETUP_TIME_BUDGET_MS;
+  // reads before the steps are inside it too. Only the wait for the
+  // administrator's choice is not.
+  const startedAt = Date.now();
   const env = input.env ?? process.env;
   const emit = (event: SetupEvent) => {
     try {
@@ -266,8 +444,6 @@ export async function runAutomaticSetup(input: RunInput): Promise<void> {
     target.problem ||
     !target.client ||
     !target.redirectUri ||
-    !target.serviceAccountEmail ||
-    !target.projectId ||
     !target.siteUrl
   ) {
     emit({
@@ -291,12 +467,10 @@ export async function runAutomaticSetup(input: RunInput): Promise<void> {
   }
 
   try {
-    await runWithGrant({ ...input, emit }, env, deadline, {
+    await runWithGrant({ ...input, emit }, env, startedAt, {
+      ...target,
       client: target.client,
-      projectId: target.projectId,
-      projectNumber: target.projectNumber,
       redirectUri: target.redirectUri,
-      serviceAccountEmail: target.serviceAccountEmail,
       siteUrl: target.siteUrl,
     });
   } finally {
@@ -304,18 +478,17 @@ export async function runAutomaticSetup(input: RunInput): Promise<void> {
   }
 }
 
+type ReadyTarget = SetupTarget & {
+  client: DriveOAuthClient;
+  redirectUri: string;
+  siteUrl: string;
+};
+
 async function runWithGrant(
   input: RunInput,
   env: EnvSource,
-  deadline: number,
-  target: {
-    client: DriveOAuthClient;
-    projectId: string;
-    projectNumber: string | null;
-    redirectUri: string;
-    serviceAccountEmail: string;
-    siteUrl: string;
-  },
+  startedAt: number,
+  target: ReadyTarget,
 ): Promise<void> {
   let token;
 
@@ -340,11 +513,12 @@ async function runWithGrant(
 
   try {
     const claims = readIdTokenClaims(token.idToken);
+    const hostedDomain = readHostedDomain(token.idToken);
     // Held to the install's own Workspace, as Google sign-in is: a super
     // admin of another organization's Workspace is not set up with.
     const workspace = claims
       ? checkWorkspaceAccount(
-          { hd: readHostedDomain(token.idToken) },
+          { hd: hostedDomain },
           await addonWorkspaceDomains(env),
         )
       : null;
@@ -361,36 +535,14 @@ async function runWithGrant(
         type: "refused",
       });
     } else {
-      const stored = await getIntegrationSettings(env);
-      const { productName } = await getBranding(env);
-
-      ok = await runWorkspaceSetup({
+      ok = await chooseAndRun({
         accessToken: token.accessToken,
         adminEmail: claims.email,
-        appName: productName,
-        deadline,
-        emit: input.emit,
         env,
-        existing: {
-          appId: stored["drive.appId"] ?? null,
-          customerId: stored["google.customerId"] ?? null,
-          directory: stored["google.directory"] ?? null,
-          exportDriveId: stored["drive.exportDriveId"] ?? null,
-          pickerApiKey: stored["drive.pickerApiKey"] ?? null,
-        },
-        exportDrive: input.exportDrive,
-        projectId: target.projectId,
-        projectNumber: target.projectNumber,
-        runTests: (state) =>
-          runChecks(claims.email, input.actor.email, state, env),
-        save: async (update) => {
-          await saveIntegrationSettings(update, input.actor, {
-            area: "google_workspace",
-            env,
-          });
-        },
-        serviceAccountEmail: target.serviceAccountEmail,
-        siteUrl: target.siteUrl,
+        hostedDomain,
+        input,
+        startedAt,
+        target,
       });
     }
   } catch (error) {
@@ -412,19 +564,162 @@ async function runWithGrant(
   }
 }
 
+async function chooseAndRun({
+  accessToken,
+  adminEmail,
+  env,
+  hostedDomain,
+  input,
+  startedAt,
+  target,
+}: {
+  accessToken: string;
+  adminEmail: string;
+  env: EnvSource;
+  hostedDomain: string | null;
+  input: RunInput;
+  startedAt: number;
+  target: ReadyTarget;
+}): Promise<boolean> {
+  const sleep =
+    input.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const stored = await getIntegrationSettings(env);
+  const [{ productName }, settings] = await Promise.all([
+    getBranding(env),
+    getSettings(env),
+  ]);
+  const clientProject = clientProjectNumber(target.client.clientId);
+  const listed = await listSetupProjects({
+    accessToken,
+    clientProject,
+    deadline: startedAt + SETUP_TIME_BUDGET_MS,
+    env,
+    hostedDomain,
+    sleep: input.sleep,
+  });
+  const offered: SetupProject[] = listed.projects;
+  const remembered = stored["google.cloudProject"] ?? null;
+  const preselect = (
+    [
+      [target.runningIn, "This site runs in it."],
+      [remembered, "The setup used it last time."],
+      [
+        googleProjectId(target.identity?.email ?? null),
+        "The site's service account belongs to it.",
+      ],
+    ] as const
+  ).find(([id]) => id && offered.some((item) => item.projectId === id));
+  const runId = randomBytes(24).toString("base64url");
+  const spentMs = Date.now() - startedAt;
+
+  input.emit({
+    newProjectName: workspaceProjectName(productName),
+    organization: listed.organization,
+    preselected: preselect?.[0] ?? null,
+    projects: offered,
+    reason: preselect?.[1] ?? listed.problem,
+    runId,
+    type: "choose",
+    waitSeconds: Math.round((input.choiceWaitMs ?? CHOICE_WAIT_MS) / 1000),
+  });
+
+  const choice = await waitForProjectChoice({
+    emit: input.emit,
+    runId,
+    sleep,
+    userId: input.actor.id,
+    waitMs: input.choiceWaitMs ?? CHOICE_WAIT_MS,
+  });
+  const chosen =
+    choice && !choice.create
+      ? offered.find((item) => item.projectId === choice.projectId)
+      : null;
+
+  if (!choice || (!choice.create && !chosen)) {
+    input.emit({
+      hint: "Start the setup again and choose a project.",
+      message: choice
+        ? "That project is not one this account can use."
+        : "No project was chosen in time.",
+      type: "refused",
+    });
+    return false;
+  }
+
+  const project: WorkspaceSetupInput["project"] = chosen
+    ? {
+        create: false,
+        projectId: chosen.projectId,
+        projectNumber: chosen.number,
+      }
+    : {
+        create: true,
+        name: workspaceProjectName(productName),
+        parent: listed.organization,
+        projectId: workspaceProjectId(
+          productName,
+          randomBytes(6).toString("hex"),
+        ),
+      };
+  const current = target.identity;
+  const fixed = current && isFixed(current, env) ? current : null;
+  const identityProject = googleProjectId(fixed?.email ?? null);
+  const siteUrl = target.siteUrl;
+  const addonProblem = addonAddressProblem(siteUrl);
+
+  return runWorkspaceSetup({
+    accessToken,
+    addon: addonProblem
+      ? { skipped: addonProblem }
+      : {
+          deployment: buildAddonDeployment({
+            brandColor: settings.brandColor,
+            name: productName,
+            siteUrl,
+          }),
+        },
+    adminEmail,
+    appName: productName,
+    // The steps get the run's time less what was spent before the choice.
+    deadline: Date.now() + SETUP_TIME_BUDGET_MS - spentMs,
+    emit: input.emit,
+    env,
+    existing: {
+      addonClientId: stored["google.addonClientId"] ?? null,
+      addonServiceAccount: stored["google.addonServiceAccount"] ?? null,
+      appId: stored["drive.appId"] ?? null,
+      cloudProject: remembered,
+      customerId: stored["google.customerId"] ?? null,
+      directory: stored["google.directory"] ?? null,
+      exportDriveId: stored["drive.exportDriveId"] ?? null,
+      pickerApiKey: stored["drive.pickerApiKey"] ?? null,
+    },
+    exportDrive: input.exportDrive,
+    extraProjects: [clientProject, identityProject].filter(
+      (value): value is string => Boolean(value),
+    ),
+    identity: { fixed, saved: current && !fixed ? current : null },
+    project,
+    runTests: (state) => runChecks(adminEmail, input.actor.email, state, env),
+    save: async (update) => {
+      await saveIntegrationSettings(update, input.actor, {
+        area: "google_workspace",
+        env,
+      });
+    },
+    siteUrl,
+    sleep: input.sleep,
+  });
+}
+
 /** What the setup page needs to know, without the OAuth client's secret. */
 export type SetupTargetView = Omit<SetupTarget, "client"> & {
   clientReady: boolean;
 };
 
 export function toSetupTargetView(target: SetupTarget): SetupTargetView {
-  return {
-    clientReady: target.client !== null,
-    problem: target.problem,
-    projectId: target.projectId,
-    projectNumber: target.projectNumber,
-    redirectUri: target.redirectUri,
-    serviceAccountEmail: target.serviceAccountEmail,
-    siteUrl: target.siteUrl,
-  };
+  const { client, ...rest } = target;
+
+  return { ...rest, clientReady: client !== null };
 }

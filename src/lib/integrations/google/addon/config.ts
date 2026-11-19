@@ -117,3 +117,30 @@ export function readAddonConfig(
 export function addonEndpointUrl(siteUrl: string, trigger: AddonTrigger) {
   return `${siteUrl.replace(/\/+$/, "")}${ADDON_ENDPOINT_BASE_PATH}/${trigger}`;
 }
+
+const PRIVATE_HOST =
+  /^(localhost|.*\.localhost|.*\.local|.*\.internal|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|0\.0\.0\.0|\[::1?\]|\[f[cd][0-9a-f]*:.*\])$/i;
+
+/**
+ * Why Google cannot call the add-on at this site's address, or null when
+ * it can: Google needs a public HTTPS address.
+ */
+export function addonAddressProblem(siteUrl: string | null): string | null {
+  let url: URL | null = null;
+
+  try {
+    url = siteUrl ? new URL(siteUrl) : null;
+  } catch {
+    url = null;
+  }
+
+  if (!url) {
+    return "This site does not know its own address. Set APP_URL where it runs.";
+  }
+
+  if (url.protocol !== "https:" || PRIVATE_HOST.test(url.hostname)) {
+    return `Google calls the add-on at this site's address, which has to be public HTTPS; ${url.origin} is not. Give the site a public address (a Cloudflare Tunnel will do), set APP_URL to it, and run the setup again.`;
+  }
+
+  return null;
+}

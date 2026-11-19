@@ -5,7 +5,10 @@ import type pg from "pg";
 
 import { replaceDbPoolForTests } from "./db/connection.ts";
 import { openTestDatabase } from "./db/test-database.ts";
-import { runAutomaticSetup } from "./google-workspace-setup.ts";
+import {
+  runAutomaticSetup,
+  submitProjectChoice,
+} from "./google-workspace-setup.ts";
 import { invalidateIntegrationSettingsCache } from "./integration-settings.ts";
 import {
   createFakeServiceAccountKey,
@@ -18,6 +21,7 @@ import {
   newSetupState,
   SETUP_CALLBACK_PATH,
   type SetupEvent,
+  type SetupProjectChoice,
 } from "./integrations/google/workspace-setup.ts";
 
 // The one-time super admin grant of the automatic Google Workspace setup,
@@ -68,11 +72,13 @@ before(async () => {
 
 beforeEach(async () => {
   await database.query(`delete from public.integration_settings`);
+  await database.query(`delete from public.google_setup_choices`);
   invalidateIntegrationSettingsCache();
 });
 
 after(async () => {
   await database.query(`delete from public.integration_settings`);
+  await database.query(`delete from public.google_setup_choices`);
 
   if (replaced) {
     replaceDbPoolForTests(replaced);
@@ -118,13 +124,28 @@ async function run(
   email: string,
   env: NodeJS.ProcessEnv = process.env,
   emit?: (event: SetupEvent) => void,
+  options: {
+    choose?: (
+      offer: Extract<SetupEvent, { type: "choose" }>,
+    ) => SetupProjectChoice | null;
+    choiceWaitMs?: number;
+  } = {},
 ) {
   const { code, verifier } = await signIn(email);
   const events: SetupEvent[] = [];
   const seenTokens = new Set<string>();
+  const choices: Promise<boolean>[] = [];
+  // The page's answer: the suggested project, as the page offers it.
+  const choose =
+    options.choose ??
+    ((offer: Extract<SetupEvent, { type: "choose" }>) => ({
+      create: false as const,
+      projectId: offer.preselected ?? offer.projects[0]?.projectId ?? "",
+    }));
 
   await runAutomaticSetup({
     actor,
+    choiceWaitMs: options.choiceWaitMs ?? 20_000,
     code,
     codeVerifier: verifier,
     emit: (event) => {
@@ -133,11 +154,30 @@ async function run(
       }
 
       events.push(event);
+
+      if (event.type === "choose") {
+        const choice = choose(event);
+
+        if (choice) {
+          choices.push(
+            submitProjectChoice({
+              choice,
+              runId: event.runId,
+              userId: actor.id,
+            }),
+          );
+        }
+      }
+
       emit?.(event);
     },
     env,
     exportDrive: false,
+    sleep: (ms) =>
+      new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
   });
+
+  await Promise.all(choices);
 
   return { code, events, seenTokens };
 }
@@ -245,4 +285,77 @@ test("a second run while one is going is refused", async () => {
   assert.equal(finishedOf(first.events)?.revoked, true);
   assert.equal(finishedOf(second.events)?.revoked, true);
   assert.deepEqual(liveTokens(ADMIN), []);
+});
+
+test("the projects are offered after the sign-in, and the chosen one is saved", async () => {
+  const result = await run(ADMIN);
+  const offer = result.events.find((event) => event.type === "choose");
+
+  assert.ok(offer?.type === "choose");
+  assert.ok(offer.projects.some((item) => item.projectId === "fake-project"));
+  // The site's service account belongs to it.
+  assert.equal(offer.preselected, "fake-project");
+  assert.equal(offer.organization, "organizations/555000111");
+
+  const saved = await database.query<{ value: string }>(
+    `select value from public.integration_settings where key = 'google.cloudProject'`,
+  );
+
+  assert.equal(saved.rows[0]?.value, "fake-project");
+  assert.equal(finishedOf(result.events)?.ok, true);
+  assertTokenNeverSent(result);
+});
+
+test("no project chosen in time stops the run, and the token is still revoked", async () => {
+  const result = await run(ADMIN, process.env, undefined, {
+    choiceWaitMs: 100,
+    choose: () => null,
+  });
+
+  assert.match(refusalOf(result.events), /No project was chosen in time/);
+  assert.deepEqual(
+    result.events.filter((event) => event.type === "step"),
+    [],
+    "no step was run",
+  );
+  assert.deepEqual(finishedOf(result.events), {
+    ok: false,
+    revoked: true,
+    type: "finished",
+  });
+  assert.deepEqual(liveTokens(ADMIN), []);
+});
+
+test("a project that was not offered is refused, and the token revoked", async () => {
+  const result = await run(ADMIN, process.env, undefined, {
+    choose: () => ({ create: false, projectId: "someone-elses" }),
+  });
+
+  assert.match(refusalOf(result.events), /not one this account can use/);
+  assert.equal(finishedOf(result.events)?.revoked, true);
+  assert.deepEqual(liveTokens(ADMIN), []);
+});
+
+test("a choice sent by someone else is not taken", async () => {
+  const sent: Promise<boolean>[] = [];
+  const result = await run(
+    ADMIN,
+    process.env,
+    (event) => {
+      if (event.type === "choose") {
+        sent.push(
+          submitProjectChoice({
+            choice: { create: false, projectId: "fake-project" },
+            runId: event.runId,
+            userId: "someone-else",
+          }),
+        );
+      }
+    },
+    { choiceWaitMs: 300, choose: () => null },
+  );
+
+  assert.deepEqual(await Promise.all(sent), [true]);
+  assert.match(refusalOf(result.events), /No project was chosen in time/);
+  assert.equal(finishedOf(result.events)?.revoked, true);
 });

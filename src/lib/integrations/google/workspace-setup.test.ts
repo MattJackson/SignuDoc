@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
 import type { IntegrationSettingsUpdate } from "../../integration-settings.ts";
+import { addonAddressProblem } from "./addon/config.ts";
+import { buildAddonDeployment } from "./addon/manifest.ts";
+import { createGoogleCredentials, GOOGLE_SCOPES } from "./credentials.ts";
 import {
   cloudState,
   FAKE_ADMIN_SERVICE_ID,
@@ -13,7 +16,9 @@ import {
   type FakeGoogle,
 } from "./test-support/fake-google.ts";
 import {
+  ADDON_DEPLOYMENT_ID,
   buildSetupAuthorizationUrl,
+  listSetupProjects,
   openSetupState,
   pickerKeyName,
   runWorkspaceSetup,
@@ -33,6 +38,7 @@ import {
 const ADMIN = "ada@example.test";
 const NOT_ADMIN = "bob@example.test";
 const PROJECT_NUMBER = "123456789012";
+const SITE = "https://sign.example.test";
 const ROLE_PRIVILEGES = [
   { privilegeName: "USERS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
   { privilegeName: "GROUPS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
@@ -72,20 +78,34 @@ function setup(
       scopes: setupScopes(true),
       user: ADMIN,
     }),
+    addon: { deployment: buildAddonDeployment({ siteUrl: SITE }) },
     adminEmail: ADMIN,
     appName: "BusbarSigner",
     emit: (event) => events.push(event),
     env: fake.env,
     existing: {
+      addonClientId: stored["google.addonClientId"] ?? null,
+      addonServiceAccount: stored["google.addonServiceAccount"] ?? null,
       appId: stored["drive.appId"] ?? null,
+      cloudProject: stored["google.cloudProject"] ?? null,
       customerId: stored["google.customerId"] ?? null,
       directory: stored["google.directory"] ?? null,
       exportDriveId: stored["drive.exportDriveId"] ?? null,
       pickerApiKey: stored["drive.pickerApiKey"] ?? null,
     },
     exportDrive: true,
-    projectId: "fake-project",
-    projectNumber: null,
+    identity: {
+      fixed: {
+        email: FAKE_SERVICE_ACCOUNT_EMAIL,
+        source: "service-account-key",
+      },
+      saved: null,
+    },
+    project: {
+      create: false,
+      projectId: "fake-project",
+      projectNumber: null,
+    },
     runTests: async ({ exportDriveId }) => {
       tested.push(exportDriveId ?? "none");
       return [{ message: "Found Ada.", name: "Directory", ok: true }];
@@ -99,8 +119,7 @@ function setup(
         }
       }
     },
-    serviceAccountEmail: FAKE_SERVICE_ACCOUNT_EMAIL,
-    siteUrl: "https://sign.example.test/",
+    siteUrl: `${SITE}/`,
     sleep: async () => undefined,
     ...overrides,
   };
@@ -156,6 +175,18 @@ test("the sign-in asks for the setup scopes with PKCE, and its state is sealed",
   const cookie = {
     createdAt: 1000,
     exportDrive: true,
+    identity: {
+      fixed: {
+        email: FAKE_SERVICE_ACCOUNT_EMAIL,
+        source: "service-account-key",
+      },
+      saved: null,
+    },
+    project: {
+      create: false,
+      projectId: "fake-project",
+      projectNumber: null,
+    },
     returnTo: "/onboarding?step=google-workspace",
     state: "state-1",
     userId: "user-1",
@@ -178,11 +209,14 @@ test("every step runs once, then finds everything already in place", async () =>
 
   assert.equal(await runWorkspaceSetup(first.input), true);
   assert.deepEqual(outcomes(first.events), [
+    ["project", "done"],
     ["apis", "done"],
+    ["identity", "skipped"],
     ["picker", "done"],
     ["customer", "done"],
     ["role", "done"],
     ["drive", "done"],
+    ["addon", "done"],
     ["tests", "done"],
   ]);
 
@@ -228,11 +262,14 @@ test("every step runs once, then finds everything already in place", async () =>
 
   assert.equal(await runWorkspaceSetup(second.input), true);
   assert.deepEqual(outcomes(second.events), [
+    ["project", "skipped"],
     ["apis", "skipped"],
+    ["identity", "skipped"],
     ["picker", "skipped"],
     ["customer", "skipped"],
     ["role", "skipped"],
     ["drive", "skipped"],
+    ["addon", "skipped"],
     ["tests", "done"],
   ]);
   assert.equal(cloud.apiKeys.size, 1);
@@ -255,7 +292,10 @@ test("someone who is not a super admin is refused after the APIs", async () => {
 
   assert.equal(await runWorkspaceSetup(run.input), false);
   assert.match(refusalOf(run.events), /not a Workspace super admin/);
-  assert.deepEqual(outcomes(run.events), [["apis", "done"]]);
+  assert.deepEqual(outcomes(run.events), [
+    ["project", "done"],
+    ["apis", "done"],
+  ]);
 });
 
 test("an Admin SDK that is still being turned on is not taken for a missing super admin", async () => {
@@ -269,7 +309,10 @@ test("an Admin SDK that is still being turned on is not taken for a missing supe
 
   assert.doesNotMatch(message, /not a Workspace super admin/);
   assert.match(message, /still being turned on/);
-  assert.deepEqual(outcomes(run.events), [["apis", "done"]]);
+  assert.deepEqual(outcomes(run.events), [
+    ["project", "done"],
+    ["apis", "done"],
+  ]);
 });
 
 test("an account with no rights on the Cloud project is stopped at the first step, with Google's status only", async () => {
@@ -308,7 +351,7 @@ test("failing checks fail the last step with a hint, and a Shared Drive can be l
 
   const steps = outcomes(run.events);
 
-  assert.deepEqual(steps.at(-2), ["drive", "skipped"]);
+  assert.equal(outcomeOf(run.events, "drive"), "skipped");
   assert.deepEqual(steps.at(-1), ["tests", "failed"]);
 
   const failed = run.events.at(-1);
@@ -599,4 +642,355 @@ test("an API that is still coming on is tried again after a wait", async () => {
   assert.equal(await runWorkspaceSetup(run.input), true);
   assert.equal(outcomeOf(run.events, "picker"), "done");
   assert.equal(waits.filter((ms) => ms === 5000).length, 3);
+});
+
+// The project choice, the site's own identity and the add-on.
+
+const OWN_ACCOUNT =
+  "busbarsigner-workspace@fake-project.iam.gserviceaccount.com";
+
+function failedStep(events: SetupEvent[], id: string) {
+  const event = events.find(
+    (item) =>
+      item.type === "step" && item.id === id && item.status === "failed",
+  );
+
+  return event?.type === "step" ? event : null;
+}
+
+test("the projects to choose from are listed with their numbers and the organization", async () => {
+  const cloud = cloudState(fake.state);
+
+  cloud.projects.set("other-project", {
+    name: "Another project",
+    number: "222333444555",
+    parent: null,
+    projectId: "other-project",
+  });
+
+  const listed = await listSetupProjects({
+    accessToken: fake.issueAccessToken({
+      scopes: setupScopes(false),
+      user: ADMIN,
+    }),
+    clientProject: "777888999000",
+    deadline: Date.now() + 60_000,
+    env: fake.env,
+    hostedDomain: "example.test",
+    sleep: async () => undefined,
+  });
+
+  assert.equal(listed.problem, null);
+  assert.equal(listed.organization, "organizations/555000111");
+  assert.deepEqual(
+    listed.projects.map((item) => [item.projectId, item.number]),
+    [
+      ["other-project", "222333444555"],
+      ["fake-project", "123456789012"],
+    ],
+  );
+  assert.ok(
+    cloud.enabledServices.has("cloudresourcemanager.googleapis.com"),
+    "the sign-in client's project can list projects",
+  );
+});
+
+test("an account that cannot list projects is told so, and can still make one", async () => {
+  cloudState(fake.state).deniedProjectUsers.add(ADMIN);
+
+  const listed = await listSetupProjects({
+    accessToken: fake.issueAccessToken({
+      scopes: setupScopes(false),
+      user: ADMIN,
+    }),
+    clientProject: null,
+    deadline: Date.now() + 60_000,
+    env: fake.env,
+    hostedDomain: null,
+    sleep: async () => undefined,
+  });
+
+  assert.deepEqual(listed.projects, []);
+  assert.match(listed.problem ?? "", /cannot list Cloud projects/);
+});
+
+test("a new project is made in the organization, saved, and used for every step", async () => {
+  const stored: Stored = {};
+  const run = setup(stored, {
+    project: {
+      create: true,
+      name: "BusbarSigner Workspace",
+      parent: "organizations/555000111",
+      projectId: "busbarsigner-ws-abc123",
+    },
+  });
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+  assert.equal(outcomeOf(run.events, "project"), "done");
+
+  const made = cloudState(fake.state).projects.get("busbarsigner-ws-abc123");
+
+  assert.equal(made?.name, "BusbarSigner Workspace");
+  assert.equal(made?.parent, "organizations/555000111");
+  assert.equal(stored["google.cloudProject"], "busbarsigner-ws-abc123");
+  assert.equal(stored["drive.appId"], made?.number);
+  assert.ok(
+    cloudState(fake.state).addonDeployments.has(
+      `busbarsigner-ws-abc123/${ADDON_DEPLOYMENT_ID}`,
+    ),
+  );
+});
+
+test("off Google Cloud the setup makes the site's own service account and stores a key for it", async () => {
+  const stored: Stored = {};
+  const first = setup(stored, { identity: { fixed: null, saved: null } });
+
+  assert.equal(await runWorkspaceSetup(first.input), true);
+  assert.equal(outcomeOf(first.events, "identity"), "done");
+
+  const cloud = cloudState(fake.state);
+  const key = JSON.parse(stored["google.serviceAccountKey"] ?? "{}") as {
+    client_email?: string;
+    private_key?: string;
+  };
+
+  assert.ok(cloud.serviceAccounts.has(OWN_ACCOUNT));
+  assert.equal(key.client_email, OWN_ACCOUNT);
+  assert.match(key.private_key ?? "", /PRIVATE KEY/);
+  assert.equal(stored["google.impersonateServiceAccount"], undefined);
+  // The directory role and the Shared Drive go to the new account.
+  assert.deepEqual(
+    cloud.roleAssignments.map((item) => item.assignedTo),
+    [fakeServiceAccountUniqueId(OWN_ACCOUNT)],
+  );
+  assert.equal(
+    cloud.drivePermissions.get(stored["drive.exportDriveId"] ?? "")?.[0]
+      ?.emailAddress,
+    OWN_ACCOUNT,
+  );
+
+  // The stored key is the site's identity from now on.
+  const credentials = createGoogleCredentials({
+    env: fake.env,
+    stored: { key: stored["google.serviceAccountKey"] },
+  });
+
+  assert.equal(credentials?.source, "stored-key");
+  assert.equal(await credentials?.getServiceAccountEmail(), OWN_ACCOUNT);
+
+  const second = setup(stored, {
+    identity: {
+      fixed: null,
+      saved: { email: OWN_ACCOUNT, source: "stored-key" },
+    },
+  });
+
+  assert.equal(await runWorkspaceSetup(second.input), true);
+  assert.equal(outcomeOf(second.events, "identity"), "skipped");
+  assert.equal(cloud.keysMade.get(OWN_ACCOUNT), 1, "no second key");
+});
+
+test("where the organization forbids keys, the administrator may impersonate the account and is told how", async () => {
+  const cloud = cloudState(fake.state);
+
+  cloud.refuseKeys = true;
+
+  const stored: Stored = {};
+  const run = setup(stored, { identity: { fixed: null, saved: null } });
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+
+  const failed = failedStep(run.events, "identity");
+
+  assert.ok(failed);
+  assert.match(failed.detail, /iam\.disableServiceAccountKeyCreation/);
+  assert.match(failed.detail, new RegExp(OWN_ACCOUNT.replace(/\./g, "\\.")));
+  assert.match(failed.hint ?? "", /gcloud auth application-default login/);
+  assert.match(
+    failed.hint ?? "",
+    /-e GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=busbarsigner-workspace@/,
+  );
+  assert.match(failed.hint ?? "", /application_default_credentials\.json/);
+  assert.equal(stored["google.serviceAccountKey"], undefined);
+  assert.equal(stored["google.impersonateServiceAccount"], OWN_ACCOUNT);
+  assert.deepEqual(cloud.iamPolicies.get(OWN_ACCOUNT)?.bindings, [
+    {
+      members: [`user:${ADMIN}`],
+      role: "roles/iam.serviceAccountTokenCreator",
+    },
+  ]);
+  // The rest of the setup still uses the account.
+  assert.equal(outcomeOf(run.events, "role"), "done");
+  assert.deepEqual(
+    cloud.roleAssignments.map((item) => item.assignedTo),
+    [fakeServiceAccountUniqueId(OWN_ACCOUNT)],
+  );
+
+  // Run again: the grant is not added twice.
+  const again = setup(stored, { identity: { fixed: null, saved: null } });
+
+  await runWorkspaceSetup(again.input);
+  assert.equal(
+    cloud.iamPolicies.get(OWN_ACCOUNT)?.bindings[0]?.members.length,
+    1,
+  );
+});
+
+test("on Cloud Run the account the site runs as is used, and no account or key is made", async () => {
+  const run = setup(
+    {},
+    {
+      identity: {
+        fixed: { email: FAKE_SERVICE_ACCOUNT_EMAIL, source: "metadata" },
+        saved: null,
+      },
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+
+  const identity = run.events.find(
+    (event) =>
+      event.type === "step" &&
+      event.id === "identity" &&
+      event.status === "skipped",
+  );
+
+  assert.match(
+    identity?.type === "step" ? identity.detail : "",
+    /Runs on Google Cloud as signudoc@fake-project/,
+  );
+  assert.equal(cloudState(fake.state).serviceAccounts.size, 0);
+  assert.equal(cloudState(fake.state).keysMade.size, 0);
+});
+
+test("the add-on is deployed, installed for the administrator, and updated when the site moves", async () => {
+  const stored: Stored = {};
+  const first = setup(stored);
+  const cloud = cloudState(fake.state);
+  const key = `fake-project/${ADDON_DEPLOYMENT_ID}`;
+
+  assert.equal(await runWorkspaceSetup(first.input), true);
+  assert.equal(outcomeOf(first.events, "addon"), "done");
+  assert.ok(cloud.addonInstalls.has(`${key}/${ADMIN}`));
+  assert.equal(
+    stored["google.addonServiceAccount"],
+    "service-123456789012@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+  );
+  assert.equal(stored["google.addonClientId"], "1123456789012");
+
+  const deployed = cloud.addonDeployments.get(key)?.deployment as {
+    addOns?: { common?: { homepageTrigger?: { runFunction?: string } } };
+  };
+
+  assert.equal(
+    deployed.addOns?.common?.homepageTrigger?.runFunction,
+    "https://sign.example.test/api/google/addon/homepage",
+  );
+
+  const moved = setup(stored, {
+    addon: {
+      deployment: buildAddonDeployment({
+        siteUrl: "https://sign2.example.test",
+      }),
+    },
+  });
+
+  await runWorkspaceSetup(moved.input);
+  assert.equal(outcomeOf(moved.events, "addon"), "done");
+  assert.equal(
+    (
+      cloud.addonDeployments.get(key)?.deployment as {
+        addOns?: { common?: { homepageTrigger?: { runFunction?: string } } };
+      }
+    ).addOns?.common?.homepageTrigger?.runFunction,
+    "https://sign2.example.test/api/google/addon/homepage",
+  );
+  assert.equal(cloud.addonDeployments.size, 1);
+});
+
+test("without a public HTTPS address the add-on is skipped and says why", async () => {
+  for (const address of [
+    "http://localhost:8080",
+    "https://localhost",
+    "http://sign.example.test",
+    "https://192.168.1.20",
+    "https://box.local",
+  ]) {
+    assert.match(addonAddressProblem(address) ?? "", /public HTTPS/, address);
+  }
+
+  assert.equal(addonAddressProblem("https://sign.example.test"), null);
+
+  const run = setup(
+    {},
+    {
+      addon: { skipped: addonAddressProblem("http://localhost:8080")! },
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+  assert.equal(outcomeOf(run.events, "addon"), "skipped");
+  assert.equal(cloudState(fake.state).addonDeployments.size, 0);
+});
+
+test("the gcloud login impersonates the account the setup made", async () => {
+  const cloud = cloudState(fake.state);
+
+  cloud.serviceAccounts.set(OWN_ACCOUNT, {
+    displayName: "BusbarSigner Workspace",
+    email: OWN_ACCOUNT,
+    projectId: "fake-project",
+    uniqueId: fakeServiceAccountUniqueId(OWN_ACCOUNT),
+  });
+  cloud.iamPolicies.set(OWN_ACCOUNT, {
+    bindings: [
+      {
+        members: [`user:${ADMIN}`],
+        role: "roles/iam.serviceAccountTokenCreator",
+      },
+    ],
+    etag: "e1",
+  });
+
+  const adc = JSON.stringify({
+    client_id: "fake-client-id.apps.googleusercontent.com",
+    client_secret: "fake-client-secret",
+    refresh_token: fake.issueRefreshToken({
+      scopes: [GOOGLE_SCOPES.cloudPlatform],
+      user: ADMIN,
+    }),
+    type: "authorized_user",
+  });
+  const credentials = createGoogleCredentials({
+    env: { ...fake.env, HOME: "/home/node" },
+    readFile: (file) =>
+      file === "/home/node/.config/gcloud/application_default_credentials.json"
+        ? adc
+        : null,
+    stored: { impersonate: OWN_ACCOUNT },
+  });
+
+  assert.equal(credentials?.source, "impersonation");
+  assert.equal(await credentials?.getServiceAccountEmail(), OWN_ACCOUNT);
+
+  const token = await credentials!.getAccessToken({
+    scopes: [GOOGLE_SCOPES.drive],
+  });
+
+  assert.equal(fake.state.accessTokens.get(token)?.serviceAccount, OWN_ACCOUNT);
+
+  // Someone without Token Creator on it cannot.
+  cloud.iamPolicies.delete(OWN_ACCOUNT);
+
+  const refused = createGoogleCredentials({
+    env: { ...fake.env, HOME: "/home/node" },
+    readFile: () => adc,
+    stored: { impersonate: OWN_ACCOUNT },
+  });
+
+  await assert.rejects(
+    refused!.getAccessToken({ scopes: [GOOGLE_SCOPES.directoryUserReadonly] }),
+    /IAM generateAccessToken failed with 403/,
+  );
 });
