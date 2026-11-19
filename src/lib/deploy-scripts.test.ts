@@ -30,7 +30,7 @@ if [ -n "\${STUB_NOTYET:-}" ] && [[ "$*" == *"$STUB_NOTYET"* ]]; then
   seen=$(cat "$STUB_LOG.count" 2>/dev/null || echo 0)
   echo $((seen + 1)) > "$STUB_LOG.count"
   if [ "$seen" -lt "\${STUB_NOTYET_TIMES:-2}" ]; then
-    echo "ERROR: Service account signudoc-run does not exist." >&2
+    echo "\${STUB_NOTYET_MESSAGE:-ERROR: (gcloud) INVALID_ARGUMENT: Service account signudoc-run does not exist.}" >&2
     exit 1
   fi
 fi
@@ -226,7 +226,7 @@ test("setup.sh gives up when the service account never appears", () => {
   });
 
   assert.notEqual(status, 0);
-  assert.equal(bindingCalls(calls), 10);
+  assert.equal(bindingCalls(calls), 18);
   assert.doesNotMatch(calls, /run deploy/);
 });
 
@@ -250,4 +250,16 @@ test("setup.sh retries the deploy service account's bindings too", () => {
 
   assert.equal(status, 0);
   assert.match(calls, /run deploy signudoc /);
+});
+
+test("setup.sh also retries the NOT_FOUND form of the error", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    SA_RETRY_SLEEP: "0",
+    STUB_NOTYET: RUNTIME_BINDING,
+    STUB_NOTYET_MESSAGE: "ERROR: (gcloud) NOT_FOUND: Unknown service account",
+    STUB_NOTYET_TIMES: "2",
+  });
+
+  assert.equal(status, 0);
+  assert.ok(bindingCalls(calls) >= 3, calls);
 });

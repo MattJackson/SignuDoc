@@ -34,8 +34,10 @@ exists() {
 
 # Like gc, for a command that names a service account created a moment ago.
 # Google can answer "does not exist" for a short while after creating one, so
-# that one error is tried again (SA_RETRY_SLEEP seconds apart, ten tries in
-# all). Any other failure, or the same one that lasts, is an error as usual.
+# that one error is tried again (SA_RETRY_SLEEP seconds apart, 5 by default,
+# 18 tries in all, about 90 seconds). The error reads "Service account ... does
+# not exist" or, when the account is the resource itself, "Unknown service
+# account". Any other failure, or the same one that lasts, is an error as usual.
 gc_sa() {
   local attempt output
 
@@ -45,9 +47,13 @@ gc_sa() {
       return 0
     fi
 
-    if [[ "${output}" == *"ervice account"* && "${output}" == *"does not exist"* &&
-      ${attempt} -lt 10 ]]; then
-      sleep "${SA_RETRY_SLEEP:-3}"
+    if [[ ${attempt} -lt 18 && (
+      ("${output}" == *"ervice account"* && "${output}" == *"does not exist"*) ||
+      "${output}" == *"Unknown service account"* ) ]]; then
+      if ((attempt == 1)); then
+        echo "  waiting for the new service account to be usable..." >&2
+      fi
+      sleep "${SA_RETRY_SLEEP:-5}"
       continue
     fi
 
