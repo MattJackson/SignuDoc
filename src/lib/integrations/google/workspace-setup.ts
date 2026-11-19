@@ -236,6 +236,8 @@ export type WorkspaceSetupInput = {
     directory: string | null;
     exportDriveId: string | null;
     pickerApiKey: string | null;
+    /** The key the setup made last, to delete when it makes another. */
+    serviceAccountKeyName: string | null;
   };
   exportDrive: boolean;
   /**
@@ -252,7 +254,14 @@ export type WorkspaceSetupInput = {
    */
   identity: {
     fixed: { email: string; source: GoogleCredentialsSource } | null;
+    /** A gcloud application-default login is mounted for impersonation. */
+    loginAvailable: boolean;
     saved: { email: string; source: GoogleCredentialsSource } | null;
+    /**
+     * An identity set where the site runs that cannot be read, and the
+     * account it names when known. The setup reports it and makes none.
+     */
+    unreadable: { email: string | null; problem: string } | null;
   };
   /** The chosen project, or the one to make. */
   project:
@@ -345,12 +354,13 @@ const OPERATION_POLLS = 30;
 const OPERATION_WAIT_MS = 2000;
 
 /**
- * How long a run may take, counted from when the route starts it (the code
- * exchange included). The route is allowed 300 seconds: a request already
- * under way at the deadline (at most GOOGLE_REQUEST_TIMEOUT_MS) and the
- * revoke fit after it.
+ * How long a run may take, counted from when the route starts it: the code
+ * exchange, the project list, the wait for the choice and every step. The
+ * route is allowed 300 seconds, Vercel's and Cloud Run's usual limit: a
+ * request already under way at the deadline (at most
+ * GOOGLE_REQUEST_TIMEOUT_MS) and the revoke fit after it with room to spare.
  */
-export const SETUP_TIME_BUDGET_MS = 240_000;
+export const SETUP_TIME_BUDGET_MS = 190_000;
 
 /**
  * The time one check of step f needs: a service account token and one
@@ -549,6 +559,8 @@ const PROJECT_HINT =
 const SUPER_ADMIN_HINT = "Sign in with a Workspace super admin account.";
 const KEY_REFUSED_CONSTRAINT =
   "constraints/iam.disableServiceAccountKeyCreation";
+// Google holds a service account to this many user-managed keys.
+const MAX_ACCOUNT_KEYS = 10;
 // A service account just made can be "not found" for a few seconds.
 const NEW_ACCOUNT_RETRIES = 6;
 const NEW_ACCOUNT_WAIT_MS = 5000;
@@ -575,7 +587,7 @@ type Privilege = {
 };
 
 type IamPolicy = {
-  bindings?: Array<{ members?: string[]; role?: string }>;
+  bindings?: Array<{ condition?: unknown; members?: string[]; role?: string }>;
   etag?: string;
   version?: number;
 };
@@ -637,9 +649,7 @@ function stableJson(value: unknown): string {
 export function isKeyCreationRefused(error: unknown): boolean {
   return (
     error instanceof GoogleSetupError &&
-    (error.violations.includes(KEY_REFUSED_CONSTRAINT) ||
-      ((error.status === 400 || error.status === 412) &&
-        error.reason === "FAILED_PRECONDITION"))
+    error.violations.includes(KEY_REFUSED_CONSTRAINT)
   );
 }
 
@@ -953,10 +963,19 @@ async function runSteps(
   // The site's own identity. Where the site runs decides it when it can;
   // otherwise a service account of its own, with a key or impersonated.
   await step("identity", async () => {
-    const { fixed, saved } = input.identity;
+    const { fixed, loginAvailable, saved, unreadable } = input.identity;
 
     if (fixed) {
       return { detail: identitySentence(fixed), skipped: true };
+    }
+
+    if (unreadable) {
+      serviceAccountEmail = unreadable.email;
+
+      throw new StepFailure(
+        unreadable.problem,
+        "Fix it where the site runs (GOOGLE_SERVICE_ACCOUNT_KEY, or GOOGLE_IMPERSONATE_SERVICE_ACCOUNT and the mounted gcloud login), then run the setup again. No account or key was made.",
+      );
     }
 
     const email = `${workspaceAccountId(input.appName)}@${projectId}.iam.gserviceaccount.com`;
@@ -1010,17 +1029,66 @@ async function runSteps(
       };
     }
 
-    let keyData: string | undefined;
+    // The key an earlier run made is not in use (the site would be using
+    // this account if it were), so it goes before a new one is made, and
+    // keys do not pile up towards Google's limit.
+    const previous = input.existing.serviceAccountKeyName;
+    const keyIdOf = (name: string | undefined) =>
+      name?.split("/keys/")[1] ?? null;
+    let keys: string[];
 
     try {
-      keyData = (
-        await whileNew(created, () =>
-          call<{ privateKeyData?: string }>("POST", `${accountUrl}/keys`, {
+      keys = (
+        (
+          await whileNew(created, () =>
+            call<{ keys?: Array<{ name?: string }> }>(
+              "GET",
+              `${accountUrl}/keys?keyTypes=USER_MANAGED`,
+            ),
+          )
+        ).keys ?? []
+      )
+        .map((item) => keyIdOf(item.name))
+        .filter((id): id is string => Boolean(id));
+
+      const previousId = keyIdOf(previous ?? undefined);
+
+      if (
+        previous &&
+        previousId &&
+        previous.includes(`/serviceAccounts/${email}/keys/`) &&
+        keys.includes(previousId)
+      ) {
+        await call(
+          "DELETE",
+          `https://iam.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/serviceAccounts/${encodeURIComponent(email)}/keys/${encodeURIComponent(previousId)}`,
+        );
+        keys = keys.filter((id) => id !== previousId);
+      }
+    } catch (error) {
+      fail(error, { 403: PROJECT_HINT });
+    }
+
+    if (keys.length >= MAX_ACCOUNT_KEYS) {
+      throw new StepFailure(
+        `${email} already has ${String(MAX_ACCOUNT_KEYS)} keys, Google's limit, so no new one can be made.`,
+        `Delete the keys it no longer needs (Cloud console, IAM and admin, Service accounts, ${email}, Keys), then run the setup again.`,
+      );
+    }
+
+    let made: { name?: string; privateKeyData?: string };
+
+    try {
+      made = await whileNew(created, () =>
+        call<{ name?: string; privateKeyData?: string }>(
+          "POST",
+          `${accountUrl}/keys`,
+          {
             keyAlgorithm: "KEY_ALG_RSA_2048",
             privateKeyType: "TYPE_GOOGLE_CREDENTIALS_FILE",
-          }),
-        )
-      ).privateKeyData;
+          },
+        ),
+      );
     } catch (error) {
       if (!isKeyCreationRefused(error)) {
         fail(error, { 403: PROJECT_HINT });
@@ -1029,45 +1097,39 @@ async function runSteps(
       // No key may be made here: the administrator's gcloud login acts as
       // the account instead, so it is given Token Creator on it.
       try {
-        const policy = await whileNew(created, () =>
-          call<IamPolicy>("POST", `${accountUrl}:getIamPolicy`, {}),
-        );
-        const role = "roles/iam.serviceAccountTokenCreator";
-        const member = `user:${input.adminEmail}`;
-        const bindings = policy.bindings ?? [];
-        const binding = bindings.find((item) => item.role === role);
-
-        if (!binding?.members?.includes(member)) {
-          await call("POST", `${accountUrl}:setIamPolicy`, {
-            policy: {
-              ...policy,
-              bindings: binding
-                ? bindings.map((item) =>
-                    item === binding
-                      ? { ...item, members: [...(item.members ?? []), member] }
-                      : item,
-                  )
-                : [...bindings, { members: [member], role }],
-            },
-          });
-        }
+        await grantTokenCreator(accountUrl, created);
       } catch (grantError) {
         fail(grantError, { 403: PROJECT_HINT });
       }
 
+      // A key that works now is kept until the login it would give way to
+      // is there.
+      const keepKey = saved?.source === "stored-key" && !loginAvailable;
+
       await input.save({
         "google.impersonateServiceAccount": email,
-        "google.serviceAccountKey": null,
+        ...(keepKey
+          ? {}
+          : {
+              "google.serviceAccountKey": null,
+              "google.serviceAccountKeyName": null,
+            }),
       });
 
+      if (!keepKey && previous) {
+        await deleteKeyQuietly(previous);
+      }
+
       throw new StepFailure(
-        `Made ${email}, but your organization does not allow service account keys (${KEY_REFUSED_CONSTRAINT}), so no key was made. ${input.adminEmail} can now act as it.`,
-        `Run gcloud auth application-default login as ${input.adminEmail}, then start the container with ${impersonationFlags(email)}. The rest of the setup uses this account. Or allow keys for this project in the organization policy and run the setup again.`,
+        `Made ${email}, but your organization does not allow service account keys (${KEY_REFUSED_CONSTRAINT}), so no key was made. ${input.adminEmail} can now act as it.${keepKey && saved ? ` The site keeps using the stored key for ${saved.email} until your gcloud login is mounted.` : ""}`,
+        `Run gcloud auth application-default login as ${input.adminEmail}, then start the container with ${impersonationFlags(email)}${keepKey ? " and run the setup again to switch" : ""}. The rest of the setup uses this account. Or allow keys for this project in the organization policy and run the setup again.`,
         error instanceof GoogleSetupError ? error.status : null,
       );
     }
 
-    const key = keyData ? Buffer.from(keyData, "base64").toString("utf8") : "";
+    const key = made.privateKeyData
+      ? Buffer.from(made.privateKeyData, "base64").toString("utf8")
+      : "";
 
     if (!key.includes('"private_key"')) {
       throw new StepFailure("Google did not return the new key.");
@@ -1076,12 +1138,82 @@ async function runSteps(
     await input.save({
       "google.impersonateServiceAccount": null,
       "google.serviceAccountKey": key,
+      "google.serviceAccountKeyName": made.name ?? null,
     });
+
+    // A key an earlier run made for another account is not used any more.
+    if (previous && !previous.includes(`/serviceAccounts/${email}/keys/`)) {
+      await deleteKeyQuietly(previous);
+    }
 
     return {
       detail: `${created ? "Made" : "Found"} ${email}, made a key for it and stored it encrypted. ${identitySentence({ email, source: "stored-key" })}`,
     };
   });
+
+  /** Deletes a key the setup made before; one already gone is fine. */
+  async function deleteKeyQuietly(name: string) {
+    try {
+      await call("DELETE", `https://iam.googleapis.com/v1/${name}`);
+    } catch {
+      // Left for the administrator; the console lists it.
+    }
+  }
+
+  /**
+   * Gives the administrator Service Account Token Creator on the account.
+   * The policy is read as version 3 so conditional bindings are kept, and
+   * written once more if someone changed it in between.
+   */
+  async function grantTokenCreator(accountUrl: string, fresh: boolean) {
+    const role = "roles/iam.serviceAccountTokenCreator";
+    const member = `user:${input.adminEmail}`;
+
+    for (let attempt = 0; ; attempt += 1) {
+      const policy = await whileNew(fresh, () =>
+        call<IamPolicy>("POST", `${accountUrl}:getIamPolicy`, {
+          options: { requestedPolicyVersion: 3 },
+        }),
+      );
+      const bindings = policy.bindings ?? [];
+      const binding = bindings.find(
+        (item) => item.role === role && !item.condition,
+      );
+
+      if (binding?.members?.includes(member)) {
+        return;
+      }
+
+      const conditional = bindings.some((item) => item.condition);
+
+      try {
+        await call("POST", `${accountUrl}:setIamPolicy`, {
+          policy: {
+            ...policy,
+            bindings: binding
+              ? bindings.map((item) =>
+                  item === binding
+                    ? { ...item, members: [...(item.members ?? []), member] }
+                    : item,
+                )
+              : [...bindings, { members: [member], role }],
+            ...(conditional ? { version: 3 } : {}),
+          },
+        });
+        return;
+      } catch (error) {
+        if (
+          attempt === 0 &&
+          error instanceof GoogleSetupError &&
+          error.status === 409
+        ) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+  }
 
   const noAccount = () =>
     new StepFailure(

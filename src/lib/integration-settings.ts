@@ -50,6 +50,8 @@ export const INTEGRATION_SETTINGS = {
   // The key the automatic setup made for the app's own service account,
   // off Google Cloud. GOOGLE_SERVICE_ACCOUNT_KEY wins over it.
   "google.serviceAccountKey": { secret: true },
+  // The resource name of that key, so the next key made deletes it.
+  "google.serviceAccountKeyName": { secret: false },
   "google.workspaceDomains": { secret: false },
   "notifications.expiringDays": { secret: false },
   "notifications.slack.directMessages": { secret: false },
