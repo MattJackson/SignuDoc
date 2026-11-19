@@ -4,16 +4,25 @@ import { createGunzip, createGzip } from "node:zlib";
 
 import { del, get, list, put } from "@vercel/blob";
 
+import { triggerFilledTablesFirst } from "./backup-order.ts";
 import { type DbPool, getDb } from "./db/connection.ts";
+import {
+  exportSqliteDatabaseLines,
+  restoreIntoSqlite,
+} from "./db/sqlite/backup.ts";
+import { isSqlitePool } from "./db/sqlite/pool.ts";
+import { normalizeGcsPrefix, readGcsLocation } from "./services/storage/gcs.ts";
 import { readEnv, type EnvSource } from "./utils/env.ts";
 
-// A daily copy of the install to a second Vercel Blob store, kept by the
-// deployer apart from the first (another Vercel team, ideally), so that a
-// deleted project, store or database, or a bug that deletes rows, is not the
-// end of the records.
+// A daily copy of the install to a place kept by the deployer apart from
+// it, so that a deleted project, store or database, or a bug that deletes
+// rows, is not the end of the records. The place is a second Vercel Blob
+// store (another Vercel team, ideally) or a Google Cloud Storage bucket
+// (another project, ideally), whatever the install keeps its own files in.
 //
-// It is off unless BACKUP_BLOB_READ_WRITE_TOKEN is set: a read-write token
-// for that second store, which must be a private store. Each run
+// It is off until a target is chosen, in Settings (backup-config.ts) or in
+// the environment: BACKUP_GCS_BUCKET, or BACKUP_BLOB_READ_WRITE_TOKEN, a
+// read-write token for a private Blob store. Each run
 //
 // - writes the whole database, read in one consistent snapshot, as one
 //   gzipped NDJSON file under database/, and keeps BACKUP_KEEP_DAYS days of
@@ -31,7 +40,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const DATABASE_PREFIX = "database/";
 export const FILES_PREFIX = "files/";
 const MANIFEST_PATH = "manifest.json";
-const DEFAULT_KEEP_DAYS = 30;
+export const DEFAULT_KEEP_DAYS = 30;
 const MIN_DATABASE_COPIES = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -111,27 +120,94 @@ export function createVercelBlobStore(token?: string): BackupStore {
   };
 }
 
-export type BackupSettings = { keepDays: number; token: string };
+/**
+ * Where backups go: a second Vercel Blob store (by its read-write token),
+ * or a Google Cloud Storage bucket, optionally under a folder in it.
+ */
+export type BackupTarget =
+  | { kind: "blob"; token: string }
+  | { bucket: string; kind: "gcs"; prefix: string };
 
-/** The backup settings, or null when backups are not set up. */
+export type BackupSettings = { keepDays: number; target: BackupTarget };
+
+export const MIN_KEEP_DAYS = 1;
+export const MAX_KEEP_DAYS = 3650;
+
+/** A number of days to keep copies for, or null when it is not one. */
+export function parseKeepDays(value: unknown): number | null {
+  const days =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\s*\d+\s*$/.test(value)
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  return Number.isInteger(days) &&
+    days >= MIN_KEEP_DAYS &&
+    days <= MAX_KEEP_DAYS
+    ? days
+    : null;
+}
+
+/** An environment setting for the backup that cannot be used. */
+export class BackupEnvironmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupEnvironmentError";
+  }
+}
+
+/**
+ * The backup target set in the environment, or null when none is. The
+ * environment wins over what an administrator chose in Settings.
+ * BACKUP_GCS_BUCKET takes precedence over BACKUP_BLOB_READ_WRITE_TOKEN.
+ */
+export function readBackupTargetFromEnv(
+  env: EnvSource = process.env,
+): BackupTarget | null {
+  const bucket = readEnv(env, "BACKUP_GCS_BUCKET");
+
+  if (bucket) {
+    let prefix: string;
+
+    try {
+      prefix = normalizeGcsPrefix(readEnv(env, "BACKUP_GCS_PREFIX"));
+    } catch {
+      throw new BackupEnvironmentError(
+        'BACKUP_GCS_PREFIX is not a valid folder name (no empty parts, "." or ".."), so backups cannot run.',
+      );
+    }
+
+    return {
+      bucket: bucket.replace(/^gs:\/\//, "").replace(/\/+$/, ""),
+      kind: "gcs",
+      prefix,
+    };
+  }
+
+  const token = readEnv(env, "BACKUP_BLOB_READ_WRITE_TOKEN");
+
+  return token ? { kind: "blob", token } : null;
+}
+
+/** BACKUP_KEEP_DAYS, or null when it is not set (or not a number of days). */
+export function readKeepDaysFromEnv(
+  env: EnvSource = process.env,
+): number | null {
+  return parseKeepDays(readEnv(env, "BACKUP_KEEP_DAYS"));
+}
+
+/** The backup settings from the environment, or null when they set none. */
 export function readBackupSettings(
   env: EnvSource = process.env,
 ): BackupSettings | null {
-  const token = readEnv(env, "BACKUP_BLOB_READ_WRITE_TOKEN");
+  const target = readBackupTargetFromEnv(env);
 
-  if (!token) {
+  if (!target) {
     return null;
   }
 
-  const keepDays = Number.parseInt(readEnv(env, "BACKUP_KEEP_DAYS") ?? "", 10);
-
-  return {
-    keepDays:
-      Number.isFinite(keepDays) && keepDays >= 1 && keepDays <= 3650
-        ? keepDays
-        : DEFAULT_KEEP_DAYS,
-    token,
-  };
+  return { keepDays: readKeepDaysFromEnv(env) ?? DEFAULT_KEEP_DAYS, target };
 }
 
 /** The store id inside a Blob read-write token, when it has one. */
@@ -140,14 +216,26 @@ function storeIdFromToken(token: string | undefined): string | null {
 }
 
 /**
- * True when the backup token is for the app's own store. A backup there
+ * True when the backup target is the app's own store. A backup there
  * would not survive what it is for, and would copy itself every night.
+ * A bucket is refused whole: a folder of the app's own bucket goes when the
+ * bucket does.
  */
 export function isBackupStoreTheAppStore(
-  settings: BackupSettings,
+  settings: Pick<BackupSettings, "target">,
   env: EnvSource = process.env,
 ): boolean {
-  const backupStore = storeIdFromToken(settings.token)?.toLowerCase();
+  const { target } = settings;
+
+  if (target.kind === "gcs") {
+    const appBucket = readGcsLocation(env)?.bucket;
+
+    return Boolean(
+      appBucket && appBucket.toLowerCase() === target.bucket.toLowerCase(),
+    );
+  }
+
+  const backupStore = storeIdFromToken(target.token)?.toLowerCase();
   const appStores = [
     storeIdFromToken(readEnv(env, "BLOB_READ_WRITE_TOKEN")),
     readEnv(env, "BLOB_STORE_ID")?.replace(/^store_/, "") ?? null,
@@ -156,6 +244,18 @@ export function isBackupStoreTheAppStore(
     .map((id) => id.toLowerCase());
 
   return Boolean(backupStore && appStores.includes(backupStore));
+}
+
+/**
+ * Lets go of a download that was not used up, so its connection is not
+ * held open until it is collected.
+ */
+async function discardStream(stream: ReadableStream<Uint8Array> | undefined) {
+  try {
+    await stream?.cancel();
+  } catch {
+    // Already read, or closed: nothing is held.
+  }
 }
 
 async function listAll(store: BackupStore, prefix?: string) {
@@ -219,10 +319,11 @@ export async function listTablesInRestoreOrder(
 
     // A cycle between tables: put the rest in name order and let the
     // restore report what does not fit.
-    const next =
+    const next = triggerFilledTablesFirst(
       ready.length > 0
         ? ready
-        : [...parents.keys()].filter((name) => !placed.has(name));
+        : [...parents.keys()].filter((name) => !placed.has(name)),
+    );
 
     for (const name of next) {
       placed.add(name);
@@ -246,6 +347,16 @@ export async function* exportDatabaseLines(
   database: DbPool,
   createdAt: Date,
 ): AsyncGenerator<string> {
+  if (isSqlitePool(database)) {
+    yield* exportSqliteDatabaseLines(database, {
+      createdAt,
+      format: BACKUP_FORMAT,
+      migrationsTable: MIGRATIONS_TABLE,
+      version: BACKUP_FORMAT_VERSION,
+    });
+    return;
+  }
+
   const client = await database.connect();
 
   try {
@@ -457,8 +568,10 @@ export async function runBackup({
     // Until this copy is done, the one in the backup is not this version.
     delete copiedFrom[original.pathname];
 
+    let found: Awaited<ReturnType<BackupStore["get"]>> = null;
+
     try {
-      const found = await source.get(original.pathname);
+      found = await source.get(original.pathname);
 
       if (!found) {
         continue;
@@ -470,6 +583,7 @@ export async function runBackup({
       copiedFrom[original.pathname] = version;
       summary.filesCopied += 1;
     } catch (error) {
+      await discardStream(found?.stream);
       summary.fileFailures.push(original.pathname);
       console.error(
         `[backup] Could not copy ${original.pathname}:`,
@@ -629,6 +743,16 @@ export async function restoreDatabase({
     );
   }
 
+  if (isSqlitePool(database)) {
+    return restoreIntoSqlite({
+      applied,
+      entries: readDatabaseBackup(found.stream),
+      fail: (message) => new RestoreError(message),
+      migrationsTable: MIGRATIONS_TABLE,
+      pool: database,
+    });
+  }
+
   const client = await database.connect();
   const counts: Record<string, number> = {};
   let batchTable: string | null = null;
@@ -724,8 +848,10 @@ export async function restoreFiles({
       continue;
     }
 
+    let found: Awaited<ReturnType<BackupStore["get"]>> = null;
+
     try {
-      const found = await source.get(copy.pathname);
+      found = await source.get(copy.pathname);
 
       if (!found) {
         failures.push(copy.pathname);
@@ -737,6 +863,7 @@ export async function restoreFiles({
       });
       copied += 1;
     } catch {
+      await discardStream(found?.stream);
       failures.push(copy.pathname);
     }
   }
