@@ -68,6 +68,8 @@ export const signingPayloadSchema = z.object({
   currentSignerFields: z.array(signingCurrentFieldSchema),
   disclosure: signingDisclosureSchema,
   declineUrl: z.string().trim().min(1),
+  /** Checks, as the signer types, that an answer fits its box. */
+  fieldFitUrl: z.string().trim().min(1),
   documentUrl: z.string().trim().min(1),
   envelopeId: idSchema,
   envelopeTitle: envelopeTitleSchema,
@@ -170,6 +172,12 @@ export const signerCheckRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("google"),
   }),
 ]);
+
+/** What the signer has typed so far in one field, to check it fits. */
+export const signingFieldFitRequestSchema = z.object({
+  fieldId: idSchema,
+  value: z.string().max(5000),
+});
 
 export const signerConsentRequestSchema = z.object({
   disclosureVersion: z.string().trim().min(1).max(40),

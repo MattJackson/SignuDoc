@@ -8,9 +8,12 @@ import type { FieldRecord } from "../schemas/field.ts";
 import type { SignerRecord } from "../schemas/signer.ts";
 import {
   describeAuditActor,
+  findTypedValueTooLongForField,
   renderEnvelopeCertificatePdf,
   renderFinalizedEnvelopePdf,
+  wrapFieldText,
 } from "./pdf-finalize.ts";
+import { embedTextFaces } from "./pdf-fonts.ts";
 import { sha256Hex } from "./pdf-seal.ts";
 import type { StorageService } from "./storage.ts";
 
@@ -672,4 +675,333 @@ test("describeAuditActor keeps the signer's name on the signer's own rows", () =
     }),
     "system",
   );
+});
+
+// A Text field in the place and size from issue #90: right of centre on a
+// US Letter page, 19% of the page wide and 6% high.
+const NARROW_FIELD = { height: 0.06, page: 1, width: 0.19, x: 0.69, y: 0.32 };
+const LETTER_PAGE = { heightPt: 792, pageNumber: 1, widthPt: 612 };
+
+async function extractTextItems(pdfBytes: Uint8Array) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const document = await pdfjs.getDocument({
+    data: new Uint8Array(pdfBytes),
+    useSystemFonts: false,
+    verbosity: 0,
+  }).promise;
+  const page = await document.getPage(1);
+  const content = await page.getTextContent();
+  const items = (
+    content.items as Array<{
+      str?: string;
+      transform?: number[];
+      width?: number;
+    }>
+  )
+    .filter((item) => item.str && item.transform)
+    .map((item) => ({
+      left: item.transform![4]!,
+      right: item.transform![4]! + (item.width ?? 0),
+      text: item.str!,
+      y: item.transform![5]!,
+    }));
+
+  await document.destroy();
+
+  return items;
+}
+
+async function renderOneTextField(value: string) {
+  const fixture = await makeFixture();
+  const field: FieldRecord = {
+    ...NARROW_FIELD,
+    createdAt: 1_800_000_000,
+    envelopeId: fixture.envelope.id,
+    id: "long-text",
+    required: true,
+    signerId: "signer-1",
+    submittedAt: 1_800_000_000,
+    type: "text",
+    updatedAt: 1_800_000_000,
+    value,
+  };
+
+  return renderFinalizedEnvelopePdf(
+    {
+      auditEvents: fixture.auditEvents,
+      completedAt: fixture.envelope.completedAt!,
+      envelope: fixture.envelope,
+      fields: [field],
+      pages: [LETTER_PAGE],
+      signers: fixture.signers,
+      sourcePdfKey: fixture.envelope.sourcePdfKey,
+    },
+    { seal: saveUnsealed, storageService: fixture.storageService },
+  );
+}
+
+const LONG_ANSWER = [
+  "BEGIN",
+  "The tenant agrees to keep the garden tidy, to water the plants",
+  "twice a week in summer, and to tell the landlord about any leak",
+  "within two days of finding it.",
+  "FINISH-MARKER",
+].join(" ");
+
+test("a long text answer wraps inside its box and is kept whole", async () => {
+  const items = await extractTextItems(await renderOneTextField(LONG_ANSWER));
+  const fieldLeft = NARROW_FIELD.x * 612;
+  const fieldRight = (NARROW_FIELD.x + NARROW_FIELD.width) * 612;
+  const fieldTop = 792 - NARROW_FIELD.y * 792;
+  const fieldBottom = fieldTop - NARROW_FIELD.height * 792;
+  const joined = items
+    .map((item) => item.text)
+    .join(" ")
+    .replace(/\s+/g, " ");
+
+  assert.ok(joined.includes("BEGIN"));
+  assert.ok(joined.includes("FINISH-MARKER"));
+  assert.ok(new Set(items.map((item) => Math.round(item.y))).size > 1);
+
+  for (const item of items) {
+    assert.ok(item.left >= fieldLeft, `${item.text} starts left of its box`);
+    assert.ok(item.right <= fieldRight + 0.5, `${item.text} runs past its box`);
+    assert.ok(item.y >= fieldBottom && item.y <= fieldTop);
+  }
+});
+
+test("a short text answer is still drawn on one line", async () => {
+  const items = await extractTextItems(await renderOneTextField("Approved"));
+
+  assert.deepEqual(
+    items.map((item) => item.text),
+    ["Approved"],
+  );
+});
+
+const ISSUE_90_ANSWER = `BEGIN ${"W".repeat(240)} FINISH-MARKER`;
+
+test("an answer already accepted that is too long is drawn whole, not cut off", async () => {
+  const items = await extractTextItems(
+    await renderOneTextField(ISSUE_90_ANSWER),
+  );
+  const joined = items.map((item) => item.text).join("");
+
+  assert.ok(joined.includes("FINISH-MARKER"));
+  assert.equal(joined.replace(/[^W]/g, "").length, 240);
+
+  for (const item of items) {
+    assert.ok(item.right <= 612, `${item.text} runs off the page`);
+  }
+});
+
+test("signing is told when an answer cannot fit its box at a readable size", async () => {
+  const field = { ...NARROW_FIELD };
+
+  assert.equal(
+    await findTypedValueTooLongForField(
+      [{ field, value: LONG_ANSWER }],
+      [LETTER_PAGE],
+    ),
+    null,
+  );
+
+  const tooLong = await findTypedValueTooLongForField(
+    [
+      { field, value: "Approved" },
+      { field, value: ISSUE_90_ANSWER },
+    ],
+    [LETTER_PAGE],
+  );
+
+  assert.ok(tooLong);
+  assert.equal(tooLong.page, 1);
+  assert.ok(tooLong.maxCharacters > 0);
+  assert.ok(tooLong.maxCharacters < ISSUE_90_ANSWER.length);
+
+  // The length it names does fit.
+  assert.equal(
+    await findTypedValueTooLongForField(
+      [
+        {
+          field,
+          value: Array.from(ISSUE_90_ANSWER)
+            .slice(0, tooLong.maxCharacters)
+            .join(""),
+        },
+      ],
+      [LETTER_PAGE],
+    ),
+    null,
+  );
+});
+
+test("a box shorter than two readable lines takes only one", async () => {
+  // 3.6 pt high: one line at the readable size, as before, but no second.
+  const field = { ...NARROW_FIELD, height: 0.0045 };
+
+  assert.equal(
+    await findTypedValueTooLongForField(
+      [{ field, value: "Approved" }],
+      [LETTER_PAGE],
+    ),
+    null,
+  );
+  assert.ok(
+    await findTypedValueTooLongForField(
+      [{ field, value: LONG_ANSWER }],
+      [LETTER_PAGE],
+    ),
+  );
+});
+
+test("spaces inside an answer are kept as they were typed", async () => {
+  const faces = await embedTextFaces(await PDFDocument.create(), [
+    "AB  12 and more words",
+  ]);
+
+  // pdf.js merges runs of spaces when it extracts text, so the lines are
+  // checked as they are laid out.
+  assert.deepEqual(wrapFieldText(faces.regular, 10, 500, "AB  12"), ["AB  12"]);
+  assert.deepEqual(
+    wrapFieldText(faces.regular, 10, 60, "AB  12 and more words"),
+    ["AB  12 and", "more words"],
+  );
+});
+
+// Audit rows print "time | event | actor". Returns the events in the order
+// the certificate lists them.
+function certificateEventOrder(text: string): string[] {
+  return [...text.matchAll(/UTC \| ([a-z_]+) \|/g)].map((match) => match[1]);
+}
+
+async function renderCertificateText(
+  envelope: EnvelopeRecord,
+  signers: SignerRecord[],
+  auditEvents: AuditEventRecord[],
+): Promise<string> {
+  return (
+    await extractText(
+      await renderEnvelopeCertificatePdf(
+        { auditEvents, envelope, signers },
+        { seal: saveUnsealed },
+      ),
+    )
+  ).replace(/\s+/g, " ");
+}
+
+test("the last signature is listed before completed in the same second (issue #97)", async () => {
+  const fixture = await makeFixture();
+  const now = fixture.envelope.completedAt ?? 0;
+  // The ids sort after any generated id, so a sort by time then id would
+  // put the completed row first.
+  const auditEvents: AuditEventRecord[] = [
+    {
+      actorEmail: "yamada@example.com",
+      actorType: "signer",
+      createdAt: now,
+      envelopeId: fixture.envelope.id,
+      event: "signed",
+      id: "zz-event-signed",
+      metadata: { signerId: "signer-2", signerName: SECOND_SIGNER_NAME },
+    },
+  ];
+  const text = await renderCertificateText(
+    fixture.envelope,
+    fixture.signers,
+    auditEvents,
+  );
+
+  assert.deepEqual(certificateEventOrder(text), ["signed", "completed"], text);
+});
+
+test("a recorded completed row keeps its place in the recorded order (issue #97)", async () => {
+  const fixture = await makeFixture();
+  const now = fixture.envelope.completedAt ?? 0;
+  const auditEvents: AuditEventRecord[] = [
+    {
+      actorEmail: "yamada@example.com",
+      actorType: "signer",
+      createdAt: now,
+      envelopeId: fixture.envelope.id,
+      event: "signed",
+      id: "zz-event-signed",
+      metadata: { signerId: "signer-2", signerName: SECOND_SIGNER_NAME },
+    },
+    {
+      actorType: "system",
+      createdAt: now,
+      envelopeId: fixture.envelope.id,
+      event: "completed",
+      id: "aa-event-completed",
+      metadata: null,
+    },
+    {
+      actorType: "system",
+      createdAt: now,
+      envelopeId: fixture.envelope.id,
+      event: "email_sent",
+      id: "00-event-email",
+      metadata: null,
+    },
+  ];
+  const text = await renderCertificateText(
+    fixture.envelope,
+    fixture.signers,
+    auditEvents,
+  );
+
+  assert.deepEqual(
+    certificateEventOrder(text),
+    ["signed", "completed", "email_sent"],
+    text,
+  );
+});
+
+test("declined and voided certificates keep same-second events in recorded order (issue #97)", async () => {
+  const fixture = await makeFixture();
+  const at = 1_799_999_000;
+  const sameSecond = (
+    event: AuditEventRecord["event"],
+    id: string,
+  ): AuditEventRecord => ({
+    actorType: "system",
+    createdAt: at,
+    envelopeId: fixture.envelope.id,
+    event,
+    id,
+    metadata: null,
+  });
+
+  for (const [status, terminalEvent] of [
+    ["declined", "declined"],
+    ["voided", "voided"],
+  ] as const) {
+    const envelope: EnvelopeRecord = {
+      ...fixture.envelope,
+      completedAt: null,
+      declinedAt: status === "declined" ? at : null,
+      status,
+      voidedAt: status === "voided" ? at : null,
+    };
+    // Recorded order: sent, signed, the next invitation, then the end. The
+    // ids are in reverse, so a sort by id would turn them around.
+    const auditEvents = [
+      sameSecond("sent", "d-sent"),
+      sameSecond("signed", "c-signed"),
+      sameSecond("email_sent", "b-email"),
+      sameSecond(terminalEvent, "a-end"),
+    ];
+    const text = await renderCertificateText(
+      envelope,
+      fixture.signers,
+      auditEvents,
+    );
+
+    assert.deepEqual(
+      certificateEventOrder(text),
+      ["sent", "signed", "email_sent", terminalEvent],
+      text,
+    );
+  }
 });

@@ -140,6 +140,17 @@ test("public. is dropped from table names, nowhere else", () => {
   );
 });
 
+test("to_regclass tells whether a table exists", () => {
+  const exists = (name: string) =>
+    database
+      .prepare(sqlite(`SELECT to_regclass('${name}') IS NOT NULL AS present`))
+      .get() as { present: number };
+
+  assert.equal(exists("envelopes").present, 1);
+  assert.equal(exists("public.envelopes").present, 1);
+  assert.equal(exists("no_such_table").present, 0);
+});
+
 test("casts keep their Postgres meaning", () => {
   assert.equal(
     sqlite("SELECT count(*)::int AS n FROM envelopes"),

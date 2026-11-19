@@ -11,8 +11,9 @@ import { type DbExecutor, getDb, queryOne } from "./db/connection.ts";
 //   finished, its signed PDF and certificate.
 // * An administrator sees every envelope that has been sent, the same way.
 //
-// A draft is the sender's alone, whoever is asking. An administrator
-// deleting a finished envelope (envelope-deletion.ts) deletes only their own.
+// A draft is the sender's alone, whoever is asking. An administrator may
+// also ask for any finished envelope to be deleted (envelope-deletion.ts);
+// a teammate may not.
 
 export const envelopeScopes = ["mine", "team", "all"] as const;
 
@@ -118,4 +119,84 @@ export async function getEnvelopeAccess(
   return row
     ? { canManage: row.ownerId === viewerId, ownerId: row.ownerId }
     : null;
+}
+
+// Whose envelope a signed-in account is looking at, as its sender or as an
+// administrator: the routes that read, download and delete an envelope ask
+// this first and then act as its sender, so an administrator's copy of
+// someone else's file can be put on record. A teammate is not covered
+// here; the reads themselves let them in (readableEnvelopeCondition).
+
+export type EnvelopeViewerAccess = {
+  ownerEmail: string;
+  ownerName: string | null;
+  ownerUserId: string;
+  /** False when an administrator is looking at someone else's envelope. */
+  viewerIsOwner: boolean;
+};
+
+type AccessRow = {
+  ownerEmail: string;
+  ownerName: string | null;
+  ownerUserId: string;
+  status: string;
+  viewerRole: string | null;
+};
+
+/**
+ * The envelope's sender, when `viewerUserId` may see it: as its sender, or
+ * as an administrator. Null when the envelope does not exist or is not
+ * theirs to see, which callers report as "not found".
+ */
+export async function resolveEnvelopeViewerAccess(
+  viewerUserId: string,
+  envelopeId: string,
+  database: DbExecutor = getDb(),
+): Promise<EnvelopeViewerAccess | null> {
+  const row = await queryOne<AccessRow>(
+    database,
+    `
+      SELECT
+        e.user_id AS "ownerUserId",
+        owner.email AS "ownerEmail",
+        owner.name AS "ownerName",
+        e.status,
+        (SELECT role FROM public."user" WHERE id = $2) AS "viewerRole"
+      FROM envelopes e
+      JOIN public."user" owner ON owner.id = e.user_id
+      WHERE e.id = $1
+    `,
+    [envelopeId, viewerUserId],
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  const viewerIsOwner = row.ownerUserId === viewerUserId;
+
+  // Someone else's envelope only for an administrator, and never their
+  // draft.
+  if (
+    !viewerIsOwner &&
+    (row.viewerRole !== "admin" || row.status === "draft")
+  ) {
+    return null;
+  }
+
+  return {
+    ownerEmail: row.ownerEmail,
+    ownerName: row.ownerName,
+    ownerUserId: row.ownerUserId,
+    viewerIsOwner,
+  };
+}
+
+/** How an administrator sees who sent an envelope. */
+export function formatEnvelopeOwner(
+  access: Pick<EnvelopeViewerAccess, "ownerEmail" | "ownerName">,
+): string {
+  const name = access.ownerName?.trim();
+
+  return name ? `${name} (${access.ownerEmail})` : access.ownerEmail;
 }

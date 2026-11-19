@@ -28,6 +28,9 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   drive_export_retried: "Drive export tried again",
   email_domain_changed: "Email domain changed",
   envelope_deleted: "Finished envelope deleted",
+  envelope_deletion_cancelled: "Envelope deletion cancelled",
+  envelope_deletion_scheduled: "Envelope deletion scheduled",
+  envelope_file_downloaded: "Another member's file downloaded",
   google_drive_connected: "Google Drive connected",
   google_drive_disconnected: "Google Drive disconnected",
   identity_verification_revoked: "Identity confirmation taken back",
@@ -179,6 +182,34 @@ function describeEvent(event: SystemAuditEvent): string {
         typeof metadata.title === "string" ? `"${metadata.title}"` : null,
         typeof metadata.status === "string" ? metadata.status : null,
         typeof metadata.reason === "string" ? metadata.reason : null,
+        typeof metadata.ownerEmail === "string"
+          ? `sent by ${metadata.ownerEmail}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    case "envelope_deletion_scheduled":
+    case "envelope_deletion_cancelled":
+      return [
+        typeof metadata.title === "string" ? `"${metadata.title}"` : null,
+        typeof metadata.deleteAfter === "number"
+          ? `${event.event === "envelope_deletion_scheduled" ? "to be deleted" : "was due"} on ${new Date(metadata.deleteAfter * 1000).toISOString().slice(0, 10)}`
+          : null,
+        typeof metadata.reason === "string" ? metadata.reason : null,
+        typeof metadata.ownerEmail === "string"
+          ? `sent by ${metadata.ownerEmail}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    case "envelope_file_downloaded":
+      return [
+        typeof metadata.file === "string"
+          ? (downloadedFileLabels[metadata.file] ?? metadata.file)
+          : null,
+        typeof metadata.ownerEmail === "string"
+          ? `sent by ${metadata.ownerEmail}`
+          : null,
       ]
         .filter(Boolean)
         .join(", ");
@@ -192,6 +223,12 @@ function describeEvent(event: SystemAuditEvent): string {
       return target ?? "";
   }
 }
+
+const downloadedFileLabels: Record<string, string> = {
+  audit_trail: "audit trail",
+  evidence: "certificate",
+  signed: "signed PDF",
+};
 
 function describeMinutes(minutes: number): string {
   return minutes < 60

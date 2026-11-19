@@ -3,25 +3,73 @@ import { isAdminUser } from "@/lib/auth/admin";
 import { getAuthSession } from "@/lib/auth/server";
 import { getDb } from "@/lib/db/connection";
 import { type EnvelopeScope, parseEnvelopeScope } from "@/lib/envelope-access";
-import { listEnvelopesForUser } from "@/lib/envelopes";
+import {
+  listEnvelopesForUser,
+  type DashboardEnvelopePage,
+} from "@/lib/envelopes";
 import { listTeamsForUser } from "@/lib/teams";
 
+/** Envelopes on one page of the dashboard. */
+const DASHBOARD_PAGE_SIZE = 48;
+
 type DashboardPageProps = {
-  searchParams?: Promise<{ scope?: string | string[] }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
+
+function firstValue(value: string | string[] | undefined): string {
+  return (Array.isArray(value) ? value[0] : value) ?? "";
+}
+
+function buildDashboardHref({
+  page,
+  search,
+  view,
+}: {
+  page: number;
+  search: string;
+  view: EnvelopeScope;
+}): string {
+  const params = new URLSearchParams();
+
+  if (view !== "mine") {
+    params.set("view", view);
+  }
+
+  if (search) {
+    params.set("q", search);
+  }
+
+  if (page > 1) {
+    params.set("page", String(page));
+  }
+
+  const query = params.toString();
+
+  return query ? `/dashboard?${query}` : "/dashboard";
+}
 
 export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps) {
   const session = await getAuthSession();
   const database = getDb();
-  const requestedScope = parseEnvelopeScope((await searchParams)?.scope);
-  let envelopes: Awaited<ReturnType<typeof listEnvelopesForUser>> | undefined;
+  const params = await searchParams;
+  // "scope" is what earlier links called it.
+  const requestedView = parseEnvelopeScope(
+    firstValue(params.view) || firstValue(params.scope),
+  );
+  const search = firstValue(params.q).trim().slice(0, 160);
+  const requestedPage = Number.parseInt(firstValue(params.page), 10);
+  const page =
+    Number.isSafeInteger(requestedPage) && requestedPage > 1
+      ? requestedPage
+      : 1;
+  let result: DashboardEnvelopePage | undefined;
   let initialState: "default" | "empty" | "error" = "error";
   // Whose envelopes can be shown: one's own, a team's when one is on a
   // team, and every sent one for an administrator.
-  let scopes: EnvelopeScope[] = ["mine"];
-  let scope: EnvelopeScope = "mine";
+  let views: EnvelopeScope[] = ["mine"];
+  let view: EnvelopeScope = "mine";
 
   try {
     if (session) {
@@ -30,29 +78,50 @@ export default async function DashboardPage({
         listTeamsForUser(session.user.id, database),
       ]);
 
-      scopes = [
+      views = [
         "mine",
         ...(teams.length > 0 ? (["team"] as const) : []),
         ...(isAdmin ? (["all"] as const) : []),
       ];
-      scope = scopes.includes(requestedScope) ? requestedScope : "mine";
+      view = views.includes(requestedView) ? requestedView : "mine";
     }
 
-    envelopes = session
-      ? await listEnvelopesForUser(session.user.id, { scope }, database)
-      : [];
+    const filters = {
+      limit: DASHBOARD_PAGE_SIZE,
+      page,
+      scope: view,
+      ...(search ? { search } : {}),
+    };
+
+    result = !session
+      ? { envelopes: [], hasMore: false }
+      : await listEnvelopesForUser(session.user.id, filters, database);
+    // Nothing at all yet, as opposed to nothing that matches or nothing
+    // on this page. A team's list is never "empty": one's own may not be.
     initialState =
-      envelopes.length === 0 && scope === "mine" ? "empty" : "default";
+      result.envelopes.length === 0 && !search && page === 1 && view !== "team"
+        ? "empty"
+        : "default";
   } catch {
     initialState = "error";
   }
 
   return (
     <DashboardShell
-      envelopes={envelopes}
+      envelopes={result?.envelopes}
+      initialSearch={search}
       initialState={initialState}
-      scope={scope}
-      scopes={scopes}
+      pagination={{
+        newerHref:
+          page > 1
+            ? buildDashboardHref({ page: page - 1, search, view })
+            : undefined,
+        olderHref: result?.hasMore
+          ? buildDashboardHref({ page: page + 1, search, view })
+          : undefined,
+      }}
+      view={view}
+      views={views}
     />
   );
 }

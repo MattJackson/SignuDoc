@@ -16,14 +16,14 @@ release says when it does.
   relied on that, move the files or set `STORAGE_LOCAL_DIR` to the folder in
   use; the server logs a warning once while the variable is empty.
 
-## [0.5.0] - Unreleased
+## [0.6.0] - Unreleased
 
 The first release of this fork, [MattJackson/SignuDoc](https://github.com/MattJackson/SignuDoc):
 SignuDoc for organizations on Google Workspace and Google Cloud, which still
-deploys to Vercel as before. It is built on SignuDoc 0.4.0 from
+deploys to Vercel as before. It is built on SignuDoc 0.5.0 from
 [NYLLON-SOFTWARE/SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc),
-with every later change on its main branch up to 2026-11-17. The fork's own
-version numbers start at 0.5.0; Settings shows the upstream version a build
+with every later change on its main branch up to 2026-11-18. The fork's own
+version numbers start at 0.6.0; Settings shows the upstream version a build
 is based on (docs/development.md, "Maintaining the fork").
 
 ### Google Workspace and Google Cloud
@@ -65,6 +65,63 @@ is based on (docs/development.md, "Maintaining the fork").
 
 - A fake Google server for tests: sign-in, the Admin SDK directory and
   Drive. The end-to-end test signs in with Google against it.
+
+## [0.5.0] - 2026-11-18
+
+Administrators can now see every member's envelopes and delete finished ones
+after a 14-day notice, plus six outside bug fixes and a security update. This
+release changes the database: see the end of this entry.
+
+### Administrators
+
+- An "Everyone's" view on the dashboard lists every member's sent and
+  finished envelopes, with the sender on each card. Administrators can open
+  them and download their files, and a download of another member's file is
+  recorded in the site audit trail. Drafts stay private to their sender.
+- The dashboard is split into pages of 48, and its search box searches the
+  whole list on the server, including the sender's name and email in
+  "Everyone's".
+- "Delete envelope" on a completed, declined or voided envelope schedules it
+  for deletion 14 days later. The sender gets an email naming who asked, and
+  any administrator can cancel within the 14 days, in which case the sender
+  is told it will not be deleted. Nothing is deleted before the sender has
+  been emailed. In Part 11 mode a reason is required. The request, a
+  cancellation and the deletion itself are all in the site audit trail, with
+  the record's hashes kept after the files are gone.
+- A deleted envelope's files are queued and retried by the daily job until
+  they are gone, so a storage hiccup cannot leave orphaned files behind.
+- The retention sweep does not delete an envelope with a deletion scheduled,
+  so the retention period cannot cut the 14-day notice short.
+
+### Fixes
+
+- Fields placed on rotated pages (typical of landscape scans), and on pages
+  whose crop box differs from the page size, are stamped where they were
+  placed in the signed PDF instead of shifted or sideways. This includes
+  envelopes uploaded before this release (#69, PR #116).
+- A void or decline that races another void, decline or the last signature
+  no longer deletes the winner's certificate (#68).
+- After switching signature tabs, the Draw tab shows the drawing that will
+  be applied, instead of an empty canvas (#70).
+- A client that sends an empty User-Agent header can sign, verify, consent
+  and decline, instead of getting an error (#71).
+- Exporting the audit trail of an envelope whose title has a dash, curly
+  quote or non-Latin characters works, instead of failing with a server
+  error (#72).
+- An envelope's timeline lists events in the order they were recorded, so
+  "completed" no longer shows before "signed" (#73).
+
+### Security
+
+- node-forge updated to 1.4.3, which fixes four moderate advisories (#80).
+
+Thanks to @njarrar for the six fixes, and to @jasonhaggart for the node-forge
+update.
+
+This release changes the database (`20261118100000_pending_file_deletions.sql`,
+`20261118110000_scheduled_envelope_deletions.sql`). On Vercel the production
+build applies them. On other hosts, run `npm run db:migrate` as on every
+deploy.
 
 ## [0.4.0] - 2026-11-17
 
@@ -305,6 +362,7 @@ checked against the real services:
 
 SignuDoc is software, not legal advice. See the README's legal disclaimer.
 
+[0.5.0]: https://github.com/NYLLON-SOFTWARE/SignuDoc/releases/tag/v0.5.0
 [0.4.0]: https://github.com/NYLLON-SOFTWARE/SignuDoc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/NYLLON-SOFTWARE/SignuDoc/releases/tag/v0.3.0
 [0.2.1]: https://github.com/NYLLON-SOFTWARE/SignuDoc/releases/tag/v0.2.1

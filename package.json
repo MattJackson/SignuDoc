@@ -1,6 +1,6 @@
 {
   "name": "signudoc",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "MIT",
   "private": true,
   "repository": {
@@ -9,7 +9,7 @@
   },
   "upstream": {
     "repository": "NYLLON-SOFTWARE/SignuDoc",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "engines": {
     "node": "24.x"

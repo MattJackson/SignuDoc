@@ -342,6 +342,26 @@ function notConnected(): ServiceConfigurationError {
   return new ServiceConfigurationError("email", EMAIL_ENV_KEYS);
 }
 
+/**
+ * An email service that is only built when a message is first sent. A flow
+ * that sends email as a side effect after saving its own work (a signer
+ * finishing or declining) uses it, so a missing provider key fails the
+ * send, which that flow already logs and survives, instead of the whole
+ * request (issue #96).
+ */
+export function createLazyEmailService(
+  create: () => EmailService = () => createEmailService(),
+): EmailService {
+  let service: EmailService | undefined;
+  const resolve = () => (service ??= create());
+
+  return {
+    send: async (message, options) => resolve().send(message, options),
+    sendBatch: async (messages, options) =>
+      resolve().sendBatch(messages, options),
+  };
+}
+
 export function createEmailService({
   env = process.env,
   resolveAddresses = () => resolveEmailAddresses(env),

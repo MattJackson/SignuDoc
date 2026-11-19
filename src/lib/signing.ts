@@ -31,6 +31,7 @@ import {
   approvalSubmissionSchema,
   signerCheckRequestSchema,
   signerConsentRequestSchema,
+  signingFieldFitRequestSchema,
   signingPayloadSchema,
   signingDeclineResponseSchema,
   type SigningVerificationState,
@@ -59,6 +60,7 @@ import {
 } from "./services/audit.ts";
 import {
   createEmailService,
+  createLazyEmailService,
   fitsAsAttachments,
   type EmailAttachment,
   type EmailService,
@@ -67,6 +69,7 @@ import { withUserEmailLegalFooter } from "./services/email-legal-footer.ts";
 import { hashOpaqueToken } from "./services/opaque-tokens.ts";
 import {
   finalizeEnvelope,
+  findTypedValueTooLongForField,
   loadInstallSealer,
   storeEnvelopeCertificatePdf,
   storeRecipientEnvelopeCertificatePdf,
@@ -347,6 +350,10 @@ function getSigningConsentUrl(token: string): string {
 
 function getSigningApproveUrl(token: string): string {
   return `/api/signing/${encodeURIComponent(token)}/approve`;
+}
+
+function getSigningFieldFitUrl(token: string): string {
+  return `/api/signing/${encodeURIComponent(token)}/fit`;
 }
 
 function getSigningDeclineUrl(token: string): string {
@@ -1835,6 +1842,47 @@ export async function verifySignerCheck(
 }
 
 /** Records that the signer agreed to use electronic records and signatures. */
+/**
+ * Whether what the signer has typed so far fits the field's box on the
+ * finished document, checked as they type, so they learn before they finish.
+ * The same check signing makes, with the same fonts.
+ */
+export async function checkSigningFieldFit(
+  token: string,
+  input: unknown,
+  {
+    database = getDb(),
+    verifiedMethods = [],
+  }: Pick<SubmitSigningOptions, "database" | "verifiedMethods"> = {},
+): Promise<{ fits: true } | { fits: false; maxCharacters: number }> {
+  const parsed = signingFieldFitRequestSchema.parse(input);
+  const context = await resolveSigningContext(token, { database });
+
+  await assertSignerChecksPassed(context, verifiedMethods, database);
+
+  const field = context.fields.find(
+    (entry) =>
+      entry.id === parsed.fieldId &&
+      entry.signerId === context.signer.id &&
+      (entry.type === "text" ||
+        entry.type === "number" ||
+        entry.type === "dropdown"),
+  );
+
+  if (!field) {
+    throw new SigningMutationError("That field is not yours to fill in.", 404);
+  }
+
+  const tooLong = await findTypedValueTooLongForField(
+    [{ field, value: parsed.value }],
+    context.pages,
+  );
+
+  return tooLong
+    ? { fits: false, maxCharacters: tooLong.maxCharacters }
+    : { fits: true };
+}
+
 export async function recordSignerConsent(
   token: string,
   input: unknown,
@@ -2104,6 +2152,7 @@ export async function getSigningPayloadForToken(
 
   return signingPayloadSchema.parse({
     consentUrl: getSigningConsentUrl(token),
+    fieldFitUrl: getSigningFieldFitUrl(token),
     consentedAt: checkState.consentedAt,
     currentSignerFields,
     disclosure: {
@@ -2347,6 +2396,35 @@ async function assertStillSignersTurn(
 }
 
 type SigningContext = Awaited<ReturnType<typeof resolveSigningContext>>;
+
+/**
+ * Refuses an answer too long to be read in its box on the finished document,
+ * before anything is saved, so the signer can shorten it. Without this the
+ * value would be drawn so small that no one could read it.
+ */
+async function assertTypedValuesFitTheirFields(
+  context: SigningContext,
+  fieldUpdates: ReadonlyMap<string, FieldPersistenceUpdate>,
+) {
+  const entries = context.fields.flatMap((field) => {
+    const value = field.id ? fieldUpdates.get(field.id)?.value : null;
+
+    return (field.type === "text" ||
+      field.type === "number" ||
+      field.type === "dropdown") &&
+      value
+      ? [{ field, value }]
+      : [];
+  });
+  const tooLong = await findTypedValueTooLongForField(entries, context.pages);
+
+  if (tooLong) {
+    throw new SigningMutationError(
+      `An answer on page ${tooLong.page} is too long to fit in its box on the document. Shorten it to ${tooLong.maxCharacters} characters or fewer, or ask the sender for a bigger box.`,
+      400,
+    );
+  }
+}
 
 /**
  * What the signer's submission changes: each of their fields' new value,
@@ -2727,7 +2805,7 @@ async function submitSigningOnce(
     );
   }
 
-  const emailService = givenEmailService ?? createEmailService();
+  const emailService = givenEmailService ?? createLazyEmailService();
   const part11Signature = await reauthenticatePart11Signer(
     context,
     signerChecks.state,
@@ -2748,6 +2826,8 @@ async function submitSigningOnce(
     drawnSignatureUploads,
     fieldUpdates,
   } = buildSignerSubmission(context, parsedInput, submittedAt);
+
+  await assertTypedValuesFitTheirFields(context, fieldUpdates);
   const presentedTokenHash = hashOpaqueToken(token);
 
   let signingStatePersisted = false;
@@ -3430,6 +3510,8 @@ export async function prepareSignerSubmission(
   const { currentSignerId, drawnSignatureUploads, fieldUpdates } =
     buildSignerSubmission(context, parsedInput, submittedAt);
 
+  await assertTypedValuesFitTheirFields(context, fieldUpdates);
+
   return {
     context,
     images: new Map(
@@ -3474,7 +3556,7 @@ async function declineSigningOnce(
     verifiedMethods,
     database,
   );
-  const emailService = createEmailService();
+  const emailService = createLazyEmailService();
   const storageService = createStorageService();
   const currentSignerId = context.signer.id;
   const presentedTokenHash = hashOpaqueToken(token);

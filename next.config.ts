@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 
 import type { NextConfig } from "next";
 
+import { MAX_REQUEST_BODY_BYTES } from "./src/lib/types/domain.ts";
+
 // The version this deployment runs, compared with the latest release by
 // "Check for updates" in Settings (src/lib/software-update.ts), the
 // repository releases come from, and the release of the original project
@@ -33,14 +35,15 @@ const nextConfig: NextConfig = {
       process.env.VERCEL === "1" && process.env.BOTID === "1" ? "1" : "",
   },
   experimental: {
-    // With a proxy (src/proxy.ts), Next.js keeps a copy of each request body
-    // and hands the route only the first 10 MB of it by default, without an
-    // error. Uploads that go through the app (local disk, Google Cloud
-    // Storage) can be the 20 MB upload limit plus the form around it, so
-    // the copy may be larger. Cloud Run takes requests of up to 32 MB;
-    // Vercel stops a request at 4.5 MB before it gets here, which is why it
-    // uploads straight to Blob instead.
-    proxyClientMaxBodySize: "25mb",
+    // Every request passes through the Proxy (src/proxy.ts), and Next.js
+    // keeps only the first 10 MB of a body that does. With local disk or
+    // Google Cloud Storage the PDF is sent in the request itself, so the
+    // limit has to fit a PDF at the 20 MB upload limit and the rest of the
+    // form. Cloud Run takes requests of up to 32 MB; Vercel stops a request
+    // at 4.5 MB before it gets here, which is why it uploads straight to
+    // Blob instead.
+    // https://nextjs.org/docs/app/api-reference/config/next-config-js/proxyClientMaxBodySize
+    proxyClientMaxBodySize: MAX_REQUEST_BODY_BYTES,
   },
   images: {
     unoptimized: true,

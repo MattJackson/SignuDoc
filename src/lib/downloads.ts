@@ -10,6 +10,7 @@ import {
   envelopeRecordSchema,
   type EnvelopeRecord,
 } from "./schemas/envelope.ts";
+import { truncateToWholeCharacters } from "./text-truncate.ts";
 import { fieldRecordSchema, type FieldRecord } from "./schemas/field.ts";
 import { getEnvelopeAccess } from "./envelope-access.ts";
 import { signerRecordSchema, type SignerRecord } from "./schemas/signer.ts";
@@ -515,13 +516,19 @@ async function listPageSizesForEnvelope(
   );
 }
 
+const MAX_FILE_NAME_SEGMENT_LENGTH = 120;
+
 export function sanitizeFileNameSegment(value: string): string {
-  return value
+  const cleaned = value
+    .toWellFormed()
     .trim()
     .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, " ")
     .replace(/\s+/g, " ")
-    .replace(/\.+$/g, "")
-    .slice(0, 120);
+    .replace(/\.+$/g, "");
+
+  return truncateToWholeCharacters(cleaned, MAX_FILE_NAME_SEGMENT_LENGTH)
+    .trimEnd()
+    .replace(/\.+$/g, "");
 }
 
 function buildDownloadFileName(

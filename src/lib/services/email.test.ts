@@ -5,7 +5,11 @@ import type { Pool } from "pg";
 import type { Resend } from "resend";
 
 import { replaceDbPoolForTests } from "../db/connection.ts";
-import { createEmailService } from "./email.ts";
+import {
+  createEmailService,
+  createLazyEmailService,
+  type EmailService,
+} from "./email.ts";
 import { ServiceConfigurationError } from "./service-config.ts";
 
 // What the Resend client is asked to do when the service turns a request
@@ -215,4 +219,31 @@ test("a saved key is looked for again after a startup read that failed", async (
 
     globalThis.__signudocIntegrationSettings = undefined;
   }
+});
+
+test("a lazy email service is only built when it first sends, and only once", async () => {
+  let built = 0;
+  const service = createLazyEmailService(() => {
+    built += 1;
+
+    return {
+      async send(message) {
+        return { accepted: [message.to], messageId: "m-1", rejected: [] };
+      },
+      async sendBatch() {
+        return [];
+      },
+    } satisfies EmailService;
+  });
+
+  assert.equal(built, 0);
+  await service.send(MESSAGE);
+  await service.sendBatch([MESSAGE]);
+  assert.equal(built, 1);
+});
+
+test("a lazy email service with no provider fails the send, not its creation (issue #96)", async () => {
+  const service = createLazyEmailService(() => createEmailService({ env: {} }));
+
+  await assert.rejects(service.send(MESSAGE), /RESEND_API_KEY/);
 });

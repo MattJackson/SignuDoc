@@ -57,6 +57,9 @@ export const systemAuditEventTypes = [
   "directory_sign_in_blocked",
   "directory_sign_in_restored",
   "envelopes_handed_over",
+  "envelope_file_downloaded",
+  "envelope_deletion_scheduled",
+  "envelope_deletion_cancelled",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];

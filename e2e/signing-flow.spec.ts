@@ -4,7 +4,7 @@ import { e2eDatabaseUrl, e2eSetupToken } from "../playwright.config";
 import { openE2eClient } from "./support/database";
 import { extractLink, extractLinks, waitForEmail } from "./support/outbox";
 import { totpCode } from "./support/totp";
-import { writeSamplePdf } from "./support/sample-pdf";
+import { writeLargePdf, writeSamplePdf } from "./support/sample-pdf";
 
 const PASSWORD = "correct horse battery staple 42";
 // The ampersand is on purpose: the name goes into HTML emails and page titles.
@@ -1385,33 +1385,207 @@ test("a signer who declines is told the decline was recorded, not that the link 
     ).toBeVisible();
   });
 
-  await test.step("the administrator deletes the declined envelope for good", async () => {
-    await page.getByRole("button", { name: "Delete envelope" }).click();
+  await test.step("an administrator sees another member's envelope and schedules its deletion", async () => {
+    // The envelope becomes a plain member's, as if they had sent it.
+    const memberId = `member-${runId}`;
+    const memberEmail = `member+${runId}@example.com`;
+    const db = openE2eClient(e2eDatabaseUrl);
 
-    const confirm = page.getByRole("dialog", {
-      name: "Delete this envelope?",
-    });
+    await db.connect();
 
-    await confirm.getByLabel("Reason (optional)").fill("Never agreed.");
-    await confirm.getByRole("button", { name: "Delete envelope" }).click();
-    await expect(page).toHaveURL(/\/dashboard$/);
+    try {
+      await db.query(
+        `insert into public."user" (id, name, email, role, "emailVerified") values ($1, 'Mira Member', $2, 'user', true)`,
+        [memberId, memberEmail],
+      );
+      await db.query(`update envelopes set user_id = $1 where id = $2`, [
+        memberId,
+        envelopeId,
+      ]);
+    } finally {
+      await db.end();
+    }
 
-    await page.goto(`/envelopes/${envelopeId}`);
+    const senderLabel = `Mira Member (${memberEmail})`;
+
+    // Gone from the administrator's own list, there in everyone's.
+    await page.goto("/dashboard");
     await expect(
-      page.getByRole("heading", { name: "This envelope is unavailable" }),
+      page.getByRole("heading", { name: "Terms to decline" }),
+    ).toHaveCount(0);
+    await page.getByRole("link", { name: "Everyone's" }).click();
+    await expect(page).toHaveURL(/\/dashboard\?view=all$/);
+    await expect(
+      page.getByRole("heading", { level: 1, name: "All envelopes" }),
     ).toBeVisible();
 
-    // The deletion itself stays on record in the install's audit trail.
+    const card = page.getByRole("link").filter({ hasText: "Terms to decline" });
+
+    await expect(card).toContainText(senderLabel);
+
+    // Enter searches every envelope, the sender's address included.
+    const search = page.getByRole("searchbox", {
+      name: "Search by title or email...",
+    });
+
+    await search.fill(memberEmail);
+    await search.press("Enter");
+    await expect(page).toHaveURL(/\/dashboard\?view=all&q=/);
+    await expect(card).toBeVisible();
+    await card.click();
+    await expect(page).toHaveURL(new RegExp(`/envelopes/${envelopeId}$`));
+    await expect(page.getByText(`Sent by ${senderLabel}`)).toBeVisible();
+    // What changes the envelope stays with its sender.
+    await expect(
+      page.getByRole("button", { name: "Copy to new draft" }),
+    ).toHaveCount(0);
+
+    // A copy of someone else's certificate is on record.
+    const download = page.waitForEvent("download");
+
+    await page.getByRole("button", { name: "Download certificate" }).click();
+    expect((await download).suggestedFilename()).toMatch(/\.pdf$/);
+
+    // Nothing goes at once: the deletion is scheduled, and the sender is
+    // emailed a link to download it.
+    async function scheduleDeletion(reason: string) {
+      await page.getByRole("button", { name: "Delete envelope" }).click();
+
+      const confirm = page.getByRole("dialog", {
+        name: "Schedule this envelope for deletion?",
+      });
+
+      await confirm.getByLabel("Reason (optional)").fill(reason);
+      await confirm.getByRole("button", { name: "Schedule deletion" }).click();
+      await expect(page.getByText(/Scheduled to be deleted on/)).toBeVisible();
+      await expect(page.getByText(`Reason: ${reason}`)).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Delete envelope" }),
+      ).toHaveCount(0);
+    }
+
+    await scheduleDeletion("Changed my mind.");
+
+    const notice = await waitForEmail({
+      template: "deletion_notice",
+      to: memberEmail,
+    });
+
+    expect(notice.subject).toMatch(/^"Terms to decline" will be deleted on /);
+    expect(notice.text).toContain(`/envelopes/${envelopeId}`);
+
+    // Any administrator can cancel until then; the sender is told.
+    await page.getByRole("button", { name: "Cancel deletion" }).click();
+    await page
+      .getByRole("dialog", { name: "Cancel this deletion?" })
+      .getByRole("button", { name: "Cancel deletion" })
+      .click();
+    await expect(page.getByText(/Scheduled to be deleted on/)).toHaveCount(0);
+    await expect
+      .poll(async () => {
+        const latest = await waitForEmail({
+          template: "deletion_notice",
+          to: memberEmail,
+        });
+
+        return latest.subject;
+      })
+      .toBe('"Terms to decline" will not be deleted');
+
+    await scheduleDeletion("Never agreed.");
+
+    // The envelope itself stays until the wait is over.
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Terms to decline" }),
+    ).toBeVisible();
+
+    // The download, the request and its cancellation stay on record in the
+    // install's audit trail, with whose envelope it was.
     const audit = await page.request.get("/api/admin/audit");
     const { events } = (await audit.json()) as {
       events: { event: string; metadata: Record<string, unknown> | null }[];
     };
-    const deletion = events.find((event) => event.event === "envelope_deleted");
 
-    expect(deletion?.metadata).toMatchObject({
+    expect(
+      events.find((event) => event.event === "envelope_file_downloaded")
+        ?.metadata,
+    ).toMatchObject({
       envelopeId,
+      file: "evidence",
+      ownerEmail: memberEmail,
+    });
+    expect(
+      events.find((event) => event.event === "envelope_deletion_scheduled")
+        ?.metadata,
+    ).toMatchObject({
+      envelopeId,
+      ownerEmail: memberEmail,
       reason: "Never agreed.",
       status: "declined",
+    });
+    expect(
+      events.find((event) => event.event === "envelope_deletion_cancelled")
+        ?.metadata,
+    ).toMatchObject({ envelopeId, ownerEmail: memberEmail });
+  });
+});
+
+test("with local disk storage a PDF just under 20 MB uploads, and a larger request is refused", async ({
+  page,
+}, testInfo) => {
+  const database = openE2eClient(e2eDatabaseUrl);
+  let adminEmail = "";
+
+  await database.connect();
+
+  try {
+    const admin = await database.query<{ email: string }>(
+      `select email from public."user" where role = 'admin' limit 1`,
+    );
+
+    adminEmail = admin.rows[0]?.email ?? "";
+  } finally {
+    await database.end();
+  }
+
+  expect(adminEmail).not.toBe("");
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(adminEmail);
+  await page.getByLabel("Password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Log in" }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+
+  await test.step("a 19 MB PDF, over Next.js's 10 MB default, makes a draft", async () => {
+    const pdfPath = await writeLargePdf(
+      testInfo.outputPath("large.pdf"),
+      19 * 1024 * 1024,
+    );
+
+    await page.goto("/envelopes/new");
+    await page.getByLabel("Envelope title").fill("Large agreement");
+    await page.getByLabel("Upload PDF").setInputFiles(pdfPath);
+    await page.getByRole("button", { name: "Next ->" }).click();
+    await expect(page).toHaveURL(/\/envelopes\/[^/]+\/signers$/);
+  });
+
+  await test.step("a request over the limit gets the size message", async () => {
+    const response = await page.request.post("/api/envelopes", {
+      headers: { origin: new URL(page.url()).origin },
+      multipart: {
+        file: {
+          buffer: Buffer.alloc(22 * 1024 * 1024),
+          mimeType: "application/pdf",
+          name: "too-large.pdf",
+        },
+        title: "Too large",
+      },
+    });
+
+    expect(response.status()).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "This file exceeds the 20 MB limit.",
     });
   });
 });

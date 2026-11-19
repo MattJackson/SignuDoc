@@ -232,6 +232,22 @@ function getRadioGroup(
   );
 }
 
+function withoutKey(record: Record<string, number>, key: string) {
+  if (!(key in record)) {
+    return record;
+  }
+
+  const next = { ...record };
+
+  delete next[key];
+
+  return next;
+}
+
+function describeTooLongAnswer(maxCharacters: number) {
+  return `This answer is too long to fit in its box on the document. Shorten it to ${maxCharacters} characters or fewer.`;
+}
+
 /** A number field holding something that is not a number. */
 function hasInvalidNumber(
   field: SigningCurrentField,
@@ -541,6 +557,14 @@ export function SigningLiveShell({
     useState<SignatureModalState | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [textValues, setTextValues] = useState<Record<string, string>>({});
+  // Text answers too long for their box on the finished document, with how
+  // many characters would fit. Checked on the server as the signer types,
+  // with the fonts the document is drawn with.
+  const [tooLongAnswers, setTooLongAnswers] = useState<Record<string, number>>(
+    {},
+  );
+  const checkedAnswersRef = useRef<Record<string, string>>({});
+  const latestTextValuesRef = useRef(textValues);
   const [drawnSignatureVersion, setDrawnSignatureVersion] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(DEFAULT_DOCUMENT_ZOOM_LEVEL);
   const [localDateLabel] = useState(() =>
@@ -597,7 +621,16 @@ export function SigningLiveShell({
   const invalidNumberCount = record.currentSignerFields.filter((field) =>
     hasInvalidNumber(field, textValues),
   ).length;
-  const canFinish = remainingFields === 0 && invalidNumberCount === 0;
+  const tooLongFields = record.currentSignerFields.filter(
+    (field) => field.type === "text" && tooLongAnswers[field.id] !== undefined,
+  );
+  const canFinish =
+    remainingFields === 0 &&
+    invalidNumberCount === 0 &&
+    tooLongFields.length === 0;
+  const isInvalidEntry = (field: SigningCurrentField) =>
+    hasInvalidNumber(field, textValues) ||
+    (field.type === "text" && tooLongAnswers[field.id] !== undefined);
   const requiredFieldCount = countAnswerableFields(
     record.currentSignerFields,
     (field) => field.required,
@@ -609,6 +642,93 @@ export function SigningLiveShell({
           ((requiredFieldCount - remainingFields) / requiredFieldCount) * 100,
         );
   const isDocumentReady = pdfRenderState === "ready";
+
+  useEffect(() => {
+    latestTextValuesRef.current = textValues;
+
+    const changed = record.currentSignerFields.filter(
+      (field) =>
+        field.type === "text" &&
+        (textValues[field.id] ?? "").trim() !==
+          (checkedAnswersRef.current[field.id] ?? ""),
+    );
+
+    if (changed.length === 0) {
+      return;
+    }
+
+    // After a pause in typing, not on every key.
+    const timer = window.setTimeout(() => {
+      for (const field of changed) {
+        const value = (textValues[field.id] ?? "").trim();
+
+        checkedAnswersRef.current[field.id] = value;
+
+        if (!value) {
+          setTooLongAnswers((current) => withoutKey(current, field.id));
+          continue;
+        }
+
+        const isStillCurrent = () =>
+          (latestTextValuesRef.current[field.id] ?? "").trim() === value;
+        // A check that could not be made leaves no warning, so it never
+        // keeps Finish off: signing makes the same check when they finish.
+        // The answer is checked again the next time it changes.
+        const giveUp = () => {
+          if (checkedAnswersRef.current[field.id] === value) {
+            delete checkedAnswersRef.current[field.id];
+          }
+
+          if (isStillCurrent()) {
+            setTooLongAnswers((current) => withoutKey(current, field.id));
+          }
+        };
+
+        void fetch(record.fieldFitUrl, {
+          body: JSON.stringify({ fieldId: field.id, value }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+          .then(async (response) => {
+            const payload = (await response.json().catch(() => null)) as {
+              fits?: boolean;
+              maxCharacters?: number;
+            } | null;
+
+            if (!response.ok || !payload) {
+              giveUp();
+              return;
+            }
+
+            // An answer changed since is checked again on its own.
+            if (!isStillCurrent()) {
+              return;
+            }
+
+            const maxCharacters =
+              payload.fits === false &&
+              typeof payload.maxCharacters === "number"
+                ? payload.maxCharacters
+                : null;
+
+            setTooLongAnswers((current) =>
+              maxCharacters === null
+                ? withoutKey(current, field.id)
+                : { ...current, [field.id]: maxCharacters },
+            );
+
+            // Opened before the answer was found too long: back to the
+            // page, where the box and the panel say what to shorten.
+            if (maxCharacters !== null) {
+              setIsFinishDialogOpen(false);
+            }
+          })
+          .catch(giveUp);
+      }
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [record.currentSignerFields, record.fieldFitUrl, textValues]);
 
   function applyZoomLevel(nextZoomLevel: number) {
     if (nextZoomLevel <= DEFAULT_DOCUMENT_ZOOM_LEVEL) {
@@ -1092,7 +1212,14 @@ export function SigningLiveShell({
                               field={field}
                               key={field.id}
                               localDateLabel={localDateLabel}
-                              isInvalid={hasInvalidNumber(field, textValues)}
+                              isInvalid={isInvalidEntry(field)}
+                              tooLongMessage={
+                                tooLongAnswers[field.id] !== undefined
+                                  ? describeTooLongAnswer(
+                                      tooLongAnswers[field.id]!,
+                                    )
+                                  : null
+                              }
                               signerName={record.signer.name}
                               onCheckboxChange={(checked) => {
                                 setSubmitError(null);
@@ -1191,6 +1318,17 @@ export function SigningLiveShell({
                     {NUMBER_ENTRY_MESSAGE}
                   </p>
                 ) : null}
+                {tooLongFields.map((field) => (
+                  <p
+                    className="mt-1.5 text-[0.8125rem] font-semibold leading-5 text-(--danger)"
+                    key={field.id}
+                    role="alert"
+                  >
+                    A text box on page {field.page} is full: shorten your answer
+                    to {tooLongAnswers[field.id]} characters or fewer so all of
+                    it fits on the document.
+                  </p>
+                ))}
                 <div
                   aria-hidden="true"
                   className="mt-3 h-2 overflow-hidden rounded-full bg-(--surface-strong)"
@@ -1240,7 +1378,7 @@ export function SigningLiveShell({
                       record.currentSignerFields,
                       enteredValues,
                     )}
-                    isInvalid={hasInvalidNumber(field, textValues)}
+                    isInvalid={isInvalidEntry(field)}
                     key={field.id}
                     label={`${getSummaryLabel(field)} · Page ${field.page}`}
                     value={getCompletionValue(
@@ -1613,6 +1751,7 @@ function CurrentSignerField({
   signatureEntry,
   signerName,
   textValue,
+  tooLongMessage = null,
 }: {
   checkboxValue: boolean;
   field: SigningCurrentField;
@@ -1626,6 +1765,8 @@ function CurrentSignerField({
   /** What a name field shows: the name the sender gave this signer. */
   signerName: string;
   textValue: string;
+  /** Set when a text answer is too long for its box on the document. */
+  tooLongMessage?: string | null;
 }) {
   const frame = getFieldFrame(field);
   const showInlineLabel = shouldShowInlineFieldLabel(field);
@@ -1703,11 +1844,17 @@ function CurrentSignerField({
   if (field.type === "text") {
     return (
       <div
-        className="absolute z-2 overflow-hidden rounded-[0.375rem] border-2 border-(--accent) bg-[rgb(var(--accent-rgb)/0.07)] focus-within:bg-white"
+        className={`absolute z-2 overflow-hidden rounded-[0.375rem] border-2 focus-within:bg-white ${
+          tooLongMessage
+            ? "border-(--danger) bg-(--danger-soft)"
+            : "border-(--accent) bg-[rgb(var(--accent-rgb)/0.07)]"
+        }`}
         data-signing-field="true"
         style={frame}
+        title={tooLongMessage ?? undefined}
       >
         <input
+          aria-invalid={tooLongMessage ? true : undefined}
           aria-label={getFieldLabel(field)}
           className="h-full w-full border-none bg-transparent px-2 text-sm text-(--fg) outline-none placeholder:text-(--placeholder)"
           id={`signing-field-${field.id}`}

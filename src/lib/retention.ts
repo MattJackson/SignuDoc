@@ -735,6 +735,59 @@ type FinishedEnvelopeRow = EnvelopeArtifactRow & {
 };
 
 /**
+ * Deletes a finished envelope's row for the retention period, unless it
+ * has moved on or an administrator's scheduled deletion now stands, and
+ * queues its files for deletion once this commits. Locks the envelope row
+ * as scheduling a deletion does.
+ */
+async function deleteFinishedEnvelopeRow(
+  envelope: FinishedEnvelopeRow,
+  keys: readonly string[],
+  now: number,
+  scheduledDeletionsExist: boolean,
+  tx: DbExecutor,
+): Promise<boolean> {
+  const locked = await tx.query(
+    `SELECT 1 FROM envelopes WHERE id = $1 AND status = $2 FOR UPDATE`,
+    [envelope.id, envelope.status],
+  );
+
+  if (locked.rowCount !== 1) {
+    return false;
+  }
+
+  if (scheduledDeletionsExist) {
+    const scheduled = await tx.query(
+      `
+        SELECT 1
+        FROM scheduled_envelope_deletions
+        WHERE envelope_id = $1 AND cancelled_at IS NULL
+      `,
+      [envelope.id],
+    );
+
+    if (scheduled.rowCount === 1) {
+      return false;
+    }
+  }
+
+  await queueFileDeletions(envelope.id, keys, now, tx);
+  await tx.query(`DELETE FROM envelopes WHERE id = $1`, [envelope.id]);
+
+  return true;
+}
+
+async function hasScheduledDeletionsTable(
+  database: DbExecutor,
+): Promise<boolean> {
+  const result = await database.query<{ present: boolean }>(
+    `SELECT to_regclass('scheduled_envelope_deletions') IS NOT NULL AS present`,
+  );
+
+  return result.rows[0]?.present === true;
+}
+
+/**
  * Finished envelopes there is something to do with now: not yet warned and
  * inside the warning window, or warned long enough ago and past the period.
  * Envelopes waiting out their notice are left out, so they cannot fill the
@@ -743,11 +796,27 @@ type FinishedEnvelopeRow = EnvelopeArtifactRow & {
 async function listFinishedEnvelopesToHandle(
   {
     deleteBefore,
+    scheduledDeletionsExist,
     warnBefore,
     warnedBefore,
-  }: { deleteBefore: number; warnBefore: number; warnedBefore: number },
+  }: {
+    deleteBefore: number;
+    scheduledDeletionsExist: boolean;
+    warnBefore: number;
+    warnedBefore: number;
+  },
   database: DbExecutor,
 ): Promise<FinishedEnvelopeRow[]> {
+  // An administrator's scheduled deletion has its own notice and wait,
+  // which this timer must not cut short.
+  const scheduledDeletionClause = scheduledDeletionsExist
+    ? `AND NOT EXISTS (
+          SELECT 1
+          FROM scheduled_envelope_deletions s
+          WHERE s.envelope_id = e.id AND s.cancelled_at IS NULL
+        )`
+    : "";
+
   return queryMany<FinishedEnvelopeRow>(
     database,
     `
@@ -770,6 +839,7 @@ async function listFinishedEnvelopesToHandle(
         -- Part 11 records are kept for as long as the rules that apply to
         -- them say, never by this timer.
         AND NOT e.part11
+        ${scheduledDeletionClause}
         AND (
           (
             e.retention_warned_at IS NULL
@@ -839,9 +909,13 @@ async function applyRetentionPeriod(
 ) {
   const warnBefore =
     now - (retentionDays - RETENTION_WARNING_DAYS) * DAY_IN_SECONDS;
+  // A database the scheduled-deletion migration has not reached yet has
+  // no such deletions, and its retention keeps working.
+  const scheduledDeletionsExist = await hasScheduledDeletionsTable(database);
   const candidates = await listFinishedEnvelopesToHandle(
     {
       deleteBefore: now - retentionDays * DAY_IN_SECONDS,
+      scheduledDeletionsExist,
       warnBefore,
       warnedBefore: now - RETENTION_MIN_NOTICE_DAYS * DAY_IN_SECONDS,
     },
@@ -876,22 +950,43 @@ async function applyRetentionPeriod(
         continue;
       }
 
-      // Files first: a failure leaves the row, so the next run retries.
-      await deleteStorageKeys(
-        buildEnvelopeStorageKeys(
+      const keys = buildEnvelopeStorageKeys(
+        envelope,
+        fieldImagesByEnvelopeId.get(envelope.id) ?? [],
+      );
+      // The row goes first, in one transaction with the files' place on
+      // the queue, then the files. An administrator scheduling the
+      // envelope's deletion holds the same lock, so one of the two sees
+      // the other: a request made since the list was read keeps it.
+      const removeRow = (tx: DbExecutor) =>
+        deleteFinishedEnvelopeRow(
           envelope,
-          fieldImagesByEnvelopeId.get(envelope.id) ?? [],
-        ),
-        storageService,
-      );
+          keys,
+          now,
+          scheduledDeletionsExist,
+          tx,
+        );
+      const deleted = isPool(database)
+        ? await withTransaction(removeRow, database)
+        : await removeRow(database);
 
-      const deleted = await database.query(
-        `DELETE FROM envelopes WHERE id = $1 AND status = $2`,
-        [envelope.id, envelope.status],
-      );
-
-      if (deleted.rowCount === 1) {
+      if (deleted) {
         summary.finishedEnvelopesDeleted += 1;
+
+        // A file that cannot be deleted stays queued for the next sweep,
+        // and this run is reported as failed for it.
+        let filesLeft = false;
+
+        for (const key of keys) {
+          if (!(await deletePendingFile(key, database, storageService))) {
+            filesLeft = true;
+          }
+        }
+
+        if (filesLeft) {
+          summary.finishedEnvelopeDeletionFailures.push(envelope.id);
+        }
+
         await deleteThumbnailStoredMeanwhile(envelope, storageService);
       }
     } catch (error) {

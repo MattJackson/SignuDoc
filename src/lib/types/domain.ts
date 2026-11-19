@@ -14,6 +14,13 @@ export const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
 export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
 /** What a person is told when a file passes either limit. */
 export const FILE_TOO_LARGE_TO_CONVERT_MESSAGE = `This file is too large: PDFs can be up to ${String(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB, and other documents up to ${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB before conversion.`;
+/**
+ * The largest request body the app reads in full: a PDF at the upload limit
+ * plus room for the rest of the multipart form (the title and the part
+ * headers). Next.js cuts every body that passes through the Proxy at this
+ * size (next.config.ts), so it must stay above MAX_UPLOAD_SIZE_BYTES.
+ */
+export const MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_SIZE_BYTES + 1024 * 1024;
 export const SIGNING_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const RECIPIENT_DOWNLOAD_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const MANUAL_NUDGE_COOLDOWN_SECONDS = 24 * 60 * 60;
@@ -122,6 +129,7 @@ export const emailTemplateKinds = [
   "void_notification",
   "password_reset",
   "retention_notice",
+  "deletion_notice",
   "expiry_notice",
   "test_email",
   "signing_lock_alert",

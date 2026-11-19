@@ -50,7 +50,7 @@ export function resolveStorageDriver(
  * upload limit, so on Vercel Blob this is the only way a larger PDF gets in.
  * On the other drivers the PDF goes through the app. On Cloud Run a request
  * can be up to 32 MB, more than the upload limit with the form around it
- * (see proxyClientMaxBodySize in next.config.ts).
+ * (see MAX_REQUEST_BODY_BYTES and proxyClientMaxBodySize in next.config.ts).
  */
 export function supportsDirectUploads(env: EnvSource = process.env): boolean {
   return resolveStorageDriver(env) === "blob";

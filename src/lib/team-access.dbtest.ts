@@ -10,7 +10,7 @@ import type pg from "pg";
 import { AuditExportError, exportEnvelopeAuditCsv } from "./audit-export.ts";
 import { openTestDatabase } from "./db/test-database.ts";
 import { DownloadAccessError, getSenderEnvelopeDownload } from "./downloads.ts";
-import { deleteFinishedEnvelope } from "./envelope-deletion.ts";
+import { scheduleEnvelopeDeletion } from "./envelope-deletion.ts";
 import {
   changeEnvelopeDeadline,
   changeEnvelopeReminders,
@@ -250,7 +250,7 @@ async function listed(viewer: Account, scope: EnvelopeScope) {
     database,
   );
 
-  return items.map((item) => item.id).sort();
+  return items.envelopes.map((item) => item.id).sort();
 }
 
 function sorted(...ids: string[]) {
@@ -291,7 +291,7 @@ test("each scope lists what its viewer may see, and drafts only for their sender
     sorted(envelopes.sent, envelopes.completed),
   );
 
-  const teamItems = await listEnvelopesForUser(
+  const { envelopes: teamItems } = await listEnvelopesForUser(
     teammate.id,
     { scope: "team", search: marker },
     database,
@@ -489,12 +489,14 @@ test("nobody but the sender changes an envelope", async () => {
     );
   }
 
-  // An administrator still deletes only finished envelopes of their own.
+  // Only the sender or an administrator may ask for a finished envelope to
+  // be deleted (envelope-deletion.ts); seeing it through a team is not
+  // enough.
   await assert.rejects(
-    deleteFinishedEnvelope(
+    scheduleEnvelopeDeletion(
       envelopes.completed,
-      { actor: { email: admin.email, userId: admin.id } },
-      { database, storageService },
+      { actor: { email: teammate.email, userId: teammate.id } },
+      { database },
     ),
     refusedAsNotFound,
   );

@@ -36,12 +36,27 @@ import {
 } from "@/lib/types/domain";
 import { getSignerPalette } from "./signer-palette";
 
+/** A finished envelope an administrator has scheduled to be deleted. */
+export type EnvelopeDeletionNotice = {
+  deleteOnLabel: string;
+  /** Shown to administrators only. */
+  reason: string | null;
+  requestedByEmail: string;
+};
+
 type EnvelopeDetailShellProps = {
   /** An administrator may delete a finished envelope. */
   canDeleteFinished?: boolean;
   envelopeId: string;
   initialState?: "error" | "not-found";
+  /**
+   * Who sent it, when an administrator is looking at another member's
+   * envelope. They can read it, download its files and delete it once it
+   * is finished; the rest stays with its sender.
+   */
+  ownerLabel?: string;
   record?: EnvelopeDetailData;
+  scheduledDeletion?: EnvelopeDeletionNotice;
 };
 
 type EnvelopeStatus = "draft" | "sent" | "completed" | "declined" | "voided";
@@ -80,6 +95,7 @@ type ModalState =
   | "change-reminders"
   | "copy-draft"
   | "correct-signer"
+  | "cancel-deletion"
   | "delete-draft"
   | "delete-finished"
   | "save-template"
@@ -134,8 +150,11 @@ export function EnvelopeDetailShell({
   canDeleteFinished = false,
   envelopeId,
   initialState,
+  ownerLabel,
   record,
+  scheduledDeletion,
 }: EnvelopeDetailShellProps) {
+  const isOwnEnvelope = ownerLabel === undefined;
   const [activeModal, setActiveModal] = useState<ModalState>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isChangingDeadline, setIsChangingDeadline] = useState(false);
@@ -144,6 +163,7 @@ export function EnvelopeDetailShell({
   const [isCorrectingSigner, setIsCorrectingSigner] = useState(false);
   const [isDeletingDraft, setIsDeletingDraft] = useState(false);
   const [isDeletingFinished, setIsDeletingFinished] = useState(false);
+  const [isCancellingDeletion, setIsCancellingDeletion] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [isSendingReminder, setIsSendingReminder] = useState(false);
   const [isVoidingEnvelope, setIsVoidingEnvelope] = useState(false);
@@ -236,7 +256,7 @@ export function EnvelopeDetailShell({
       : null;
   // Someone on the sender's team, or an administrator, sees the envelope
   // but cannot change it. The server refuses their changes too.
-  const canManage = record.canManage !== false;
+  const canManage = record.canManage !== false && isOwnEnvelope;
   const stepOf = (signer: EnvelopeDetailSigner) => signer.step ?? signer.order;
   const signsAtTheSameTime =
     new Set(activeRecord.signers.map(stepOf)).size <
@@ -435,29 +455,58 @@ export function EnvelopeDetailShell({
     setIsDeletingFinished(true);
 
     try {
-      const response = await fetch(`/api/envelopes/${envelopeId}/delete`, {
+      const response = await fetch(`/api/envelopes/${envelopeId}/deletion`, {
         body: JSON.stringify({ reason: deleteReason }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
-        redirectPath?: string;
       } | null;
 
       if (!response.ok) {
-        setActionError(payload?.error ?? "Unable to delete this envelope.");
+        setActionError(
+          payload?.error ?? "Unable to schedule this envelope's deletion.",
+        );
         return;
       }
 
-      window.location.assign(payload?.redirectPath ?? "/dashboard");
+      // The page shows when it will go, and lets it be cancelled.
+      window.location.reload();
     } catch {
       // The request may or may not have reached the server.
       setActionError(
-        "Could not reach the server. Reload the page to see whether the envelope was deleted.",
+        "Could not reach the server. Reload the page to see whether the deletion was scheduled.",
       );
     } finally {
       setIsDeletingFinished(false);
+    }
+  }
+
+  async function handleConfirmCancelDeletion() {
+    setActionError(null);
+    setIsCancellingDeletion(true);
+
+    try {
+      const response = await fetch(`/api/envelopes/${envelopeId}/deletion`, {
+        method: "DELETE",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+
+      if (!response.ok) {
+        setActionError(payload?.error ?? "Unable to cancel this deletion.");
+        return;
+      }
+
+      window.location.reload();
+    } catch {
+      setActionError(
+        "Could not reach the server. Reload the page to see whether the deletion was cancelled.",
+      );
+    } finally {
+      setIsCancellingDeletion(false);
     }
   }
 
@@ -500,9 +549,9 @@ export function EnvelopeDetailShell({
       <section className="panel p-5 sm:p-8" data-animate="enter">
         <Link
           className="inline-flex items-center text-sm font-semibold text-(--secondary) transition hover:text-(--accent-ink)"
-          href="/dashboard"
+          href={isOwnEnvelope ? "/dashboard" : "/dashboard?view=all"}
         >
-          ← Documents
+          {isOwnEnvelope ? "← Documents" : "← All envelopes"}
         </Link>
 
         <div className="mt-5 flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
@@ -537,13 +586,18 @@ export function EnvelopeDetailShell({
                 <p className="text-sm text-(--secondary)">
                   Created {activeRecord.createdAtLabel}
                 </p>
+                {ownerLabel ? (
+                  <p className="text-sm text-(--secondary)">
+                    Sent by {ownerLabel}
+                  </p>
+                ) : null}
                 {record.signatureTypeLabel ? (
                   <span className="pill pill-neutral">
                     {record.signatureTypeLabel}
                   </span>
                 ) : null}
               </div>
-              {record.sentByLabel ? (
+              {record.sentByLabel && !ownerLabel ? (
                 <p className="text-sm text-(--secondary)">
                   Sent by {record.sentByLabel}. You can follow it and download
                   its finished files; only the sender can change it.
@@ -642,8 +696,20 @@ export function EnvelopeDetailShell({
               </>
             ) : null}
 
-            {canManage &&
-            canDeleteFinished &&
+            {canDeleteFinished && scheduledDeletion ? (
+              <ShellButton
+                onClick={() => {
+                  setActionError(null);
+                  setActiveModal("cancel-deletion");
+                }}
+                variant="secondary"
+              >
+                Cancel deletion
+              </ShellButton>
+            ) : null}
+
+            {canDeleteFinished &&
+            !scheduledDeletion &&
             (activeRecord.status === "completed" ||
               activeRecord.status === "declined" ||
               activeRecord.status === "voided") ? (
@@ -659,6 +725,27 @@ export function EnvelopeDetailShell({
             ) : null}
           </div>
         </div>
+
+        {scheduledDeletion ? (
+          <div
+            className="mt-4 rounded-xl border border-(--border) bg-(--danger-soft) px-4 py-3 text-sm leading-6 text-(--fg)"
+            role="status"
+          >
+            <p className="font-semibold">
+              Scheduled to be deleted on {scheduledDeletion.deleteOnLabel}
+            </p>
+            <p className="text-(--secondary)">
+              {canDeleteFinished
+                ? `${scheduledDeletion.requestedByEmail} asked for it. Any administrator can cancel until then.`
+                : `An administrator (${scheduledDeletion.requestedByEmail}) asked for it. Download the signed PDF and the certificate before then if you need to keep them.`}
+            </p>
+            {scheduledDeletion.reason ? (
+              <p className="text-(--secondary)">
+                Reason: {scheduledDeletion.reason}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {reminderHelperText ? (
           <p className="mt-4 text-sm leading-6 text-(--secondary) lg:text-right">
@@ -1001,17 +1088,21 @@ export function EnvelopeDetailShell({
       {activeModal === "delete-finished" ? (
         <ConfirmationDialog
           confirmDisabled={record.part11 && deleteReason.trim().length === 0}
-          confirmLabel="Delete envelope"
+          confirmLabel="Schedule deletion"
           description={[
-            "This permanently deletes the envelope, its signed PDF, its certificate and its audit trail. Download links already sent to signers stop working.",
-            "The install's audit log keeps a record of the deletion, with the document's fingerprints.",
-            "This action cannot be undone.",
+            "The envelope, its signed PDF, its certificate and its audit trail will be deleted for good in 14 days. Download links already sent to signers will stop working then.",
+            ...(isOwnEnvelope
+              ? []
+              : [
+                  "Its sender is emailed now, with a link to download what they need to keep.",
+                ]),
+            "Until then any administrator can cancel. The install's audit log records the request, and the deletion with the document's fingerprints.",
           ]}
           errorMessage={actionError}
           onCancel={() => setActiveModal(null)}
           onConfirm={handleConfirmDeleteFinished}
           processing={isDeletingFinished}
-          title="Delete this envelope?"
+          title="Schedule this envelope for deletion?"
         >
           <label className="grid gap-2 text-sm">
             <span className="text-[0.8125rem] font-semibold text-(--secondary)">
@@ -1031,12 +1122,31 @@ export function EnvelopeDetailShell({
         </ConfirmationDialog>
       ) : null}
 
+      {activeModal === "cancel-deletion" ? (
+        <ConfirmationDialog
+          confirmLabel="Cancel deletion"
+          description={[
+            "The envelope stays as it is and will not be deleted.",
+            ...(isOwnEnvelope
+              ? []
+              : [
+                  "If its sender was told it would be deleted, they are told it will not.",
+                ]),
+          ]}
+          errorMessage={actionError}
+          onCancel={() => setActiveModal(null)}
+          onConfirm={handleConfirmCancelDeletion}
+          processing={isCancellingDeletion}
+          title="Cancel this deletion?"
+        />
+      ) : null}
+
       {activeModal === "void-envelope" ? (
         <ConfirmationDialog
           confirmLabel="Void envelope"
           description={[
             "This will cancel the signing process.",
-            "Notified signers will be informed that the envelope has been voided.",
+            "Signers who were sent the envelope, including those who already signed, will be told it was voided.",
             "This action cannot be undone.",
           ]}
           confirmDisabled={record.part11 && voidReason.trim().length === 0}

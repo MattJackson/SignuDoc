@@ -1071,6 +1071,60 @@ const FUNCTION_RENAMES: Record<string, string> = {
   RIGHT: "pg_right",
 };
 
+/**
+ * to_regclass('name'): the table's name when the table exists, otherwise
+ * NULL, read from SQLite's own catalogue. A "public." prefix is dropped.
+ * The app asks it before using a table a migration may not have made yet.
+ */
+function rewriteToRegclass(tokens: Token[]): Token[] {
+  const out = [...tokens];
+
+  for (let i = 0; i < out.length; i += 1) {
+    if (
+      !isWord(out[i], "TO_REGCLASS") ||
+      out[i - 1]?.text === "." ||
+      out[i + 1]?.text !== "("
+    ) {
+      continue;
+    }
+
+    const close = closingParen(out, i + 1);
+    const argument = out.slice(i + 2, close);
+    const replacement: Token[] = [
+      punct("("),
+      ident("SELECT"),
+      ident("name"),
+      ident("FROM"),
+      ident("sqlite_master"),
+      ident("WHERE"),
+      ident("type"),
+      ident("IN"),
+      punct("("),
+      { text: "'table'", type: "string" },
+      punct(","),
+      { text: "'view'", type: "string" },
+      punct(")"),
+      ident("AND"),
+      ident("name"),
+      op("="),
+      ident("replace"),
+      punct("("),
+      ...argument,
+      punct(","),
+      { text: "'public.'", type: "string" },
+      punct(","),
+      { text: "''", type: "string" },
+      punct(")"),
+      punct(")"),
+    ];
+
+    out.splice(i, close - i + 1, ...replacement);
+    i += replacement.length - 1;
+  }
+
+  return out;
+}
+
 /** row_to_json(alias) from the table's columns. */
 function rewriteRowToJson(
   tokens: Token[],
@@ -2173,6 +2227,7 @@ export function rewriteSql(
   let tokens = stripRowLocks(original);
 
   tokens = rewriteConflictConstraint(tokens, sql, schema);
+  tokens = rewriteToRegclass(tokens);
   tokens = addTargetAs(tokens);
   tokens = rewriteRowToJson(tokens, sql, schema);
   tokens = rewriteExtract(tokens, sql);

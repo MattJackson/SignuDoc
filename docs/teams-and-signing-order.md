@@ -103,7 +103,7 @@ The migration `20261207090000_approvers.sql` allows the role `approver` and the 
 
 An administrator makes teams under **Settings, Teams**, and adds people who have an account by their email address. Someone can be on several teams.
 
-People on a team see the envelopes sent by the others on any of their teams. The dashboard has **Mine** and **My team**, and an administrator also has **All**. A teammate's envelope says who sent it.
+People on a team see the envelopes sent by the others on any of their teams. The dashboard has **Mine** and **My team**, and an administrator also has **Everyone's**. A teammate's envelope says who sent it.
 
 A team can name a **Google Group**. Nothing reads it yet: it is kept for a later sync of the team's members from that group.
 
@@ -119,9 +119,9 @@ Making, renaming and deleting a team, and adding and removing people, are record
 | Download the signed PDF and certificate once finished                                | yes        | yes                               | yes              | no          |
 | Edit a draft, send, remind, change the deadline or reminders, correct a signer, void | yes        | no                                | no               | no          |
 | Copy to a new draft, save as a template                                              | yes        | no                                | no               | no          |
-| Delete a finished envelope                                                           | if admin   | no                                | only their own   | no          |
+| Schedule a finished envelope for deletion (14 days), or cancel that                  | if admin   | no                                | yes              | no          |
 
-Administrators could not see other people's envelopes before teams; they now see every sent one, read-only. An envelope handed to an administrator when its sender's account was closed is that administrator's, so the closed account's teammates see it only if they are on a team with that administrator. The same holds for an envelope handed to someone's manager when the Workspace directory said they had left ([Offboarding](google-workspace.md#4-offboarding)): it is the manager's from then on.
+Administrators see every sent envelope, read-only, and an administrator's download of someone else's file is recorded in the site audit trail. An envelope handed to an administrator when its sender's account was closed is that administrator's, so the closed account's teammates see it only if they are on a team with that administrator. The same holds for an envelope handed to someone's manager when the Workspace directory said they had left ([Offboarding](google-workspace.md#4-offboarding)): it is the manager's from then on.
 
 Envelope pages and downloads that are not someone's to see answer "not found", the same as for an envelope that does not exist.
 
