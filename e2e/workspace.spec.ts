@@ -242,3 +242,33 @@ test("someone suspended in the directory is blocked, and their draft is handed o
   ).toBeVisible();
   await visitor.close();
 });
+
+test("the step-by-step setup shows this site's own values to copy", async ({
+  browser,
+}) => {
+  const { context, page } = await signInWithGoogle(
+    browser,
+    PEOPLE.admin.email,
+    "198.51.100.35",
+  );
+
+  await page.goto("/settings");
+  await page
+    .getByRole("link", { name: "Set up step by step or automatically" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Set up Google Workspace" }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: /Step by step/ }).check();
+
+  const client = page.getByTestId("workspace-guide-client");
+  const site = new URL(page.url()).origin;
+
+  await expect(client).toContainText(`${site}/settings/workspace-setup`);
+  await expect(client).toContainText(`${site}/api/auth/callback/sso`);
+  // The site already has its identity here: a key set where it runs.
+  await expect(page.getByTestId("workspace-guide-identity")).toContainText(
+    "In place",
+  );
+  await context.close();
+});

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { OffboardingSection } from "@/components/settings/workspace-offboarding-section";
@@ -162,6 +163,12 @@ export function WorkspacePanel() {
             and to offboard people who leave. Nothing here is on until you
             choose a provider.
           </p>
+          <Link
+            className="btn-quiet inline-flex w-fit"
+            href="/settings/workspace-setup"
+          >
+            Set up step by step or automatically
+          </Link>
         </div>
 
         {feedback ? (

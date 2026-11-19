@@ -337,3 +337,110 @@ URLs, and checks the setup:
    Workspace Marketplace (Marketplace SDK in the same project, visibility
    "Private", with the same deployment), then install it for the domain
    from the Admin console (Apps, Google Workspace Marketplace apps).
+
+## Setting it up: step by step or automatically
+
+Settings, Workspace, **Set up step by step or automatically** opens one
+page, `/settings/workspace-setup`, for the provider in use (or the first
+installed one). It lays out what the provider describes through the
+`WorkspaceSetup` contract (`src/lib/workspace/types.ts`): `guide()`, the
+manual steps as data, and `automatic`, a runner that streams its progress.
+The page and its routes (`/api/admin/workspace/setup`, `.../start`,
+`.../choose`, `.../run`) name no provider, so a Microsoft 365 provider would
+offer its own guide (an Entra app registration, the Graph permissions,
+admin consent) and its own automatic runner with no change to them.
+
+Everything either way of setting up saves is a workspace setting (above),
+recorded in the audit trail as the administrator's change. Nothing secret
+is saved. Running it again is safe: every step keeps what is already there.
+
+### Step by step
+
+Each step has a link into the right page of Google's consoles (in the
+site's Cloud project when it is known), this site's own values to copy, a
+field to paste Google's value into where one is needed, and a test:
+
+1. **The consent screen and the OAuth client.** Google has no API for
+   these. The page shows the app name, the JavaScript origin and the three
+   redirect URIs: `/api/auth/callback/sso` (sign-in),
+   `/api/workspace/files/callback` (Drive) and `/settings/workspace-setup`
+   (the automatic setup). The ID and secret go in `GOOGLE_OAUTH_CLIENT_ID`
+   and `GOOGLE_OAUTH_CLIENT_SECRET` where the site runs, or Google sign-in's
+   client is used.
+2. **The APIs**, one link each. None needs billing.
+3. **The site's identity** (below), with its test.
+4. **The Picker's browser key**, held to the Picker API and this site, and
+   the project number (`google.pickerApiKey`, `google.pickerAppId`).
+5. **The customer ID** (`google.customerId`).
+6. **The directory role**: "<name> directory reader", Users and Groups
+   read, assigned to the service account; tested by reading the directory.
+7. **The Shared Drive** "<name> Executed", with the service account as
+   Content manager (`files.exportDestination`). Optional.
+8. **The add-on**: its deployment and the values Google gives back
+   (`google.addonServiceAccount`, `google.addonClientId`), then the private
+   Marketplace listing for the domain. Optional.
+
+The names use the organization's name, or the product's (SignuDoc).
+
+### Automatically
+
+One sign-in as a Workspace **super admin** who can also change Cloud
+projects (an Owner of the project, or Project Creator to make one), through
+the site's own OAuth client. It asks Google for `openid`, `email`,
+`cloud-platform` (projects, APIs, keys, service accounts, the add-on),
+`admin.directory.rolemanagement`, `admin.directory.user.readonly`,
+`admin.directory.customer.readonly`, and `drive` only when a Shared Drive is
+to be made. It asks for no refresh token. When the organization's domains
+are known (`WORKSPACE_DIRECTORY_DOMAINS`, or the sign-up rule's), only an
+account of that Workspace is taken.
+
+The token is used only inside the request that runs the setup, never
+stored and never sent to the page, and it is revoked when the run ends,
+whether it worked, failed or ran out of time. The sign-in's state and PKCE
+verifier wait in a short-lived encrypted cookie.
+
+After the sign-in the page offers the Cloud projects the account can use,
+or a new one ("<name> Workspace", in the organization when there is one).
+Then, each reported as done, already done, your turn, or failed (with
+Google's HTTP status only; Google's own wording is never shown, as it can
+name accounts and projects):
+
+1. Make the new project, or use the chosen one, and save it
+   (`google.cloudProject`, or fixed by `GOOGLE_WORKSPACE_PROJECT`).
+2. Turn the APIs on, in that project and in the projects of the OAuth
+   client and the site's identity.
+3. Check that the account is a super admin.
+4. The site's identity (below).
+5. Make or find the Picker key and save it with the project number.
+6. Read the customer ID and save it.
+7. Make or find the directory role, assign it to the service account, and
+   turn the directory on unless it was turned off on purpose.
+8. Make the Shared Drive with the service account as Content manager, when
+   copies are wanted. Only the Shared Drive this site saved is used again,
+   never one found by its name.
+9. Deploy or update the add-on, install it for you and save its values,
+   when the site has a public HTTPS address.
+10. Run the site's own checks with its own identity.
+
+A value an environment variable sets is left as it is. One run at a time
+(a database lock), and the whole run, the wait for the project choice
+included, is held to 190 seconds, so the last request and the revoke end
+well inside the route's 300.
+
+### The site's identity, and why no key is made
+
+The site keeps nothing secret in its database, so the setup never makes a
+service account key. On Google Cloud, or with `GOOGLE_SERVICE_ACCOUNT_KEY`
+or `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` set, it keeps that identity.
+Otherwise it makes the `<name>-workspace` service account in the project,
+gives you Service Account Token Creator on it, uses it for the directory
+role and the Shared Drive, and ends with a step that is your turn: give the
+site that account where it runs, then run the checks again. Either create
+a JSON key for it in the console and set `GOOGLE_SERVICE_ACCOUNT_KEY`, or,
+where your organization forbids keys, run
+`gcloud auth application-default login` and start the container with the
+login mounted and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` set:
+
+```
+-v "$HOME/.config/gcloud/application_default_credentials.json:/home/node/.config/gcloud/application_default_credentials.json:ro" -e GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=<name>-workspace@<project>.iam.gserviceaccount.com
+```
