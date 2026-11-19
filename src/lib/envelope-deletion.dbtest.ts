@@ -8,7 +8,10 @@ import { after, before, test } from "node:test";
 
 import type pg from "pg";
 
-import { openTestDatabase } from "./db/test-database.ts";
+import {
+  besideOpenTransactions,
+  openTestDatabase,
+} from "./db/test-database.ts";
 import {
   cancelEnvelopeDeletion,
   deleteScheduledEnvelope,
@@ -715,17 +718,22 @@ test("a cancellation email still owed is not sent once the deletion is scheduled
   );
 
   // While the daily run sends the first notice, an administrator schedules
-  // the second deletion again, and its sender is told so.
+  // the second deletion again, and its sender is told so. (On SQLite, with
+  // one writer, the reschedule waits for that notice's transaction and goes
+  // in before the run's next one.)
   const outbox = createOutbox();
+  const beside = besideOpenTransactions();
   let rescheduled = false;
   const reschedulingOutbox: EmailService = {
     ...outbox,
     async send(message, options) {
       if (!rescheduled && message.to === first.owner.email) {
         rescheduled = true;
-        await scheduleAs(admin, secondEnvelope.envelopeId, "Again.", {
-          now: start + DAY,
-        });
+        await beside.run(() =>
+          scheduleAs(admin, secondEnvelope.envelopeId, "Again.", {
+            now: start + DAY,
+          }),
+        );
       }
 
       return outbox.send(message, options);
@@ -733,6 +741,7 @@ test("a cancellation email still owed is not sent once the deletion is scheduled
   };
 
   await runDaily(start + DAY, reschedulingOutbox);
+  await beside.settled();
 
   assert.equal(rescheduled, true);
   // The old cancellation never followed the new notice.
@@ -837,7 +846,8 @@ test("notices that keep failing go behind the others, so later senders are still
         envelope_id, requested_by_user_id, requested_by_email, requested_at,
         delete_after
       )
-      select id, $2, $3, $4, $4 + $5 from envelopes where user_id = $1
+      select id, $2, $3, $4::bigint, $4::bigint + $5::bigint
+      from envelopes where user_id = $1
     `,
     [unreachable.userId, admin.userId, admin.email, start, WAIT],
   );
