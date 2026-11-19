@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { defineConfig, devices } from "@playwright/test";
 
-import { ADMIN_GROUP } from "./e2e/support/google-workspace";
+import { ADMIN_GROUP, WORKSPACE_DOMAIN } from "./e2e/support/google-workspace";
 
 // One end-to-end test that walks the whole product against a real Postgres,
 // with files on local disk and emails captured to JSON instead of sent.
@@ -32,9 +32,9 @@ const providerPort = Number(process.env.E2E_PROVIDER_PORT ?? port + 1);
 // A stand-in for Google (src/lib/workspace/providers/google/test-support): sign-in,
 // the Workspace directory and service account tokens. The app is pointed at
 // it with the GOOGLE_*_BASE_URL variables, and given Google as its workspace
-// provider, with the directory on and an administrator group, and as its
-// single sign-on provider, beside password sign-in, which the other tests
-// use. Only workspace.spec.ts signs in with it.
+// provider, with the directory, an administrator group and offboarding on,
+// and as its single sign-on provider, beside password sign-in, which the
+// other tests use. Only workspace.spec.ts signs in with it.
 const googlePort = Number(process.env.E2E_GOOGLE_PORT ?? port + 2);
 const googleUrl = `http://127.0.0.1:${String(googlePort)}`;
 const googleClient = {
@@ -118,6 +118,8 @@ export default defineConfig({
         STORAGE_LOCAL_DIR: path.join(e2eDataDir, "storage"),
         WORKSPACE_ADMIN_GROUP: ADMIN_GROUP,
         WORKSPACE_DIRECTORY: "on",
+        WORKSPACE_DIRECTORY_DOMAINS: WORKSPACE_DOMAIN,
+        WORKSPACE_OFFBOARDING: "on",
         WORKSPACE_PROVIDER: "google",
       },
       reuseExistingServer: false,

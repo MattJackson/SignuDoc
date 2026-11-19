@@ -570,3 +570,59 @@ test("an ID token posted straight to the sign-in route is refused, not signed in
 
   assert.equal(accounts.rowCount, 0);
 });
+
+test("an account the directory blocked cannot sign in, with a password or single sign-on", async () => {
+  const auth = await makeAuth();
+  const context = await auth.$context;
+  const id = randomUUID();
+
+  await database.query(
+    `insert into "user" (id, name, email, "emailVerified", role, directory_blocked_at, directory_blocked_reason) values ($1, 'Pat', 'pat@acme.com', true, 'user', 1, 'directory_suspended')`,
+    [id],
+  );
+  await database.query(
+    `insert into account (id, "accountId", "providerId", "userId", password) values ($1, $2, 'credential', $2, $3)`,
+    [randomUUID(), id, await context.password.hash(PASSWORD)],
+  );
+
+  const password = await post(auth, "/sign-in/email", {
+    email: "Pat@Acme.com",
+    password: PASSWORD,
+  });
+
+  assert.equal(password.status, 403);
+  assert.equal(password.payload?.code, "DIRECTORY_BLOCKED");
+
+  const sso = await signInWithSso(auth, {
+    email: "pat@acme.com",
+    email_verified: true,
+    name: "Pat",
+    sub: "okta-pat",
+  });
+
+  assert.equal(sso.location.pathname, "/login");
+  assert.equal(sso.location.searchParams.get("error"), "directory_blocked");
+  assert.equal(await sessionUser(auth, sso.cookies), null);
+
+  const { rows } = await database.query<{ count: number }>(
+    `select count(*)::int as count from session where "userId" = $1`,
+    [id],
+  );
+
+  assert.equal(rows[0]?.count, 0);
+
+  // Unblocked, the same sign-in works.
+  await database.query(
+    `update "user" set directory_blocked_at = null, directory_blocked_reason = null where id = $1`,
+    [id],
+  );
+
+  const again = await signInWithSso(auth, {
+    email: "pat@acme.com",
+    email_verified: true,
+    name: "Pat",
+    sub: "okta-pat",
+  });
+
+  assert.equal(again.location.pathname, "/dashboard");
+});

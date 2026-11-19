@@ -45,6 +45,12 @@ import {
   SSO_PROVIDER_ID,
 } from "./sso.ts";
 import { recordSystemAuditEvent } from "../services/system-audit.ts";
+import {
+  DIRECTORY_BLOCKED_CODE,
+  DIRECTORY_BLOCKED_MESSAGE,
+  DIRECTORY_BLOCKED_SSO_ERROR,
+  isSignInBlockedByDirectory,
+} from "../workspace/directory-block.ts";
 
 type CreateAppAuthOptions = {
   database?: Pool;
@@ -473,6 +479,19 @@ export function createAppAuth({
           });
         }
 
+        // Someone the directory says has left (workspace/offboarding.ts)
+        // keeps no way in through a password either. Offboarding never
+        // blocks a break-glass address in the first place.
+        if (
+          ctx.path === "/sign-in/email" &&
+          (await isSignInBlockedByDirectory(email, database))
+        ) {
+          throw new APIError("FORBIDDEN", {
+            code: DIRECTORY_BLOCKED_CODE,
+            message: DIRECTORY_BLOCKED_MESSAGE,
+          });
+        }
+
         if (ctx.path !== "/sign-up/email") {
           return;
         }
@@ -539,7 +558,25 @@ export function createAppAuth({
       // the account comes to be created, so the check in hooks.before above
       // is not the only thing standing in the way.
       validateUserInfo: async ({ source, user }) => {
-        if (source.action !== "create-user" || isRunningSetup()) {
+        if (isRunningSetup()) {
+          return;
+        }
+
+        // Every single sign-on sign-in, not only the first: the identity
+        // provider may still let in someone the directory says has left,
+        // until its own offboarding has caught up.
+        if (
+          source.method === "oauth" &&
+          typeof user.email === "string" &&
+          (await isSignInBlockedByDirectory(user.email, database))
+        ) {
+          return {
+            error: DIRECTORY_BLOCKED_SSO_ERROR,
+            errorDescription: DIRECTORY_BLOCKED_MESSAGE,
+          };
+        }
+
+        if (source.action !== "create-user") {
           return;
         }
 

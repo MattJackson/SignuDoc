@@ -17,6 +17,8 @@ export function describeSsoError(code: string): string {
     case "signup_closed":
     case "signup_domain_not_allowed":
       return "That address does not have an account here, and this site's sign-up rule does not let it make one. Ask an administrator.";
+    case "directory_blocked":
+      return "This account was suspended or removed in your organization's directory, so it can no longer sign in here. Ask an administrator if this is a mistake.";
     case "access_denied":
       return "Sign-in was cancelled.";
     case "email_not_found":

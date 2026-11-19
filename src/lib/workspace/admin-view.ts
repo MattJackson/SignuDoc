@@ -1,5 +1,6 @@
 import type { EnvSource } from "../utils/env.ts";
 import { normalizeGroupAddress, readAdminGroup } from "./directory-settings.ts";
+import { parseDomainList } from "./offboarding.ts";
 import {
   configuredWorkspaceProviders,
   findWorkspaceProvider,
@@ -121,6 +122,17 @@ const VALIDATORS: Partial<
         };
   },
   "directory.enabled": (value) =>
+    value === "on" || value === "off"
+      ? { value }
+      : { error: "Choose on or off." },
+  "directory.domains": (value) => {
+    const domains = parseDomainList(value);
+
+    return domains && domains.length > 0
+      ? { value: domains.join(", ") }
+      : { error: "Enter domains like yourcompany.com, separated by commas" };
+  },
+  "directory.offboarding": (value) =>
     value === "on" || value === "off"
       ? { value }
       : { error: "Choose on or off." },

@@ -136,3 +136,70 @@ be on.
 
 **Test administrator group** in Settings tells you whether you are in the
 group, before it can take your role away. Add yourself first.
+
+## Offboarding
+
+With offboarding on, the site asks the directory about each account in the
+organization once a day. When the directory says someone is suspended,
+archived or deleted:
+
+- they can no longer sign in, with a password or with single sign-on, and
+  their sessions end at once;
+- their drafts and envelopes out for signature go to their manager in the
+  directory, when the manager has an account here that can still be used,
+  or else to an administrator. Finished envelopes stay where they are;
+  closing the account hands those over. Envelopes given to an administrator
+  are marked as handed over, like a closed account's records, so they move
+  on if that administrator stops being one.
+
+When the directory says the person is active again, they can sign in again.
+The envelopes stay with whoever has them now.
+
+It works with any provider that serves the directory, through
+`WorkspaceDirectory.getPerson` (suspended, archived or not there, and the
+manager), so an Okta or JumpCloud directory would do the same.
+
+It holds back wherever a mistake would be hard to undo:
+
+- It is off until an administrator turns it on, in Settings or with
+  `WORKSPACE_OFFBOARDING=on`, and it needs the directory to be on.
+- Only accounts in the organization's domains are asked about: the ones in
+  Settings or `WORKSPACE_DIRECTORY_DOMAINS` (for example
+  `yourcompany.com,yourcompany.co.uk`), or else the domains the sign-up
+  rule allows. An account elsewhere was never in the directory, so it is
+  not "missing" from it. With no domains, nothing runs.
+- A lookup that fails is never taken as "gone". When more than half of a
+  run's lookups fail, the run stops and changes nothing.
+- At most `WORKSPACE_OFFBOARDING_MAX_PER_RUN` people (10 unless set, at
+  most 500) are blocked per run; the rest wait for the next one.
+- The last administrator who can still sign in is never blocked, and nor
+  are the break-glass addresses in `PASSWORD_SIGN_IN_ALLOWED_EMAILS`.
+- A large organization is gone through over several runs, a thousand
+  accounts at a time, those asked about longest ago first.
+
+### The schedule and the job secret
+
+The job is `/api/internal/directory-sync`, with GET or POST. On Vercel it
+runs once a day from the cron in `vercel.json`. Elsewhere, call it from any
+scheduler, as often as you like:
+
+```sh
+curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  https://sign.yourcompany.com/api/internal/directory-sync
+```
+
+It takes the same secret as the daily cleanup, `CRON_SECRET` or
+`RETENTION_JOB_SECRET`. Unlike the cleanup it never runs for a caller
+without one: it decides who can sign in. With no secret set it answers 204
+and does nothing. A run that is turned on but cannot work (no directory, no
+domains) answers 503, and one stopped by failing lookups answers 502, so the
+scheduler shows it as failed.
+
+### What an administrator sees
+
+Settings, Workspace, Offboarding has the switch, the organization's
+domains, what the last run did (when, how many people were checked,
+blocked and how many envelopes were handed over), and **Run now**, which
+runs it at once as the schedule would. In the site audit trail (Settings,
+Security) each block, each lifted block and each hand-over has its own line,
+naming the person, the directory's reason and the envelopes that moved.
