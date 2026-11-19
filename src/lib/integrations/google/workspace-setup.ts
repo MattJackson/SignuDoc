@@ -287,7 +287,7 @@ class OutOfTime extends StepFailure {
   }
 }
 
-function isDisabled(error: unknown): error is GoogleSetupError {
+function isDisabled(error: unknown): boolean {
   return (
     error instanceof GoogleSetupError &&
     error.status === 403 &&
