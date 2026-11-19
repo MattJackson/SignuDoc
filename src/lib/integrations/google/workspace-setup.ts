@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type { IntegrationSettingsUpdate } from "../../integration-settings.ts";
+import { logRouteError } from "../../security/logging.ts";
 import {
   decryptPrivateKey,
   encryptPrivateKey,
@@ -19,6 +20,7 @@ import {
   executedDriveName,
   pickerKeyName,
   SETUP_APIS,
+  SETUP_STEP_ORDER,
   SETUP_STEP_TITLES,
   type SetupEvent,
   type SetupStepId,
@@ -59,6 +61,12 @@ export {
 // Google has no API for the OAuth consent screen or the OAuth client, so
 // those stay a copy-paste step before this one. Each step reports done,
 // skipped (already in place) or failed, with Google's status and a hint.
+// Google's own error wording is not passed on: it can name accounts and
+// projects.
+//
+// The whole run is held to SETUP_TIME_BUDGET_MS, well inside the request's
+// limit, so the caller always gets to revoke the token. When time runs out,
+// the steps not started are named so the administrator can run it again.
 
 export const SETUP_COOKIE = "signudoc_google_setup";
 export const SETUP_COOKIE_PATH = "/api/admin/google/setup";
@@ -262,18 +270,56 @@ const DISABLED_WAIT_MS = 5000;
 const OPERATION_POLLS = 30;
 const OPERATION_WAIT_MS = 2000;
 
-function createClient(input: WorkspaceSetupInput) {
+/**
+ * How long a run may take. The run route is allowed 300 seconds; one more
+ * request (at most GOOGLE_REQUEST_TIMEOUT_MS) and the revoke fit after it.
+ */
+export const SETUP_TIME_BUDGET_MS = 240_000;
+
+const RUN_AGAIN_HINT =
+  "Run the setup again in a few minutes; what is done already is kept.";
+
+/** The run's time is up: no more requests are started. */
+class OutOfTime extends StepFailure {
+  constructor() {
+    super("The setup ran out of time.", RUN_AGAIN_HINT);
+    this.name = "OutOfTime";
+  }
+}
+
+function isDisabled(error: unknown): error is GoogleSetupError {
+  return (
+    error instanceof GoogleSetupError &&
+    error.status === 403 &&
+    DISABLED_REASONS.has(error.reason ?? "")
+  );
+}
+
+function createClient(input: WorkspaceSetupInput, deadline: number) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const env = input.env ?? process.env;
   const sleep =
     input.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
+  /** Waits, unless that would pass the deadline. */
+  async function wait(ms: number) {
+    if (Date.now() + ms >= deadline) {
+      throw new OutOfTime();
+    }
+
+    await sleep(ms);
+  }
+
   async function once<T>(
     method: string,
     url: string,
     body: unknown,
   ): Promise<T> {
+    if (Date.now() >= deadline) {
+      throw new OutOfTime();
+    }
+
     let response: Response;
 
     try {
@@ -305,10 +351,10 @@ function createClient(input: WorkspaceSetupInput) {
       payload?.error?.status ??
       null;
 
+    // Only the status and the reason code: Google's message can name
+    // accounts and projects.
     throw new GoogleSetupError(
-      (payload?.error?.message ?? `Google answered ${String(response.status)}.`)
-        .replace(/\s+/g, " ")
-        .slice(0, 300),
+      `Google answered ${String(response.status)}.`,
       response.status,
       reason,
     );
@@ -319,13 +365,8 @@ function createClient(input: WorkspaceSetupInput) {
       try {
         return await once<T>(method, url, body);
       } catch (error) {
-        if (
-          error instanceof GoogleSetupError &&
-          error.status === 403 &&
-          DISABLED_REASONS.has(error.reason ?? "") &&
-          attempt < DISABLED_RETRIES
-        ) {
-          await sleep(DISABLED_WAIT_MS);
+        if (isDisabled(error) && attempt < DISABLED_RETRIES) {
+          await wait(DISABLED_WAIT_MS);
           continue;
         }
 
@@ -349,14 +390,12 @@ function createClient(input: WorkspaceSetupInput) {
         );
       }
 
-      await sleep(OPERATION_WAIT_MS);
+      await wait(OPERATION_WAIT_MS);
       current = await call<typeof operation>("GET", `${base}/${current.name}`);
     }
 
     if (current.error) {
-      throw new StepFailure(
-        current.error.message ?? "Google reported an error.",
-      );
+      throw new StepFailure("Google reported an error.");
     }
 
     return current.response;
@@ -365,25 +404,50 @@ function createClient(input: WorkspaceSetupInput) {
   return { call, finish };
 }
 
-function fail(error: unknown, hints: Partial<Record<number, string>>): never {
+const STILL_TURNING_ON =
+  "Google is still turning this API on, which can take a few minutes after step a.";
+
+/** Logs a failure that is not Google's answer, such as a database error. */
+function logUnexpected(error: unknown) {
+  logRouteError(error, {
+    category: "google_workspace_setup_failure",
+    message: "Unexpected failure in a step of the automatic Google setup.",
+  });
+}
+
+/** A failure as the page is told it: our own words and Google's status. */
+function toStepFailure(
+  error: unknown,
+  hints: Partial<Record<number, string>> = {},
+): StepFailure {
   if (error instanceof StepFailure) {
-    throw error;
+    return error;
   }
 
   if (error instanceof GoogleSetupError) {
-    throw new StepFailure(
-      error.message,
-      (error.status !== null ? hints[error.status] : undefined) ??
-        (error.status === 401
-          ? "The sign-in expired. Run the setup again."
-          : undefined),
+    return new StepFailure(
+      isDisabled(error)
+        ? STILL_TURNING_ON
+        : error.status === null
+          ? error.message
+          : "Google refused the request.",
+      isDisabled(error)
+        ? RUN_AGAIN_HINT
+        : ((error.status !== null ? hints[error.status] : undefined) ??
+            (error.status === 401
+              ? "The sign-in expired. Run the setup again."
+              : undefined)),
       error.status,
     );
   }
 
-  throw new StepFailure(
-    error instanceof Error ? error.message : "Something went wrong.",
-  );
+  logUnexpected(error);
+
+  return new StepFailure("Something went wrong.");
+}
+
+function fail(error: unknown, hints: Partial<Record<number, string>>): never {
+  throw toStepFailure(error, hints);
 }
 
 const PROJECT_HINT =
@@ -438,9 +502,11 @@ function findPrivileges(
     .map((name) => ({ privilegeName: name, serviceId: found.get(name)! }));
 }
 
-function driveQuote(value: string): string {
-  return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-}
+type RunState = {
+  deadline: number;
+  outOfTime: boolean;
+  started: Set<SetupStepId>;
+};
 
 /**
  * Runs steps a to f, reporting each as it goes. Returns whether every step
@@ -449,8 +515,45 @@ function driveQuote(value: string): string {
 export async function runWorkspaceSetup(
   input: WorkspaceSetupInput,
 ): Promise<boolean> {
+  const state: RunState = {
+    deadline: Date.now() + SETUP_TIME_BUDGET_MS,
+    outOfTime: false,
+    started: new Set(),
+  };
+  // The page may have gone away (a closed tab): the run carries on, so it
+  // ends between steps rather than half-way through one.
+  const emit = (event: SetupEvent) => {
+    try {
+      input.emit(event);
+    } catch {
+      // Nobody is reading any more.
+    }
+  };
+  const ok = await runSteps({ ...input, emit }, state);
+
+  if (state.outOfTime) {
+    const notRun = SETUP_STEP_ORDER.filter((id) => !state.started.has(id));
+
+    emit({
+      hint: RUN_AGAIN_HINT,
+      message:
+        notRun.length > 0
+          ? `The setup ran out of time before: ${notRun.map((id) => SETUP_STEP_TITLES[id]).join("; ")}.`
+          : "The setup ran out of time.",
+      type: "refused",
+    });
+    return false;
+  }
+
+  return ok;
+}
+
+async function runSteps(
+  input: WorkspaceSetupInput,
+  state: RunState,
+): Promise<boolean> {
   const env = input.env ?? process.env;
-  const { call, finish } = createClient(input);
+  const { call, finish } = createClient(input, state.deadline);
   const project = input.projectNumber ?? input.projectId;
   const origin = new URL(input.siteUrl).origin;
   const encodedEmail = encodeURIComponent(input.serviceAccountEmail);
@@ -465,6 +568,13 @@ export async function runWorkspaceSetup(
   ): Promise<boolean> {
     const title = SETUP_STEP_TITLES[id];
 
+    if (state.outOfTime || Date.now() >= state.deadline) {
+      state.outOfTime = true;
+      ok = false;
+      return false;
+    }
+
+    state.started.add(id);
     input.emit({ detail: "", id, status: "running", title, type: "step" });
 
     try {
@@ -480,12 +590,11 @@ export async function runWorkspaceSetup(
 
       return true;
     } catch (error) {
-      const failure =
-        error instanceof StepFailure
-          ? error
-          : new StepFailure(
-              error instanceof Error ? error.message : "Something went wrong.",
-            );
+      const failure = toStepFailure(error);
+
+      if (error instanceof OutOfTime) {
+        state.outOfTime = true;
+      }
 
       ok = false;
       input.emit({
@@ -578,10 +687,26 @@ export async function runWorkspaceSetup(
         )
       ).isAdmin === true;
   } catch (error) {
+    if (error instanceof OutOfTime) {
+      state.outOfTime = true;
+      return false;
+    }
+
+    // A 403 that says the API is off is not an answer about the account.
+    if (isDisabled(error)) {
+      input.emit({
+        hint: RUN_AGAIN_HINT,
+        message:
+          "The Admin SDK API is still being turned on, so it could not say whether this account is a super admin yet.",
+        type: "refused",
+      });
+      return false;
+    }
+
     if (!(error instanceof GoogleSetupError) || error.status !== 403) {
       input.emit({
         hint: SUPER_ADMIN_HINT,
-        message: `Could not check that ${input.adminEmail} is a super admin: ${error instanceof Error ? error.message : "unknown error"}`,
+        message: `Could not check that ${input.adminEmail} is a super admin: ${error instanceof GoogleSetupError ? error.message : toStepFailure(error).message}`,
         type: "refused",
       });
       return false;
@@ -694,6 +819,18 @@ export async function runWorkspaceSetup(
             ? { "drive.appId": projectNumber }
             : {}),
         });
+      }
+
+      // The Picker does not open without the app ID, the project number.
+      if (
+        !projectNumber &&
+        !input.existing.appId &&
+        !readEnv(env, "GOOGLE_DRIVE_APP_ID")
+      ) {
+        throw new StepFailure(
+          `Saved "${displayName}", but Google did not say the Cloud project's number, which the Picker needs as its app ID.`,
+          "Copy the project number from the project's dashboard in the Cloud console into Google Drive settings, or set GOOGLE_DRIVE_APP_ID where the site runs.",
+        );
       }
 
       return unchanged
@@ -876,9 +1013,15 @@ export async function runWorkspaceSetup(
     }
   }
 
-  // e. The Shared Drive.
+  // e. The Shared Drive. Only the one this site saved is used again: a
+  // Shared Drive is not found by its name, since anyone in the
+  // organization can make one called that.
   await step("drive", async () => {
-    if (readEnv(env, "GOOGLE_DRIVE_EXPORT_DRIVE_ID")) {
+    const fromEnv = readEnv(env, "GOOGLE_DRIVE_EXPORT_DRIVE_ID");
+
+    if (fromEnv) {
+      exportDriveId = fromEnv;
+
       return {
         detail: "GOOGLE_DRIVE_EXPORT_DRIVE_ID is set where the site runs.",
         skipped: true,
@@ -895,6 +1038,9 @@ export async function runWorkspaceSetup(
 
     const name = executedDriveName(input.appName);
     const driveBase = "https://www.googleapis.com/drive/v3";
+    // One per run, so a request Google is asked again (after a "still
+    // turning on" answer) makes one drive, not two.
+    const requestId = randomUUID();
     let driveId: string | null = null;
     let createdDrive = false;
 
@@ -915,20 +1061,9 @@ export async function runWorkspaceSetup(
       }
 
       if (!driveId) {
-        const list = await call<{
-          drives?: Array<{ id?: string; name?: string }>;
-        }>(
-          "GET",
-          `${driveBase}/drives?useDomainAdminAccess=true&pageSize=100&q=${encodeURIComponent(`name contains ${driveQuote(name)}`)}`,
-        );
-
-        driveId = list.drives?.find((drive) => drive.name === name)?.id ?? null;
-      }
-
-      if (!driveId) {
         const drive = await call<{ id?: string }>(
           "POST",
-          `${driveBase}/drives?requestId=${randomUUID()}`,
+          `${driveBase}/drives?requestId=${requestId}`,
           { name },
         );
 
@@ -942,30 +1077,36 @@ export async function runWorkspaceSetup(
         }
       }
 
-      const permissions = await call<{
-        permissions?: Array<{ emailAddress?: string; role?: string }>;
-      }>(
-        "GET",
-        `${driveBase}/files/${encodeURIComponent(driveId)}/permissions?supportsAllDrives=true&useDomainAdminAccess=true&fields=permissions(id,type,role,emailAddress)`,
-      );
-      const member = permissions.permissions?.find(
-        (permission) =>
-          permission.emailAddress?.toLowerCase() ===
-          input.serviceAccountEmail.toLowerCase(),
-      );
+      const membersUrl = `${driveBase}/files/${encodeURIComponent(driveId)}/permissions?supportsAllDrives=true&useDomainAdminAccess=true`;
+      let member: { emailAddress?: string; role?: string } | undefined;
+      let membersToken = "";
+
+      do {
+        const page = await call<{
+          nextPageToken?: string;
+          permissions?: Array<{ emailAddress?: string; role?: string }>;
+        }>(
+          "GET",
+          `${membersUrl}&pageSize=100&fields=nextPageToken,permissions(id,type,role,emailAddress)${membersToken ? `&pageToken=${encodeURIComponent(membersToken)}` : ""}`,
+        );
+
+        member = page.permissions?.find(
+          (permission) =>
+            permission.emailAddress?.toLowerCase() ===
+            input.serviceAccountEmail.toLowerCase(),
+        );
+        membersToken = member ? "" : (page.nextPageToken ?? "");
+      } while (membersToken);
+
       const canAdd =
         member?.role === "organizer" || member?.role === "fileOrganizer";
 
       if (!canAdd) {
-        await call(
-          "POST",
-          `${driveBase}/files/${encodeURIComponent(driveId)}/permissions?supportsAllDrives=true&useDomainAdminAccess=true&sendNotificationEmail=false`,
-          {
-            emailAddress: input.serviceAccountEmail,
-            role: "fileOrganizer",
-            type: "user",
-          },
-        );
+        await call("POST", `${membersUrl}&sendNotificationEmail=false`, {
+          emailAddress: input.serviceAccountEmail,
+          role: "fileOrganizer",
+          type: "user",
+        });
       }
 
       exportDriveId = driveId;

@@ -15,6 +15,7 @@ import {
   googleTimeoutSignal,
   googleUrl,
 } from "./endpoints.ts";
+import { DRIVE_CALLBACK_PATH } from "./workspace-setup-names.ts";
 
 // Each person's own permission for Google Drive, asked for on top of
 // Google sign-in (incremental authorization), with the same OAuth client.
@@ -43,8 +44,7 @@ export const DRIVE_CONNECT_SCOPES: readonly string[] = [
   GOOGLE_SCOPES.driveFile,
 ];
 
-/** Where Google sends people back to: add it to the OAuth client. */
-export const DRIVE_CALLBACK_PATH = "/api/google/drive/callback";
+export { DRIVE_CALLBACK_PATH };
 export const DRIVE_OAUTH_COOKIE = "signudoc_drive_oauth";
 export const DRIVE_OAUTH_COOKIE_MAX_AGE_SECONDS = 10 * 60;
 

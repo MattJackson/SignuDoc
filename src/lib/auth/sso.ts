@@ -1,5 +1,6 @@
 import { readEnv, type EnvSource } from "../utils/env.ts";
 import { googleUrl } from "../integrations/google/endpoints.ts";
+import { SSO_CALLBACK_PATH } from "../integrations/google/workspace-setup-names.ts";
 import { parseEmailDomainList } from "../signup-policy.ts";
 
 // Single sign-on with the organization's own identity provider, over OpenID
@@ -35,7 +36,7 @@ export const GOOGLE_ISSUER = "https://accounts.google.com";
 
 /** Where Better Auth expects the provider to send people back to. */
 export function ssoRedirectPath(): string {
-  return `/api/auth/callback/${SSO_PROVIDER_ID}`;
+  return SSO_CALLBACK_PATH;
 }
 
 export type SsoConfig = {

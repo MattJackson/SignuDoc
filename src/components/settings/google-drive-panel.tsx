@@ -30,6 +30,7 @@ import type {
   SharedDriveTestResult,
 } from "@/lib/google-drive";
 import type { DriveExportListItem } from "@/lib/integrations/google/drive-export";
+import { pickerKeyName } from "@/lib/integrations/google/workspace-setup-names";
 
 // Settings, Google Workspace, Google Drive, and the onboarding step of the
 // same name: a checklist of what to set up in Google's consoles, with this
@@ -456,7 +457,7 @@ export function GoogleDriveSection({
               , save, and test it.
             </li>
           </ol>
-          <CopyValue label="API key name" value={`${productName} Picker`} />
+          <CopyValue label="API key name" value={pickerKeyName(productName)} />
           {view.siteUrl ? (
             <CopyValue
               label="Website restriction"
@@ -594,7 +595,8 @@ export function GoogleDriveSection({
             value={view.openWith.secondaryExtensions.join(",")}
           />
           <p>
-            To show &quot;Open with&quot; for everyone, list the app privately with the{" "}
+            To show &quot;Open with&quot; for everyone, list the app privately
+            with the{" "}
             <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
               Google Workspace Marketplace SDK
             </ExternalLink>{" "}

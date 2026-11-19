@@ -32,11 +32,14 @@ import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { SetupTargetView } from "@/lib/google-workspace-setup";
 import {
   directoryRoleName,
+  DRIVE_CALLBACK_PATH,
   executedDriveName,
   pickerKeyName,
   SETUP_APIS,
+  SETUP_CALLBACK_PATH,
   SETUP_STEP_ORDER,
   SETUP_STEP_TITLES,
+  SSO_CALLBACK_PATH,
   type SetupEvent,
   type SetupStepId,
   type SetupStepStatus,
@@ -55,7 +58,9 @@ const ADMIN_ACCOUNT_SETTINGS_URL =
   "https://admin.google.com/ac/accountsettings/profile";
 const SHARED_DRIVES_URL = "https://drive.google.com/drive/shared-drives";
 const DRIVE_UI_PATH = "/apis/api/drive.googleapis.com/drive_sdk";
-const SSO_CALLBACK_PATH = "/api/auth/callback/sso";
+const INTERRUPTED_MESSAGE = "The setup stopped before it finished.";
+const INTERRUPTED_HINT =
+  "Run it again; what is done already is kept. The one-time Google sign-in was never stored, and it expires within the hour.";
 
 export type GoogleSetupCallback = {
   code: string | null;
@@ -124,6 +129,8 @@ function useSetupRun(callback: GoogleSetupCallback | null | undefined) {
     void (async () => {
       setRun({ ...EMPTY_RUN, running: true });
 
+      let streamed = false;
+
       try {
         const response = await fetch("/api/admin/google/setup/run", {
           body: JSON.stringify({ code, state }),
@@ -144,6 +151,9 @@ function useSetupRun(callback: GoogleSetupCallback | null | undefined) {
         }
 
         const reader = response.body.getReader();
+
+        streamed = true;
+
         const decoder = new TextDecoder();
         let buffered = "";
 
@@ -173,7 +183,20 @@ function useSetupRun(callback: GoogleSetupCallback | null | undefined) {
           refused: current.refused ?? { message: GENERIC_ERROR_MESSAGE },
         }));
       } finally {
-        setRun((current) => ({ ...current, running: false }));
+        // A stream cut off before the end (a time limit, a proxy) sends no
+        // "finished": say so, rather than leave steps at "Working".
+        setRun((current) =>
+          current.finished || !streamed
+            ? { ...current, running: false }
+            : {
+                ...current,
+                refused: {
+                  hint: INTERRUPTED_HINT,
+                  message: current.refused?.message ?? INTERRUPTED_MESSAGE,
+                },
+                running: false,
+              },
+        );
       }
     })();
   }, [callback]);
@@ -444,7 +467,7 @@ function ClientStep({
             <CopyValue
               hint="Authorized redirect URI 2: connecting Google Drive."
               label="Drive redirect URI"
-              value={`${site}/api/google/drive/callback`}
+              value={`${site}${DRIVE_CALLBACK_PATH}`}
             />
             {target.redirectUri ? (
               <CopyValue
@@ -609,7 +632,7 @@ function AutomaticSetup({
         {showRun ? <RunResults run={run} /> : null}
         {run.finished &&
         run.returnTo &&
-        run.returnTo !== "/settings/google-setup" ? (
+        run.returnTo !== SETUP_CALLBACK_PATH ? (
           <ShellButton href={run.returnTo} variant="secondary">
             Continue
           </ShellButton>
