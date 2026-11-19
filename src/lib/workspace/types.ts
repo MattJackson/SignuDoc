@@ -1,5 +1,9 @@
 import type { EnvSource } from "../utils/env.ts";
-import type { WorkspaceSettingKey, WorkspaceSettings } from "./settings.ts";
+import type {
+  WorkspaceSettingKey,
+  WorkspaceSettings,
+  WorkspaceSettingsUpdate,
+} from "./settings.ts";
 
 // What SignuDoc asks of the services an organization works in, with no
 // provider in it. Each capability is its own contract: a directory of
@@ -382,12 +386,217 @@ export type WorkspaceCheckContext = { email?: string };
 export interface WorkspaceSetup {
   /** How to deploy the add-in, for a provider that has one. */
   addInDeployment?(site: WorkspaceAddInSite): WorkspaceAddInDeployment;
+  /**
+   * Sets everything up with one sign-in, for a provider that can. Absent:
+   * the guide is the only way.
+   */
+  readonly automatic?: WorkspaceAutomaticSetup;
   /** Runs the checks for one target. Never throws; [] when not offered. */
   check(
     target: WorkspaceCheckTarget,
     context?: WorkspaceCheckContext,
   ): Promise<WorkspaceCheck[]>;
+  /** The manual setup, step by step, for a provider that has one. */
+  guide?(site: WorkspaceSetupSite): Promise<WorkspaceSetupGuide>;
   identity(): Promise<WorkspaceIdentity>;
+  /**
+   * The value to save for one of the guide's fields, or why it cannot be
+   * saved. Only keys the guide offers as fields are passed here.
+   */
+  normalizeGuideValue?(
+    setting: WorkspaceSettingKey,
+    value: string,
+  ): { error: string } | { value: string };
+}
+
+// --- Step-by-step and automatic setup ------------------------------------
+
+/** What a provider's setup is told about this site. */
+export type WorkspaceSetupSite = {
+  brandColor: string | null;
+  /**
+   * The addresses on this site a provider's sign-in comes back to, for the
+   * OAuth client: single sign-on, a person's files connection, and the
+   * automatic setup. Null when the site does not know its address.
+   */
+  callbacks: {
+    files: string | null;
+    setup: string | null;
+    signIn: string | null;
+  };
+  /**
+   * The name the provider gives what it makes ("Acme directory reader"):
+   * the organization's name, or the product's.
+   */
+  name: string;
+  /** This site's address, or null when it does not know it. */
+  url: string | null;
+};
+
+/** A value of this site's that the administrator copies into the provider. */
+export type WorkspaceGuideValue = {
+  hint?: string;
+  label: string;
+  value: string;
+};
+
+/** A field on the page whose value is saved as a workspace setting. */
+export type WorkspaceGuideField = {
+  /** The environment variable that fixes it when set. */
+  env: string;
+  label: string;
+  placeholder?: string;
+  setting: WorkspaceSettingKey;
+  source: "env" | "none" | "settings";
+  value: string | null;
+};
+
+/** One step of the manual setup, as data the page lays out. */
+export type WorkspaceGuideStep = {
+  /** What the step's test button checks, or null when it has none. */
+  check: WorkspaceCheckTarget | null;
+  /** In place, not yet, or null when the site cannot tell. */
+  done: boolean | null;
+  fields: WorkspaceGuideField[];
+  /** Stable, for tests and for the page to place it. */
+  id: string;
+  /** What to do, in order. */
+  instructions: string[];
+  /** Pages of the provider's own consoles, in the right project or tenant. */
+  links: Array<{ href: string; label: string }>;
+  optional: boolean;
+  title: string;
+  values: WorkspaceGuideValue[];
+};
+
+export type WorkspaceSetupGuide = {
+  intro: string;
+  steps: WorkspaceGuideStep[];
+};
+
+export type WorkspaceSetupStepStatus =
+  /** It is the administrator's turn: the detail says what to do. */
+  "action" | "done" | "failed" | "running" | "skipped";
+
+/** One choice the administrator is offered during an automatic setup. */
+export type WorkspaceSetupOption = {
+  detail: string | null;
+  id: string;
+  label: string;
+};
+
+/**
+ * What an automatic setup reports as it goes. Messages are the provider's
+ * own words: a provider's error bodies can echo accounts and input, so
+ * only its HTTP status is passed on.
+ */
+export type WorkspaceSetupEvent =
+  | {
+      detail: string;
+      hint?: string;
+      id: string;
+      /** The provider's HTTP status, when it refused. */
+      providerStatus?: number | null;
+      status: WorkspaceSetupStepStatus;
+      title: string;
+      type: "step";
+    }
+  | {
+      options: WorkspaceSetupOption[];
+      preselected: string | null;
+      question: string;
+      /** Why one is preselected, or what is wrong with the list. */
+      reason: string | null;
+      /** Names this run when the choice is sent back. */
+      runId: string;
+      type: "choose";
+      waitSeconds: number;
+    }
+  | { type: "waiting" }
+  | { hint?: string; message: string; type: "refused" }
+  | {
+      ok: boolean;
+      /**
+       * True when no token from the sign-in is left: it was revoked, or
+       * none was issued.
+       */
+      revoked: boolean;
+      type: "finished";
+    };
+
+/** A choice made before signing in, such as whether to make a Shared Drive. */
+export type WorkspaceSetupToggle = {
+  defaultOn: boolean;
+  id: string;
+  label: string;
+};
+
+/** What the page shows before an automatic setup is started. */
+export type WorkspaceAutomaticSetupInfo = {
+  /** Why it cannot run here, or null when it can. */
+  problem: string | null;
+  /** Who signs in, and what the one-time sign-in asks for, in words. */
+  signIn: string[];
+  /** What it will do, in order. */
+  steps: Array<{ id: string; title: string }>;
+  toggles: WorkspaceSetupToggle[];
+};
+
+/** What the app gives a provider's automatic setup to run with. */
+export type WorkspaceAutomaticRunInput = {
+  /**
+   * Offers the administrator a choice and waits for it, within the run's
+   * time. The option's id, or null when none came in time.
+   */
+  choose(offer: {
+    options: WorkspaceSetupOption[];
+    preselected: string | null;
+    question: string;
+    reason: string | null;
+  }): Promise<string | null>;
+  /** The authorization code the provider sent back. */
+  code: string;
+  /** No request is started after this (ms since the epoch). */
+  deadline: number;
+  emit(event: WorkspaceSetupEvent): void;
+  /** The organization's email domains; empty when none are known. */
+  organizationDomains: readonly string[];
+  redirectUri: string;
+  /** Saves workspace settings, audited as the administrator's change. */
+  save(update: WorkspaceSettingsUpdate): Promise<void>;
+  /** What start() returned as secret. */
+  secret: string;
+  /** The stored workspace settings when the run started. */
+  settings: WorkspaceSettings;
+  site: WorkspaceSetupSite;
+  /** The toggles as the administrator left them. */
+  toggles: Readonly<Record<string, boolean>>;
+};
+
+/**
+ * Sets a provider up with one sign-in as its administrator. The sign-in's
+ * token is used only during run() and is always revoked before it returns;
+ * it is never stored or sent to the page. Every step keeps what is already
+ * there, so it can be run again.
+ */
+export interface WorkspaceAutomaticSetup {
+  describe(site: WorkspaceSetupSite): WorkspaceAutomaticSetupInfo;
+  /**
+   * Runs it and reports each step. Never throws for the provider's own
+   * failures; the app reports `finished` with what this returns.
+   */
+  run(
+    input: WorkspaceAutomaticRunInput,
+  ): Promise<{ ok: boolean; revoked: boolean }>;
+  /**
+   * Where to send the administrator to sign in, and a secret (a PKCE
+   * verifier) the app keeps until they come back.
+   */
+  start(input: {
+    redirectUri: string;
+    state: string;
+    toggles: Readonly<Record<string, boolean>>;
+  }): { secret: string; url: string };
 }
 
 // --- The package -------------------------------------------------------

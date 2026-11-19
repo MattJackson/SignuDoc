@@ -60,6 +60,9 @@ export const WORKSPACE_SETTINGS = {
   // Google shows them once it is deployed (providers/google/addon/).
   "google.addonServiceAccount": { env: "GOOGLE_ADDON_SERVICE_ACCOUNT" },
   "google.addonClientId": { env: "GOOGLE_ADDON_CLIENT_ID" },
+  // The Google Cloud project the setup uses for the APIs, the Picker key
+  // and the add-on, for links into the console and the next run.
+  "google.cloudProject": { env: "GOOGLE_WORKSPACE_PROJECT" },
 } as const satisfies Record<string, { env: string }>;
 
 export type WorkspaceSettingKey = keyof typeof WORKSPACE_SETTINGS;

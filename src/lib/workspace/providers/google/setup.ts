@@ -11,6 +11,7 @@ import type {
   WorkspaceCheckTarget,
   WorkspaceIdentity,
   WorkspaceSetup,
+  WorkspaceSetupSite,
 } from "../../types.ts";
 import { checkGoogleAddon, describeAddonDeployment } from "./addon/setup.ts";
 import {
@@ -26,6 +27,11 @@ import {
   readGoogleDirectoryConfig,
 } from "./directory.ts";
 import { createGoogleFiles } from "./drive/drive-files.ts";
+import { createGoogleAutomaticSetup } from "./workspace-setup/automatic.ts";
+import {
+  buildGoogleGuide,
+  normalizeGoogleGuideValue,
+} from "./workspace-setup/guide.ts";
 
 // The site's Google identity and the checks Settings runs for Google
 // (WorkspaceSetup in ../../types.ts). The site acts as a Google service
@@ -261,34 +267,50 @@ export function createGoogleSetup({
     }
   }
 
+  async function check(
+    target: WorkspaceCheckTarget,
+    context: WorkspaceCheckContext = {},
+  ): Promise<WorkspaceCheck[]> {
+    switch (target) {
+      case "identity":
+        return [await checkIdentity()];
+      case "directory":
+        return [await checkDirectory(context)];
+      case "adminGroup":
+        return [await checkAdminGroup(context)];
+      case "files":
+        // The Picker, the Shared Drive and the label (drive/).
+        return createGoogleFiles({
+          credentials: credentialsFor,
+          env,
+          stored: settings,
+        }).check();
+      case "addIn":
+        // The Gmail and Drive add-on (addon/).
+        return checkGoogleAddon({ env, settings });
+      default:
+        return [];
+    }
+  }
+
   return {
     addInDeployment: (site: WorkspaceAddInSite) =>
       describeAddonDeployment({ env, settings, site }),
-    async check(
-      target: WorkspaceCheckTarget,
-      context: WorkspaceCheckContext = {},
-    ): Promise<WorkspaceCheck[]> {
-      switch (target) {
-        case "identity":
-          return [await checkIdentity()];
-        case "directory":
-          return [await checkDirectory(context)];
-        case "adminGroup":
-          return [await checkAdminGroup(context)];
-        case "files":
-          // The Picker, the Shared Drive and the label (drive/).
-          return createGoogleFiles({
-            credentials: credentialsFor,
-            env,
-            stored: settings,
-          }).check();
-        case "addIn":
-          // The Gmail and Drive add-on (addon/).
-          return checkGoogleAddon({ env, settings });
-        default:
-          return [];
-      }
-    },
+    // One sign-in as a Workspace super admin sets it all up
+    // (workspace-setup/). Its last step runs these checks with what it saved.
+    automatic: createGoogleAutomaticSetup({
+      check: (target, saved, context) =>
+        createGoogleSetup({ env, getCredentials, settings: saved }).check(
+          target,
+          context,
+        ),
+      env,
+      getCredentials,
+    }),
+    check,
+    guide: (site: WorkspaceSetupSite) =>
+      buildGoogleGuide({ env, getCredentials, settings, site }),
     identity,
+    normalizeGuideValue: normalizeGoogleGuideValue,
   };
 }
