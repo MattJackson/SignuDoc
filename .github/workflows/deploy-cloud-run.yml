@@ -1,0 +1,159 @@
+# Deploys this branch to Google Cloud Run: builds the image, pushes it to
+# Artifact Registry, then points the service at it by digest. Run it from
+# the Actions tab; it never runs by itself.
+#
+# The database backend (docs/design/database-backends.md):
+# - sqlite (the default): the service runs one instance with a SQLite file
+#   that Litestream copies to Cloud Storage. The image migrates the database
+#   when it starts, so there is no migrate job. This workflow also sets the
+#   service's database, storage and backup settings, its secrets, and its
+#   one-instance limits, so a service made by hand is brought in line.
+# - postgres: Cloud SQL. The migrate job runs with the new image first, and
+#   every other setting of the service is kept.
+#
+# It signs in to Google Cloud through Workload Identity Federation, so no
+# key is stored. examples/google-cloud-run/setup.sh with GITHUB_REPOSITORY set
+# makes the pool, the provider and the deploy service account. Then set
+# these repository variables (Settings, Secrets and variables, Actions,
+# Variables). None of them is a secret.
+#
+#   GCP_PROJECT_ID                  my-project
+#   GCP_REGION                      us-central1
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/123456789/locations/global/workloadIdentityPools/github/providers/github
+#   GCP_DEPLOY_SERVICE_ACCOUNT      signudoc-deploy@my-project.iam.gserviceaccount.com
+#   CLOUD_RUN_SERVICE               optional, signudoc
+#   ARTIFACT_REPOSITORY             optional, signudoc
+#   DB_BACKEND                      optional, sqlite or postgres (sqlite)
+#   APP_URL                         optional, the site's address; unset keeps the service's current value
+#   FILES_BUCKET, DB_BUCKET, SQLITE_PATH
+#                                   optional, SQLite: what setup.sh was given (its defaults)
+#   BACKUP_BUCKET                   optional, SQLite: set it only if setup.sh made a backup bucket
+#
+# On SQLite the buckets are the ones setup.sh makes: <project>-<service>-files
+# for documents and <project>-<service>-db for the database replica, unless
+# the variables above name others. The backup bucket is set only when
+# BACKUP_BUCKET is.
+#
+# See examples/google-cloud-run/README.md.
+
+name: Deploy to Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      migrate:
+        description: "Postgres only: run the database migrations before deploying."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build, migrate, deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'signudoc' }}
+      REPOSITORY: ${{ vars.ARTIFACT_REPOSITORY || 'signudoc' }}
+      DB_BACKEND: ${{ vars.DB_BACKEND || 'sqlite' }}
+      APP_URL: ${{ vars.APP_URL }}
+    steps:
+      - name: Check the settings
+        env:
+          PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOY_SA: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          for name in PROJECT_ID PROVIDER DEPLOY_SA; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Set the repository variables listed at the top of .github/workflows/deploy-cloud-run.yml first."
+              exit 1
+            fi
+          done
+          case "${DB_BACKEND}" in
+            sqlite | postgres) ;;
+            *) echo "::error::DB_BACKEND must be sqlite or postgres."; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v6
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Build and push the image
+        id: image
+        run: |
+          image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "${image}:${GITHUB_SHA}" .
+          docker push "${image}:${GITHUB_SHA}"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:${GITHUB_SHA}")"
+          echo "ref=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "Image: \`${digest}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run the migrations
+        if: inputs.migrate && env.DB_BACKEND == 'postgres'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          gcloud run jobs update "${SERVICE}-migrate" --project="${PROJECT_ID}" --region="${REGION}" --image="${IMAGE}"
+          gcloud run jobs execute "${SERVICE}-migrate" --project="${PROJECT_ID}" --region="${REGION}" --wait
+
+      - name: Deploy (Postgres)
+        if: env.DB_BACKEND == 'postgres'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          gcloud run services update "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --image="${IMAGE}"
+
+      # The database is a file on the one instance, copied to the replica
+      # bucket by Litestream, and migrated when the container starts.
+      - name: Deploy (SQLite)
+        if: env.DB_BACKEND == 'sqlite'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+          FILES_BUCKET: ${{ vars.FILES_BUCKET }}
+          DB_BUCKET: ${{ vars.DB_BUCKET }}
+          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
+          SQLITE_PATH: ${{ vars.SQLITE_PATH }}
+        run: |
+          # The names setup.sh uses unless it was given others. APP_URL and
+          # the backup bucket are only set when asked for, so what setup.sh
+          # chose stays.
+          files_bucket="${FILES_BUCKET:-${PROJECT_ID}-${SERVICE}-files}"
+          db_bucket="${DB_BUCKET:-${PROJECT_ID}-${SERVICE}-db}"
+          env_vars="DATABASE_URL=sqlite:${SQLITE_PATH:-/data/signudoc.db}"
+          env_vars+=",LITESTREAM_REPLICA_URL=gs://${db_bucket}/db"
+          env_vars+=",STORAGE_DRIVER=gcs,GCS_BUCKET=${files_bucket}"
+          if [ -n "${APP_URL}" ]; then
+            env_vars+=",APP_URL=${APP_URL}"
+          fi
+          if [ -n "${BACKUP_BUCKET}" ]; then
+            env_vars+=",BACKUP_GCS_BUCKET=${BACKUP_BUCKET}"
+          fi
+          secrets="BETTER_AUTH_SECRET=${SERVICE}-better-auth-secret:latest"
+          secrets+=",SETUP_TOKEN=${SERVICE}-setup-token:latest"
+          secrets+=",RETENTION_JOB_SECRET=${SERVICE}-retention-job-secret:latest"
+          gcloud run deploy "${SERVICE}" --quiet --project="${PROJECT_ID}" --region="${REGION}" \
+            --image="${IMAGE}" --service-account="${SERVICE}-run@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --max-instances=1 --min-instances=0 --no-cpu-throttling --execution-environment=gen2 \
+            --cpu=1 --memory=1Gi --port=8080 \
+            --update-env-vars="${env_vars}" --update-secrets="${secrets}"
+
+      - name: Summary
+        run: |
+          url="$(gcloud run services describe "${SERVICE}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"
+          echo "Deployed to ${url} (${DB_BACKEND})" >> "${GITHUB_STEP_SUMMARY}"
