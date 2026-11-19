@@ -51,8 +51,24 @@ export type FakeCloudState = {
   /** IAM policies of service accounts, by address. */
   iamPolicies: Map<
     string,
-    { bindings: Array<{ members: string[]; role: string }>; etag: string }
+    {
+      bindings: Array<{
+        condition?: Record<string, unknown>;
+        members: string[];
+        role: string;
+      }>;
+      etag: string;
+      version?: number;
+    }
   >;
+  /** How many more policy writes are refused as made at the same time. */
+  iamEtagConflicts: number;
+  /** Key creation fails with a bare precondition error, not the policy. */
+  keyFailure: "precondition" | null;
+  /** The user-managed keys of each service account, by address. */
+  accountKeys: Map<string, string[]>;
+  /** The policy version each getIamPolicy asked for. */
+  requestedPolicyVersions: number[];
   /** Keys made for each service account, by address. */
   keysMade: Map<string, number>;
   /** Organizations, with the Workspace domain each belongs to. */
@@ -117,7 +133,11 @@ export function cloudState(state: FakeGoogleState): FakeCloudState {
       drivePermissions: new Map(),
       enabledServices: new Set(["serviceusage.googleapis.com"]),
       hideProjectNumber: false,
+      accountKeys: new Map(),
+      iamEtagConflicts: 0,
       iamPolicies: new Map(),
+      keyFailure: null,
+      requestedPolicyVersions: [],
       keysMade: new Map(),
       operations: new Map(),
       organizations: [
@@ -869,7 +889,7 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
   const { method, path, response } = context;
   const create = /^\/v1\/projects\/([^/]+)\/serviceAccounts$/.exec(path);
   const account =
-    /^\/v1\/projects\/([^/]+)\/serviceAccounts\/([^/:]+)(\/keys|:getIamPolicy|:setIamPolicy)?$/.exec(
+    /^\/v1\/projects\/([^/]+)\/serviceAccounts\/([^/:]+)(\/keys|:getIamPolicy|:setIamPolicy)?(?:\/([^/]+))?$/.exec(
       path,
     );
 
@@ -932,6 +952,12 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
   }
 
   const action = account?.[3];
+  const keyId = account?.[4] ? decodeURIComponent(account[4]) : null;
+  const keys = cloud.accountKeys.get(email) ?? [];
+  const keyName = (id: string) =>
+    `projects/${stored.projectId}/serviceAccounts/${email}/keys/${id}`;
+
+  cloud.accountKeys.set(email, keys);
 
   if (!action && method === "GET") {
     sendJson(response, 200, {
@@ -942,25 +968,59 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
     return true;
   }
 
-  if (action === "/keys" && method === "POST") {
-    if (cloud.refuseKeys) {
+  if (action === "/keys" && method === "GET") {
+    sendJson(response, 200, {
+      keys: keys.map((id) => ({ keyType: "USER_MANAGED", name: keyName(id) })),
+    });
+    return true;
+  }
+
+  if (action === "/keys" && keyId && method === "DELETE") {
+    if (!keys.includes(keyId)) {
+      sendGoogleError(response, 404, "notFound", "Key not found.");
+      return true;
+    }
+
+    keys.splice(keys.indexOf(keyId), 1);
+    sendJson(response, 200, {});
+    return true;
+  }
+
+  if (action === "/keys" && !keyId && method === "POST") {
+    if (cloud.refuseKeys || cloud.keyFailure === "precondition") {
       sendJson(response, 400, {
         error: {
           code: 400,
-          details: [
-            {
-              "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
-              violations: [
+          details: cloud.refuseKeys
+            ? [
                 {
-                  description:
-                    "Key creation is not allowed on this service account.",
-                  subject: `projects/${stored.projectId}?configvalue=${email}`,
-                  type: "constraints/iam.disableServiceAccountKeyCreation",
+                  "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
+                  violations: [
+                    {
+                      description:
+                        "Key creation is not allowed on this service account.",
+                      subject: `projects/${stored.projectId}?configvalue=${email}`,
+                      type: "constraints/iam.disableServiceAccountKeyCreation",
+                    },
+                  ],
                 },
-              ],
-            },
-          ],
-          message: "Key creation is not allowed on this service account.",
+              ]
+            : [],
+          message: cloud.refuseKeys
+            ? "Key creation is not allowed on this service account."
+            : "Precondition check failed.",
+          status: "FAILED_PRECONDITION",
+        },
+      });
+      return true;
+    }
+
+    // Google holds an account to 10 user-managed keys.
+    if (keys.length >= 10) {
+      sendJson(response, 400, {
+        error: {
+          code: 400,
+          message: "Precondition check failed.",
           status: "FAILED_PRECONDITION",
         },
       });
@@ -970,21 +1030,24 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
     const { privateKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
     });
+    const id = newId(context.state, "key");
     const key = {
       client_email: email,
       client_id: stored.uniqueId,
       private_key: privateKey
         .export({ format: "pem", type: "pkcs8" })
         .toString(),
-      private_key_id: newId(context.state, "key"),
+      private_key_id: id,
       project_id: stored.projectId,
       token_uri: "https://oauth2.googleapis.com/token",
       type: "service_account",
     };
 
+    keys.push(id);
     cloud.keysMade.set(email, (cloud.keysMade.get(email) ?? 0) + 1);
     sendJson(response, 200, {
-      name: `projects/${stored.projectId}/serviceAccounts/${email}/keys/${key.private_key_id}`,
+      keyType: "USER_MANAGED",
+      name: keyName(id),
       privateKeyData: Buffer.from(JSON.stringify(key)).toString("base64"),
       privateKeyType: "TYPE_GOOGLE_CREDENTIALS_FILE",
     });
@@ -992,6 +1055,16 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
   }
 
   if (action === ":getIamPolicy" && method === "POST") {
+    const input = readJsonBody(context.body) ?? {};
+    const options = (input.options ?? {}) as {
+      requestedPolicyVersion?: unknown;
+    };
+
+    cloud.requestedPolicyVersions.push(
+      typeof options.requestedPolicyVersion === "number"
+        ? options.requestedPolicyVersion
+        : 0,
+    );
     sendJson(
       response,
       200,
@@ -1003,15 +1076,63 @@ function handleIam(context: FakeRequest, cloud: FakeCloudState): boolean {
   if (action === ":setIamPolicy" && method === "POST") {
     const input = readJsonBody(context.body) ?? {};
     const policy = (input.policy ?? {}) as {
-      bindings?: Array<{ members?: string[]; role?: string }>;
+      bindings?: Array<{
+        condition?: Record<string, unknown>;
+        members?: string[];
+        role?: string;
+      }>;
+      etag?: string;
+      version?: number;
     };
+    const current = cloud.iamPolicies.get(email);
+
+    // Someone else changed the policy since it was read.
+    if (cloud.iamEtagConflicts > 0) {
+      cloud.iamEtagConflicts -= 1;
+
+      if (current) {
+        current.etag = newId(context.state, "etag");
+      }
+
+      sendJson(response, 409, {
+        error: {
+          code: 409,
+          message: "There were concurrent policy changes.",
+          status: "ABORTED",
+        },
+      });
+      return true;
+    }
+
+    if (current && policy.etag !== current.etag) {
+      sendJson(response, 409, {
+        error: { code: 409, message: "Etag mismatch.", status: "ABORTED" },
+      });
+      return true;
+    }
+
+    const hasConditions = (policy.bindings ?? []).some(
+      (binding) => binding.condition,
+    );
+
+    if (hasConditions && policy.version !== 3) {
+      sendGoogleError(
+        response,
+        400,
+        "badRequest",
+        "A policy with conditions needs version 3.",
+      );
+      return true;
+    }
 
     cloud.iamPolicies.set(email, {
       bindings: (policy.bindings ?? []).map((binding) => ({
+        ...(binding.condition ? { condition: binding.condition } : {}),
         members: binding.members ?? [],
         role: binding.role ?? "",
       })),
       etag: newId(context.state, "etag"),
+      ...(policy.version ? { version: policy.version } : {}),
     });
     sendJson(response, 200, cloud.iamPolicies.get(email));
     return true;

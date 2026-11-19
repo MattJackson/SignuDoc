@@ -92,6 +92,7 @@ function setup(
       directory: stored["google.directory"] ?? null,
       exportDriveId: stored["drive.exportDriveId"] ?? null,
       pickerApiKey: stored["drive.pickerApiKey"] ?? null,
+      serviceAccountKeyName: stored["google.serviceAccountKeyName"] ?? null,
     },
     exportDrive: true,
     identity: {
@@ -99,7 +100,9 @@ function setup(
         email: FAKE_SERVICE_ACCOUNT_EMAIL,
         source: "service-account-key",
       },
+      loginAvailable: false,
       saved: null,
+      unreadable: null,
     },
     project: {
       create: false,
@@ -175,18 +178,6 @@ test("the sign-in asks for the setup scopes with PKCE, and its state is sealed",
   const cookie = {
     createdAt: 1000,
     exportDrive: true,
-    identity: {
-      fixed: {
-        email: FAKE_SERVICE_ACCOUNT_EMAIL,
-        source: "service-account-key",
-      },
-      saved: null,
-    },
-    project: {
-      create: false,
-      projectId: "fake-project",
-      projectNumber: null,
-    },
     returnTo: "/onboarding?step=google-workspace",
     state: "state-1",
     userId: "user-1",
@@ -649,6 +640,19 @@ test("an API that is still coming on is tried again after a wait", async () => {
 const OWN_ACCOUNT =
   "busbarsigner-workspace@fake-project.iam.gserviceaccount.com";
 
+/** The site has no identity of its own yet, unless told otherwise. */
+function ownIdentity(
+  overrides: Partial<WorkspaceSetupInput["identity"]> = {},
+): WorkspaceSetupInput["identity"] {
+  return {
+    fixed: null,
+    loginAvailable: false,
+    saved: null,
+    unreadable: null,
+    ...overrides,
+  };
+}
+
 function failedStep(events: SetupEvent[], id: string) {
   const event = events.find(
     (item) =>
@@ -743,7 +747,7 @@ test("a new project is made in the organization, saved, and used for every step"
 
 test("off Google Cloud the setup makes the site's own service account and stores a key for it", async () => {
   const stored: Stored = {};
-  const first = setup(stored, { identity: { fixed: null, saved: null } });
+  const first = setup(stored, { identity: ownIdentity() });
 
   assert.equal(await runWorkspaceSetup(first.input), true);
   assert.equal(outcomeOf(first.events, "identity"), "done");
@@ -779,10 +783,9 @@ test("off Google Cloud the setup makes the site's own service account and stores
   assert.equal(await credentials?.getServiceAccountEmail(), OWN_ACCOUNT);
 
   const second = setup(stored, {
-    identity: {
-      fixed: null,
+    identity: ownIdentity({
       saved: { email: OWN_ACCOUNT, source: "stored-key" },
-    },
+    }),
   });
 
   assert.equal(await runWorkspaceSetup(second.input), true);
@@ -796,7 +799,7 @@ test("where the organization forbids keys, the administrator may impersonate the
   cloud.refuseKeys = true;
 
   const stored: Stored = {};
-  const run = setup(stored, { identity: { fixed: null, saved: null } });
+  const run = setup(stored, { identity: ownIdentity() });
 
   assert.equal(await runWorkspaceSetup(run.input), false);
 
@@ -827,7 +830,7 @@ test("where the organization forbids keys, the administrator may impersonate the
   );
 
   // Run again: the grant is not added twice.
-  const again = setup(stored, { identity: { fixed: null, saved: null } });
+  const again = setup(stored, { identity: ownIdentity() });
 
   await runWorkspaceSetup(again.input);
   assert.equal(
@@ -840,10 +843,9 @@ test("on Cloud Run the account the site runs as is used, and no account or key i
   const run = setup(
     {},
     {
-      identity: {
+      identity: ownIdentity({
         fixed: { email: FAKE_SERVICE_ACCOUNT_EMAIL, source: "metadata" },
-        saved: null,
-      },
+      }),
     },
   );
 
@@ -993,4 +995,149 @@ test("the gcloud login impersonates the account the setup made", async () => {
     refused!.getAccessToken({ scopes: [GOOGLE_SCOPES.directoryUserReadonly] }),
     /IAM generateAccessToken failed with 403/,
   );
+});
+
+// Keys are not left behind, and a working identity is not given up.
+
+function keysOf(email: string): string[] {
+  return cloudState(fake.state).accountKeys.get(email) ?? [];
+}
+
+test("an identity set where the site runs that cannot be read is reported, and no account or key is made", async () => {
+  const configured = "app@other-project.iam.gserviceaccount.com";
+  const run = setup(
+    {},
+    {
+      identity: ownIdentity({
+        unreadable: {
+          email: configured,
+          problem:
+            "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT is set, but no gcloud application-default login is mounted into the container.",
+        },
+      }),
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+
+  const failed = failedStep(run.events, "identity");
+
+  assert.match(failed?.detail ?? "", /no gcloud application-default login/);
+  assert.equal(cloudState(fake.state).serviceAccounts.size, 0);
+  assert.equal(cloudState(fake.state).keysMade.size, 0);
+  // The rest of the setup uses the account the environment names.
+  assert.deepEqual(
+    cloudState(fake.state).roleAssignments.map((item) => item.assignedTo),
+    [fakeServiceAccountUniqueId(configured)],
+  );
+});
+
+test("a precondition failure that is not the key policy is not taken for a refusal", async () => {
+  cloudState(fake.state).keyFailure = "precondition";
+
+  const stored: Stored = {};
+  const run = setup(stored, { identity: ownIdentity() });
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+  assert.equal(failedStep(run.events, "identity")?.googleStatus, 400);
+  assert.equal(stored["google.impersonateServiceAccount"], undefined);
+  assert.equal(cloudState(fake.state).iamPolicies.size, 0);
+});
+
+test("the key an earlier run made is deleted when a new one is made", async () => {
+  const stored: Stored = {};
+
+  await runWorkspaceSetup(setup(stored, { identity: ownIdentity() }).input);
+
+  const firstName = stored["google.serviceAccountKeyName"];
+
+  assert.ok(firstName?.endsWith(`/keys/${keysOf(OWN_ACCOUNT)[0] ?? ""}`));
+
+  // The stored key could not be read any more (the auth secret changed),
+  // so the next run makes another.
+  delete stored["google.serviceAccountKey"];
+
+  const again = setup(stored, { identity: ownIdentity() });
+
+  assert.equal(await runWorkspaceSetup(again.input), true);
+  assert.equal(keysOf(OWN_ACCOUNT).length, 1, "the old key is gone");
+  assert.notEqual(stored["google.serviceAccountKeyName"], firstName);
+  assert.equal(cloudState(fake.state).keysMade.get(OWN_ACCOUNT), 2);
+});
+
+test("an account at Google's limit of 10 keys is reported, and nothing is deleted", async () => {
+  const cloud = cloudState(fake.state);
+
+  cloud.serviceAccounts.set(OWN_ACCOUNT, {
+    displayName: "BusbarSigner Workspace",
+    email: OWN_ACCOUNT,
+    projectId: "fake-project",
+    uniqueId: fakeServiceAccountUniqueId(OWN_ACCOUNT),
+  });
+  cloud.accountKeys.set(
+    OWN_ACCOUNT,
+    Array.from({ length: 10 }, (_, index) => `old-${String(index)}`),
+  );
+
+  const run = setup({}, { identity: ownIdentity() });
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+
+  const failed = failedStep(run.events, "identity");
+
+  assert.match(failed?.detail ?? "", /10 keys/);
+  assert.match(failed?.hint ?? "", /Delete/);
+  assert.equal(keysOf(OWN_ACCOUNT).length, 10);
+});
+
+test("a working stored key is kept when keys are refused and no gcloud login is mounted", async () => {
+  const cloud = cloudState(fake.state);
+  const oldAccount = "signudoc@fake-project.iam.gserviceaccount.com";
+
+  cloud.refuseKeys = true;
+
+  const stored: Stored = { "google.serviceAccountKey": '{"old":"key"}' };
+  const run = setup(stored, {
+    identity: ownIdentity({
+      saved: { email: oldAccount, source: "stored-key" },
+    }),
+  });
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(stored["google.serviceAccountKey"], '{"old":"key"}');
+  assert.equal(stored["google.impersonateServiceAccount"], OWN_ACCOUNT);
+  assert.match(
+    failedStep(run.events, "identity")?.detail ?? "",
+    /keeps using the stored key/,
+  );
+
+  // With the login mounted, the next run switches to it.
+  const mounted = setup(stored, {
+    identity: ownIdentity({
+      loginAvailable: true,
+      saved: { email: oldAccount, source: "stored-key" },
+    }),
+  });
+
+  await runWorkspaceSetup(mounted.input);
+  assert.equal(stored["google.serviceAccountKey"], undefined);
+});
+
+test("the account's IAM policy is read as version 3 and written again after a conflict", async () => {
+  const cloud = cloudState(fake.state);
+
+  cloud.refuseKeys = true;
+  cloud.iamEtagConflicts = 1;
+
+  const run = setup({}, { identity: ownIdentity() });
+
+  await runWorkspaceSetup(run.input);
+  assert.ok(cloud.requestedPolicyVersions.length >= 2);
+  assert.ok(cloud.requestedPolicyVersions.every((version) => version === 3));
+  assert.deepEqual(cloud.iamPolicies.get(OWN_ACCOUNT)?.bindings, [
+    {
+      members: [`user:${ADMIN}`],
+      role: "roles/iam.serviceAccountTokenCreator",
+    },
+  ]);
 });

@@ -128,7 +128,10 @@ async function run(
     choose?: (
       offer: Extract<SetupEvent, { type: "choose" }>,
     ) => SetupProjectChoice | null;
-    choiceWaitMs?: number;
+    /** Null waits as long as the setup itself would. */
+    choiceWaitMs?: number | null;
+    fetchImpl?: typeof fetch;
+    sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
   const { code, verifier } = await signIn(email);
@@ -145,7 +148,10 @@ async function run(
 
   await runAutomaticSetup({
     actor,
-    choiceWaitMs: options.choiceWaitMs ?? 20_000,
+    choiceWaitMs:
+      options.choiceWaitMs === null
+        ? undefined
+        : (options.choiceWaitMs ?? 20_000),
     code,
     codeVerifier: verifier,
     emit: (event) => {
@@ -173,8 +179,11 @@ async function run(
     },
     env,
     exportDrive: false,
-    sleep: (ms) =>
-      new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+    fetchImpl: options.fetchImpl,
+    sleep:
+      options.sleep ??
+      ((ms) =>
+        new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 20)))),
   });
 
   await Promise.all(choices);
@@ -358,4 +367,103 @@ test("a choice sent by someone else is not taken", async () => {
   assert.deepEqual(await Promise.all(sent), [true]);
   assert.match(refusalOf(result.events), /No project was chosen in time/);
   assert.equal(finishedOf(result.events)?.revoked, true);
+});
+
+test("someone else's answer does not keep the person running the setup from answering", async () => {
+  const answers: Promise<boolean>[] = [];
+  const result = await run(
+    ADMIN,
+    process.env,
+    (event) => {
+      if (event.type === "choose") {
+        answers.push(
+          submitProjectChoice({
+            choice: { create: true },
+            runId: event.runId,
+            userId: "someone-else",
+          }).then(() =>
+            submitProjectChoice({
+              choice: { create: false, projectId: "fake-project" },
+              runId: event.runId,
+              userId: actor.id,
+            }),
+          ),
+        );
+      }
+    },
+    { choose: () => null },
+  );
+
+  assert.deepEqual(await Promise.all(answers), [true]);
+
+  assert.equal(finishedOf(result.events)?.ok, true);
+  assert.equal(
+    result.events.some(
+      (event) =>
+        event.type === "step" &&
+        event.id === "project" &&
+        event.status === "done",
+    ),
+    true,
+  );
+});
+
+test("the slowest run, a late choice and the revoke included, ends inside the route's 300 seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+
+  const startedAt = Date.now();
+  let offer: Extract<SetupEvent, { type: "choose" }> | null = null;
+  let offeredAt = 0;
+  let answered = false;
+  // Every Google request the run makes takes 15 seconds, the longest one
+  // is let run.
+  const slowFetch: typeof fetch = async (url, init) => {
+    t.mock.timers.tick(15_000);
+    return fetch(url, init);
+  };
+  const result = await run(
+    ADMIN,
+    process.env,
+    (event) => {
+      if (event.type === "choose") {
+        offer = event;
+        offeredAt = Date.now();
+      }
+    },
+    {
+      choiceWaitMs: null,
+      // The answer comes a second before the run stops waiting.
+      choose: () => null,
+      fetchImpl: slowFetch,
+      sleep: async (ms) => {
+        t.mock.timers.tick(ms);
+
+        const current = offer as Extract<SetupEvent, { type: "choose" }> | null;
+
+        if (
+          current &&
+          !answered &&
+          Date.now() >= offeredAt + current.waitSeconds * 1000 - 1000
+        ) {
+          answered = true;
+          await submitProjectChoice({
+            choice: { create: false, projectId: "fake-project" },
+            runId: current.runId,
+            userId: actor.id,
+          });
+        }
+      },
+    },
+  );
+  // The code exchange and the revoke reach Google outside the slow fetch:
+  // 15 seconds each at the most.
+  const worst = Date.now() - startedAt + 2 * 15_000;
+
+  assert.ok(answered, "the choice was sent");
+  assert.ok(
+    result.events.some((event) => event.type === "step"),
+    "steps ran after the choice",
+  );
+  assert.equal(finishedOf(result.events)?.revoked, true);
+  assert.ok(worst < 300_000, `took ${String(worst / 1000)} s`);
 });
