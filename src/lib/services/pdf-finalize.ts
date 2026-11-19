@@ -10,6 +10,7 @@ import {
 import type { FieldRecord } from "../schemas/field.ts";
 import type { SignerRecord } from "../schemas/signer.ts";
 import { buildSignatureManifestation } from "../signature-meanings.ts";
+import { hasSharedSigningStep, signingStepOf } from "../signing-steps.ts";
 import { describeSignerCorrectedEvent } from "./audit.ts";
 import { canonicalJson } from "../utils/canonical-json.ts";
 import { normalizedRectToPdfRect } from "../utils/pdf-coords.ts";
@@ -22,6 +23,7 @@ import {
   type StoredPageSize,
 } from "./pdf-page-geometry.ts";
 import { sha256Hex } from "./pdf-seal.ts";
+import { getSealTimestampUrl } from "../seal-settings.ts";
 import { getBranding } from "../settings.ts";
 import {
   finishSignerSignedPdf,
@@ -65,18 +67,32 @@ export type PdfSealer = (
 const defaultSealer: PdfSealer = (pdfDocument, purpose) =>
   saveInstallSealedPdf(pdfDocument, purpose);
 
+// The timestamp server each loaded sealer read, so a document the signers
+// signed themselves (finishSignerSignedPdf) uses it too without asking the
+// database again inside the caller's transaction.
+const loadedTimestampUrls = new WeakMap<PdfSealer, string | null>();
+
 /**
- * The install's sealer, with what it reads from the database (the seal key
- * and the install's name) read now. Sealing with it then needs no database
- * connection, so a caller can seal while it holds one in a transaction
- * without waiting on a pool that its own concurrent requests have filled.
+ * The install's sealer, with what it reads from the database (the seal key,
+ * the timestamp server and the install's name) read now. Sealing with it
+ * then needs no database connection, so a caller can seal while it holds
+ * one in a transaction without waiting on a pool that its own concurrent
+ * requests have filled.
  */
 export async function loadInstallSealer(): Promise<PdfSealer> {
   const identity = await getSealIdentity();
   const branding = await getBranding();
+  const timestampUrl = await getSealTimestampUrl();
+  const sealer: PdfSealer = (pdfDocument, purpose) =>
+    saveInstallSealedPdf(pdfDocument, purpose, {
+      branding,
+      identity,
+      timestampUrl,
+    });
 
-  return (pdfDocument, purpose) =>
-    saveInstallSealedPdf(pdfDocument, purpose, { branding, identity });
+  loadedTimestampUrls.set(sealer, timestampUrl);
+
+  return sealer;
 }
 
 const CERTIFICATE_FINGERPRINT_VERSION = 1;
@@ -141,6 +157,10 @@ function redactAuditEventMetadataForRecipients(
   delete nextMetadata.recipient;
   // A correction's previous address is the same kind of third-party email.
   delete nextMetadata.previousEmail;
+  // Whose envelope it was and who took it over (directory-sync.ts) are the
+  // organization's own accounts.
+  delete nextMetadata.fromEmail;
+  delete nextMetadata.toEmail;
 
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
@@ -790,15 +810,46 @@ function buildAuditLines(input: {
     },
   );
 
-  pushParagraph("Signers", input.fonts.bold, sectionFontSize, {
-    gapAfter: 4,
-  });
+  const approvers = input.signers.filter(
+    (signer) => signer.role === "approver",
+  );
+
+  pushParagraph(
+    approvers.length > 0 ? "Signers and approvers" : "Signers",
+    input.fonts.bold,
+    sectionFontSize,
+    {
+      gapAfter: 4,
+    },
+  );
+
+  if (approvers.length > 0) {
+    pushParagraph(
+      "Approvers reviewed the document and approved or rejected it. They placed no signature and nothing of theirs is stamped on the document.",
+      input.fonts.regular,
+      bodyFontSize,
+    );
+  }
+
+  // Each signer is numbered by their step of the signing order. With every
+  // signer in a step of their own that is their place in the list; signers
+  // who share a number were asked to sign at the same time, and the line
+  // below says so.
+  if (hasSharedSigningStep(input.signers)) {
+    pushParagraph(
+      "Signers with the same number were asked to sign at the same time. Each number started once everyone with the number before it had signed.",
+      input.fonts.regular,
+      bodyFontSize,
+    );
+  }
 
   for (const signer of input.signers) {
     const actionLabel = getSignerCertificateActionLabel(input.envelope, signer);
+    const step = signingStepOf(signer);
+    const roleLabel = signer.role === "approver" ? " | Approver" : "";
     const signerLabel = input.redactForRecipients
-      ? `${signer.signOrder}. ${signer.name} | ${actionLabel}`
-      : `${signer.signOrder}. ${signer.name} <${signer.email}> | ${actionLabel}`;
+      ? `${step}. ${signer.name}${roleLabel} | ${actionLabel}`
+      : `${step}. ${signer.name} <${signer.email}>${roleLabel} | ${actionLabel}`;
 
     pushParagraph(signerLabel, input.fonts.regular, bodyFontSize);
 
@@ -808,6 +859,34 @@ function buildAuditLines(input: {
       Boolean(input.redactForRecipients),
     )) {
       pushParagraph(`   ${detail}`, input.fonts.regular, bodyFontSize);
+    }
+  }
+
+  // Approvals on their own, so they are never read as signatures.
+  const decided = approvers.filter(
+    (signer) => signer.status === "signed" || signer.status === "declined",
+  );
+
+  if (decided.length > 0) {
+    pushParagraph("Approvals", input.fonts.bold, sectionFontSize, {
+      gapAfter: 4,
+      gapBefore: 10,
+    });
+
+    for (const approver of decided) {
+      const who = input.redactForRecipients
+        ? approver.name
+        : `${approver.name} <${approver.email}>`;
+
+      pushParagraph(
+        approver.status === "signed"
+          ? `Approved by ${who} at ${formatAuditTimestamp(approver.signedAt)}`
+          : `Rejected by ${who} at ${formatAuditTimestamp(approver.declinedAt)}${
+              approver.declineReason ? `: ${approver.declineReason}` : ""
+            }`,
+        input.fonts.regular,
+        bodyFontSize,
+      );
     }
   }
 
@@ -840,8 +919,7 @@ function buildAuditLines(input: {
 
   for (const event of auditEvents) {
     const actorLabel = describeAuditActor(event);
-    const eventLabel =
-      event.event === "signer_corrected" ? "Signer corrected" : event.event;
+    const eventLabel = AUDIT_EVENT_LABELS[event.event] ?? event.event;
 
     pushParagraph(
       `${formatAuditTimestamp(event.createdAt)} | ${eventLabel} | ${actorLabel}`,
@@ -867,10 +945,17 @@ function buildAuditLines(input: {
   return lines;
 }
 
+/** Event names printed in words where the bare name would not read well. */
+const AUDIT_EVENT_LABELS: Partial<Record<AuditEventRecord["event"], string>> = {
+  handed_over: "handed over",
+  signer_corrected: "Signer corrected",
+};
+
 const AUTHENTICATION_LABELS: Record<string, string> = {
   access_code: "access code from the sender",
   account: "own account, with email address and password to open it",
   email_code: "one-time code sent by email",
+  google: "identity confirmed by Google Workspace sign-in",
 };
 
 function readStringArray(value: unknown): string[] {
@@ -988,7 +1073,16 @@ function describeSignerEvidence(
     (event) => event.metadata?.signerId === signer.id,
   );
   const details: string[] = [];
-  const signed = forSigner.find((event) => event.event === "signed");
+  const approver = signer.role === "approver";
+  // The signature, or an approver's approval.
+  const signed = forSigner.find(
+    (event) => event.event === (approver ? "approved" : "signed"),
+  );
+  // A decline or a rejection, which also say which checks the person had
+  // passed.
+  const ended = forSigner.find(
+    (event) => event.event === "declined" || event.event === "rejected",
+  );
   // A correction clears the row's consent. The first consented event for
   // this signer id can still be the previous person's, so only agreement
   // recorded after the latest standing correction counts as this
@@ -1008,10 +1102,24 @@ function describeSignerEvidence(
 
   const checks = [
     "possession of the emailed signing link",
-    ...readStringArray(signed?.metadata?.authMethods).map(
+    ...readStringArray((signed ?? ended)?.metadata?.authMethods).map(
       (method) => AUTHENTICATION_LABELS[method] ?? method,
     ),
   ];
+
+  // A Google sign-in the signer chose to make when it was only offered is
+  // not in the signature's checks, which list what was asked of them. It
+  // is evidence all the same.
+  const googleConfirmed = forSigner
+    .slice(identityStart)
+    .some(
+      (event) =>
+        event.event === "verified" && event.metadata?.method === "google",
+    );
+
+  if (googleConfirmed && !checks.includes(AUTHENTICATION_LABELS.google!)) {
+    checks.push(AUTHENTICATION_LABELS.google!);
+  }
 
   const part11 =
     signed?.metadata?.part11 && typeof signed.metadata.part11 === "object"
@@ -1057,7 +1165,9 @@ function describeSignerEvidence(
   details.push(...describeProviderSignatureEvidence(signed, redacted));
 
   if (!redacted && signed?.ipAddress) {
-    details.push(`Signed from IP ${signed.ipAddress}`);
+    details.push(
+      `${approver ? "Approved" : "Signed"} from IP ${signed.ipAddress}`,
+    );
   }
 
   return details;
@@ -1118,7 +1228,15 @@ function describeEventEvidence(event: AuditEventRecord): string[] {
     );
   }
 
-  if (
+  if (event.event === "verification_failed" && metadata.method === "google") {
+    details.push(
+      `Google Workspace sign-in not accepted${
+        typeof metadata.reason === "string"
+          ? ` (${metadata.reason.replaceAll("_", " ")})`
+          : ""
+      }`,
+    );
+  } else if (
     event.event === "verification_failed" &&
     typeof metadata.method === "string"
   ) {
@@ -1134,21 +1252,25 @@ function getSignerCertificateActionLabel(
   envelope: EnvelopeRecord,
   signer: SignerRecord,
 ): string {
+  // An approver's turn done is an approval, and their decline a rejection.
+  const approver = signer.role === "approver";
+  const awaiting = approver ? "Awaiting approval" : "Awaiting signature";
+
   switch (signer.status) {
     case "signed":
-      return `Signed at ${formatAuditTimestamp(signer.signedAt)}`;
+      return `${approver ? "Approved" : "Signed"} at ${formatAuditTimestamp(signer.signedAt)}`;
     case "declined":
-      return `Declined at ${formatAuditTimestamp(signer.declinedAt)}`;
+      return `${approver ? "Rejected" : "Declined"} at ${formatAuditTimestamp(signer.declinedAt)}`;
     case "notified":
       if (envelope.status === "voided") {
-        return "Awaiting signature when envelope was voided";
+        return `${awaiting} when envelope was voided`;
       }
 
       if (envelope.status === "declined") {
-        return "Awaiting signature when envelope was declined";
+        return `${awaiting} when envelope was declined`;
       }
 
-      return "Awaiting signature";
+      return awaiting;
     case "pending":
       return "Not reached";
     default: {
@@ -1517,7 +1639,9 @@ export async function finalizeEnvelope(
     userId: input.envelope.userId,
   };
   const signedPdfBytes = signedRevision
-    ? await finishSignerSignedPdf(signedRevision)
+    ? await finishSignerSignedPdf(signedRevision, {
+        timestampUrl: seal ? loadedTimestampUrls.get(seal) : undefined,
+      })
     : await renderFinalizedEnvelopePdf(
         {
           auditEvents: input.auditEvents,
