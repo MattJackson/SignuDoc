@@ -9,7 +9,8 @@ import {
   type IntegrationSettingsUpdate,
 } from "./integration-settings.ts";
 import {
-  getGoogleCredentials,
+  resolveGoogleCredentials,
+  type GoogleCredentials,
   type GoogleCredentialsSource,
 } from "./integrations/google/credentials.ts";
 import {
@@ -98,7 +99,7 @@ async function describeServiceAccount(): Promise<
   let credentials;
 
   try {
-    credentials = getGoogleCredentials();
+    credentials = await resolveGoogleCredentials();
   } catch (error) {
     return {
       email: null,
@@ -112,7 +113,7 @@ async function describeServiceAccount(): Promise<
     return {
       email: null,
       problem:
-        "This site is not running on Google Cloud and has no GOOGLE_SERVICE_ACCOUNT_KEY.",
+        "This site has no Google identity yet. The automatic setup makes one; on Cloud Run it uses the service account the site runs as.",
       source: null,
     };
   }
@@ -437,11 +438,11 @@ async function directoryForTest(env: EnvSource) {
 
   // A malformed key throws here; the test reports it like any other
   // failure.
-  let credentials: ReturnType<typeof getGoogleCredentials> = null;
+  let credentials: GoogleCredentials | null = null;
   let error: unknown;
 
   try {
-    credentials = getGoogleCredentials();
+    credentials = await resolveGoogleCredentials();
   } catch (caught) {
     error = caught;
   }

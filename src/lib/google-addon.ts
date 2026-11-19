@@ -8,7 +8,7 @@ import {
   type IntegrationSettingsActor,
   type IntegrationSettingsUpdate,
 } from "./integration-settings.ts";
-import { getGoogleCredentials } from "./integrations/google/credentials.ts";
+import { resolveGoogleCredentials } from "./integrations/google/credentials.ts";
 import {
   ADDON_TRIGGERS,
   addonEndpointUrl,
@@ -80,7 +80,10 @@ export async function addonWorkspaceDomains(
 
 async function siteServiceAccountEmail(): Promise<string | null> {
   try {
-    return (await getGoogleCredentials()?.getServiceAccountEmail()) ?? null;
+    return (
+      (await (await resolveGoogleCredentials())?.getServiceAccountEmail()) ??
+      null
+    );
   } catch {
     return null;
   }

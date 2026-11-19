@@ -1,5 +1,12 @@
 import { createSign } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 
+import {
+  getIntegrationSettings,
+  peekIntegrationSettings,
+} from "../../integration-settings.ts";
 import { readEnv, type EnvSource } from "../../utils/env.ts";
 import {
   GOOGLE_REQUEST_TIMEOUT_MS,
@@ -10,14 +17,22 @@ import {
 // Access tokens for Google APIs (Cloud Storage, Drive, the Workspace
 // directory), shared by every Google integration in the app.
 //
-// Two ways to get them, with no Google SDK:
+// Four ways to get them, with no Google SDK, tried in this order:
 //
+// - "service-account-key": a service account key in
+//   GOOGLE_SERVICE_ACCOUNT_KEY (the JSON file, or the same in base64).
+// - "impersonation": GOOGLE_IMPERSONATE_SERVICE_ACCOUNT names a service
+//   account, and the gcloud application-default login mounted into the
+//   container (GOOGLE_APPLICATION_CREDENTIALS, or
+//   ~/.config/gcloud/application_default_credentials.json) may act as it.
+//   The login's refresh token gets a user token, and the IAM Credentials
+//   API turns that into the service account's tokens. For organizations
+//   that forbid service account keys.
+// - "stored-key": the key the automatic setup made and saved in the app,
+//   encrypted (integration-settings.ts). After it, the service account the
+//   setup saved for impersonation, when the organization refused the key.
 // - "metadata": on Cloud Run, GKE or Compute Engine, from the metadata
-//   server, as the service account the app runs as. No key to store. This is
-//   the default whenever the app runs on Google Cloud.
-// - "service-account-key": from a service account key in
-//   GOOGLE_SERVICE_ACCOUNT_KEY (the JSON file, or the same in base64), for
-//   running anywhere else.
+//   server, as the service account the app runs as. No key to store.
 //
 // A request can name a subject, a Workspace user to act as through
 // domain-wide delegation. With a key the key signs the assertion itself; on
@@ -36,7 +51,8 @@ export const GOOGLE_SCOPES = {
   driveLabelsReadonly: "https://www.googleapis.com/auth/drive.labels.readonly",
 } as const;
 
-export type GoogleCredentialsSource = "metadata" | "service-account-key";
+export type GoogleCredentialsSource =
+  "impersonation" | "metadata" | "service-account-key" | "stored-key";
 
 export type GoogleAccessTokenRequest = {
   scopes: readonly string[];
@@ -64,8 +80,24 @@ type CreateGoogleCredentialsOptions = {
   env?: EnvSource;
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** Reads the gcloud login file; null when it is not there. */
+  readFile?: (file: string) => string | null;
+  /** What the app saved: a key, or a service account to impersonate. */
+  stored?: StoredGoogleIdentity | null;
   /** How long a request to Google may take, in milliseconds. */
   timeoutMs?: number;
+};
+
+export type StoredGoogleIdentity = {
+  impersonate?: string | null;
+  key?: string | null;
+};
+
+/** The refresh-token login gcloud writes for application-default use. */
+type UserLogin = {
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
 };
 
 type ServiceAccountKey = {
@@ -293,19 +325,163 @@ function cacheKey(request: GoogleAccessTokenRequest): string {
   return `${request.subject ?? ""}|${[...request.scopes].sort().join(" ")}`;
 }
 
+function readFileOrNull(file: string): string | null {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Where gcloud keeps the application-default login, in this order. */
+export function applicationDefaultCredentialsPaths(
+  env: EnvSource = process.env,
+): string[] {
+  const configDir =
+    readEnv(env, "CLOUDSDK_CONFIG") ??
+    path.join(readEnv(env, "HOME") ?? homedir(), ".config", "gcloud");
+
+  return [
+    readEnv(env, "GOOGLE_APPLICATION_CREDENTIALS"),
+    path.join(configDir, "application_default_credentials.json"),
+  ].filter((file): file is string => Boolean(file));
+}
+
+/**
+ * The gcloud login to impersonate with, and the service account it names
+ * when it was made with --impersonate-service-account. Null when no such
+ * file can be read.
+ */
+export function readApplicationDefaultLogin(
+  env: EnvSource = process.env,
+  readFile: (file: string) => string | null = readFileOrNull,
+): { login: UserLogin; serviceAccount: string | null } | null {
+  for (const file of applicationDefaultCredentialsPaths(env)) {
+    const text = readFile(file);
+
+    if (!text) {
+      continue;
+    }
+
+    let parsed: Record<string, unknown>;
+
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    const impersonated = parsed.type === "impersonated_service_account";
+    const source = (impersonated ? parsed.source_credentials : parsed) as
+      Record<string, unknown> | undefined;
+    const target =
+      impersonated &&
+      typeof parsed.service_account_impersonation_url === "string"
+        ? (/serviceAccounts\/([^/:]+):generateAccessToken/.exec(
+            parsed.service_account_impersonation_url,
+          )?.[1] ?? null)
+        : null;
+
+    if (
+      source?.type === "authorized_user" &&
+      typeof source.client_id === "string" &&
+      typeof source.client_secret === "string" &&
+      typeof source.refresh_token === "string"
+    ) {
+      return {
+        login: {
+          client_id: source.client_id,
+          client_secret: source.client_secret,
+          refresh_token: source.refresh_token,
+        },
+        serviceAccount: target ? decodeURIComponent(target) : null,
+      };
+    }
+  }
+
+  return null;
+}
+
+type ChosenIdentity =
+  | { key: ServiceAccountKey; source: "service-account-key" | "stored-key" }
+  | { email: string; login: UserLogin; source: "impersonation" }
+  | { source: "metadata" };
+
+function chooseIdentity(
+  env: EnvSource,
+  stored: StoredGoogleIdentity | null,
+  readFile: (file: string) => string | null,
+): ChosenIdentity | null {
+  const envKey = readEnv(env, "GOOGLE_SERVICE_ACCOUNT_KEY");
+
+  if (envKey) {
+    return {
+      key: parseServiceAccountKey(envKey),
+      source: "service-account-key",
+    };
+  }
+
+  const impersonated = (target: string | null): ChosenIdentity | null => {
+    const adc = readApplicationDefaultLogin(env, readFile);
+    const email = target ?? adc?.serviceAccount ?? null;
+
+    return adc && email
+      ? { email, login: adc.login, source: "impersonation" }
+      : null;
+  };
+  const envTarget = readEnv(env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT");
+
+  if (envTarget) {
+    const found = impersonated(envTarget);
+
+    if (!found) {
+      throw new GoogleCredentialsError(
+        "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT is set, but no gcloud application-default login is mounted into the container.",
+      );
+    }
+
+    return found;
+  }
+
+  if (stored?.key) {
+    try {
+      return { key: parseServiceAccountKey(stored.key), source: "stored-key" };
+    } catch (error) {
+      throw new GoogleCredentialsError(
+        "The service account key saved by the setup cannot be read. Run the automatic setup again.",
+        { cause: error },
+      );
+    }
+  }
+
+  if (stored?.impersonate) {
+    const found = impersonated(stored.impersonate);
+
+    if (found) {
+      return found;
+    }
+  }
+
+  return isOnGoogleCloud(env) ? { source: "metadata" } : null;
+}
+
 export function createGoogleCredentials({
   env = process.env,
   fetchImpl = fetch,
   now = Date.now,
+  readFile = readFileOrNull,
+  stored = null,
   timeoutMs = GOOGLE_REQUEST_TIMEOUT_MS,
 }: CreateGoogleCredentialsOptions = {}): GoogleCredentials | null {
-  const keyValue = readEnv(env, "GOOGLE_SERVICE_ACCOUNT_KEY");
-  const key = keyValue ? parseServiceAccountKey(keyValue) : null;
+  const identity = chooseIdentity(env, stored, readFile);
 
-  if (!key && !isOnGoogleCloud(env)) {
+  if (!identity) {
     return null;
   }
 
+  const key = "key" in identity ? identity.key : null;
+  const impersonation = identity.source === "impersonation" ? identity : null;
+  let userToken: CachedToken | null = null;
   const cache = new Map<string, CachedToken>();
   const inFlight = new Map<string, Promise<CachedToken>>();
   let metadataEmail: Promise<string> | null = null;
@@ -354,6 +530,10 @@ export function createGoogleCredentials({
       return key.client_email;
     }
 
+    if (impersonation) {
+      return impersonation.email;
+    }
+
     metadataEmail ??= metadataGet("email").then(async (response) => {
       if (!response.ok) {
         throw new GoogleCredentialsError(
@@ -370,6 +550,116 @@ export function createGoogleCredentials({
       metadataEmail = null;
       throw error;
     }
+  }
+
+  /** The gcloud login's own token, from its refresh token. */
+  async function loginToken(login: UserLogin): Promise<string> {
+    if (userToken && userToken.expiresAtMs - REFRESH_MARGIN_MS > now()) {
+      return userToken.accessToken;
+    }
+
+    const response = await fetchImpl(googleUrl(DEFAULT_TOKEN_URI, env), {
+      body: new URLSearchParams({
+        client_id: login.client_id,
+        client_secret: login.client_secret,
+        grant_type: "refresh_token",
+        refresh_token: login.refresh_token,
+      }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      signal: googleTimeoutSignal(timeoutMs),
+    });
+
+    userToken = toCachedToken(
+      await readJson(response, "Refreshing the gcloud login"),
+    );
+
+    return userToken.accessToken;
+  }
+
+  /** Has IAM sign a delegation assertion for the service account. */
+  async function signJwtAs(
+    email: string,
+    bearer: string,
+    request: GoogleAccessTokenRequest,
+  ): Promise<CachedToken> {
+    const signResponse = await fetchImpl(
+      googleUrl(
+        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}:signJwt`,
+        env,
+      ),
+      {
+        body: JSON.stringify({
+          payload: JSON.stringify(
+            buildClaims({
+              issuer: email,
+              nowMs: now(),
+              scopes: request.scopes,
+              subject: request.subject,
+              tokenUri: DEFAULT_TOKEN_URI,
+            }),
+          ),
+        }),
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: googleTimeoutSignal(timeoutMs),
+      },
+    );
+    const signed = (await readJson(signResponse, "IAM signJwt")) as {
+      signedJwt?: unknown;
+    };
+
+    if (typeof signed.signedJwt !== "string") {
+      throw new GoogleCredentialsError("IAM signJwt returned no JWT.");
+    }
+
+    return exchangeAssertion(signed.signedJwt, DEFAULT_TOKEN_URI);
+  }
+
+  /** The service account's token, asked for with the gcloud login. */
+  async function impersonatedToken(
+    email: string,
+    bearer: string,
+    request: GoogleAccessTokenRequest,
+  ): Promise<CachedToken> {
+    const response = await fetchImpl(
+      googleUrl(
+        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}:generateAccessToken`,
+        env,
+      ),
+      {
+        body: JSON.stringify({ lifetime: "3600s", scope: request.scopes }),
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: googleTimeoutSignal(timeoutMs),
+      },
+    );
+    const body = (await readJson(response, "IAM generateAccessToken")) as {
+      accessToken?: unknown;
+      expireTime?: unknown;
+    };
+
+    if (typeof body.accessToken !== "string") {
+      throw new GoogleCredentialsError(
+        "IAM generateAccessToken returned no token.",
+      );
+    }
+
+    const expiresAt =
+      typeof body.expireTime === "string"
+        ? Date.parse(body.expireTime)
+        : Number.NaN;
+
+    return {
+      accessToken: body.accessToken,
+      expiresAtMs: Number.isFinite(expiresAt) ? expiresAt : now() + 300_000,
+    };
   }
 
   async function fetchToken(
@@ -391,6 +681,14 @@ export function createGoogleCredentials({
       return exchangeAssertion(assertion, tokenUri);
     }
 
+    if (impersonation) {
+      const bearer = await loginToken(impersonation.login);
+
+      return request.subject
+        ? signJwtAs(impersonation.email, bearer, request)
+        : impersonatedToken(impersonation.email, bearer, request);
+    }
+
     if (!request.subject) {
       const response = await metadataGet(
         `token?scopes=${encodeURIComponent(request.scopes.join(","))}`,
@@ -407,40 +705,8 @@ export function createGoogleCredentials({
     const iamToken = await getAccessToken({
       scopes: [GOOGLE_SCOPES.cloudPlatform],
     });
-    const signResponse = await fetchImpl(
-      googleUrl(
-        `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}:signJwt`,
-        env,
-      ),
-      {
-        body: JSON.stringify({
-          payload: JSON.stringify(
-            buildClaims({
-              issuer: email,
-              nowMs: now(),
-              scopes: request.scopes,
-              subject: request.subject,
-              tokenUri: DEFAULT_TOKEN_URI,
-            }),
-          ),
-        }),
-        headers: {
-          authorization: `Bearer ${iamToken}`,
-          "content-type": "application/json",
-        },
-        method: "POST",
-        signal: googleTimeoutSignal(timeoutMs),
-      },
-    );
-    const signed = (await readJson(signResponse, "IAM signJwt")) as {
-      signedJwt?: unknown;
-    };
 
-    if (typeof signed.signedJwt !== "string") {
-      throw new GoogleCredentialsError("IAM signJwt returned no JWT.");
-    }
-
-    return exchangeAssertion(signed.signedJwt, DEFAULT_TOKEN_URI);
+    return signJwtAs(email, iamToken, request);
   }
 
   async function getAccessToken(
@@ -476,20 +742,83 @@ export function createGoogleCredentials({
   return {
     getAccessToken,
     getServiceAccountEmail,
-    source: key ? "service-account-key" : "metadata",
+    source: identity.source,
   };
 }
 
-let sharedCredentials: GoogleCredentials | null | undefined;
+let sharedCredentials:
+  { credentials: GoogleCredentials | null; fingerprint: string } | undefined;
+// The gcloud login file is looked for again after this long, so one
+// mounted later is found without reading the file on every call.
+const LOGIN_RECHECK_MS = 60_000;
+let loginCheckedAt = Number.NEGATIVE_INFINITY;
+let loginPresent = false;
+
+/** What the app saved for its Google identity, from the settings last read. */
+function storedIdentity(): StoredGoogleIdentity {
+  const settings = peekIntegrationSettings();
+
+  return {
+    impersonate: settings?.["google.impersonateServiceAccount"] ?? null,
+    key: settings?.["google.serviceAccountKey"] ?? null,
+  };
+}
 
 /**
- * The app's Google credentials, made once per process, or null when neither
- * a key nor a metadata server is available.
+ * The app's Google credentials, or null when there are none. Made again
+ * only when what they come from changes: the environment, or the key or
+ * service account the setup saved, as last read from the settings
+ * (resolveGoogleCredentials reads them first).
  */
 export function getGoogleCredentials(): GoogleCredentials | null {
-  if (sharedCredentials === undefined) {
-    sharedCredentials = createGoogleCredentials();
+  const stored = storedIdentity();
+
+  if (
+    (stored.impersonate ||
+      readEnv(process.env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT")) &&
+    Date.now() - loginCheckedAt > LOGIN_RECHECK_MS
+  ) {
+    loginCheckedAt = Date.now();
+    loginPresent = readApplicationDefaultLogin() !== null;
   }
 
-  return sharedCredentials;
+  const fingerprint = JSON.stringify([
+    readEnv(process.env, "GOOGLE_SERVICE_ACCOUNT_KEY") ?? "",
+    readEnv(process.env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT") ?? "",
+    stored.key ?? "",
+    stored.impersonate ?? "",
+    loginPresent,
+  ]);
+
+  if (sharedCredentials?.fingerprint !== fingerprint) {
+    // A bad key or a missing login throws here, and again on the next
+    // call, as before.
+    const credentials = createGoogleCredentials({ stored });
+
+    sharedCredentials = { credentials, fingerprint };
+  }
+
+  return sharedCredentials.credentials;
+}
+
+/** Forgets the shared credentials, for tests. */
+export function resetGoogleCredentials() {
+  sharedCredentials = undefined;
+  loginCheckedAt = Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * The app's Google credentials, after reading the settings, so a key the
+ * setup saved on another instance is used here too.
+ */
+export async function resolveGoogleCredentials(
+  env: EnvSource = process.env,
+): Promise<GoogleCredentials | null> {
+  try {
+    await getIntegrationSettings(env);
+  } catch {
+    // The settings last read are used.
+  }
+
+  return getGoogleCredentials();
 }

@@ -18,7 +18,7 @@ import {
 import { getSettings } from "../../settings.ts";
 import type { EnvSource } from "../../utils/env.ts";
 import {
-  getGoogleCredentials,
+  resolveGoogleCredentials,
   GOOGLE_SCOPES,
   type GoogleAccessTokenRequest,
 } from "./credentials.ts";
@@ -496,7 +496,7 @@ function defaultDeps(partial: Partial<DriveExportDeps> = {}): DriveExportDeps {
     getAccessToken:
       partial.getAccessToken ??
       (async (request) => {
-        const credentials = getGoogleCredentials();
+        const credentials = await resolveGoogleCredentials();
 
         if (!credentials) {
           throw new Error(

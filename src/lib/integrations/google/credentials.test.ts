@@ -310,3 +310,219 @@ test("GOOGLE_CLOUD_PROJECT is used without asking the metadata server", async ()
   );
   assert.equal(state.calls, 0);
 });
+
+// Which identity the app uses, in order: the key in the environment, the
+// service account the environment says to impersonate, the key the setup
+// stored, the account the setup stored for impersonation, the metadata
+// server, or none.
+
+const otherKey = JSON.stringify({
+  client_email: "stored@example-project.iam.gserviceaccount.com",
+  private_key: privateKey,
+});
+const gcloudLogin = JSON.stringify({
+  client_id: "764086051850-gcloud.apps.googleusercontent.com",
+  client_secret: "gcloud-secret",
+  refresh_token: "1//refresh",
+  type: "authorized_user",
+});
+const loginAt = (file: string) => (asked: string) =>
+  asked === file ? gcloudLogin : null;
+const DEFAULT_LOGIN =
+  "/home/node/.config/gcloud/application_default_credentials.json";
+
+test("the identity is chosen in order: environment, then what the setup stored, then the metadata server", async () => {
+  const target = "app-workspace@example-project.iam.gserviceaccount.com";
+  const cases: Array<{
+    env: Record<string, string>;
+    expect: { email?: string; source: string } | null;
+    login?: boolean;
+    stored?: { impersonate?: string; key?: string };
+  }> = [
+    { env: {}, expect: null },
+    { env: { K_SERVICE: "signudoc" }, expect: { source: "metadata" } },
+    {
+      env: { K_SERVICE: "signudoc" },
+      expect: {
+        email: "stored@example-project.iam.gserviceaccount.com",
+        source: "stored-key",
+      },
+      stored: { key: otherKey },
+    },
+    {
+      env: {},
+      expect: { email: target, source: "impersonation" },
+      login: true,
+      stored: { impersonate: target },
+    },
+    // Saved for impersonation, but no gcloud login is mounted yet.
+    { env: {}, expect: null, stored: { impersonate: target } },
+    {
+      env: {},
+      expect: {
+        email: "stored@example-project.iam.gserviceaccount.com",
+        source: "stored-key",
+      },
+      login: true,
+      stored: { impersonate: target, key: otherKey },
+    },
+    {
+      env: { GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: target },
+      expect: { email: target, source: "impersonation" },
+      login: true,
+      stored: { key: otherKey },
+    },
+    {
+      env: {
+        GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: target,
+        GOOGLE_SERVICE_ACCOUNT_KEY: serviceAccountKey,
+      },
+      expect: {
+        email: "signer@example-project.iam.gserviceaccount.com",
+        source: "service-account-key",
+      },
+      login: true,
+      stored: { key: otherKey },
+    },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const credentials = createGoogleCredentials({
+      env: { HOME: "/home/node", ...item.env },
+      readFile: item.login ? loginAt(DEFAULT_LOGIN) : () => null,
+      stored: item.stored ?? null,
+    });
+
+    if (!item.expect) {
+      assert.equal(credentials, null, `case ${String(index)}`);
+      continue;
+    }
+
+    assert.equal(
+      credentials?.source,
+      item.expect.source,
+      `case ${String(index)}`,
+    );
+
+    if (item.expect.email) {
+      assert.equal(
+        await credentials?.getServiceAccountEmail(),
+        item.expect.email,
+        `case ${String(index)}`,
+      );
+    }
+  }
+});
+
+test("impersonation set in the environment without a gcloud login says what is missing", () => {
+  assert.throws(
+    () =>
+      createGoogleCredentials({
+        env: {
+          GOOGLE_IMPERSONATE_SERVICE_ACCOUNT:
+            "app@example-project.iam.gserviceaccount.com",
+          HOME: "/home/node",
+        },
+        readFile: () => null,
+      }),
+    /no gcloud application-default login is mounted/,
+  );
+});
+
+test("a gcloud login made with --impersonate-service-account names the account itself", async () => {
+  const file = "/secrets/adc.json";
+  const credentials = createGoogleCredentials({
+    env: {
+      GOOGLE_APPLICATION_CREDENTIALS: file,
+      HOME: "/home/node",
+    },
+    readFile: (asked) =>
+      asked === file
+        ? JSON.stringify({
+            service_account_impersonation_url:
+              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/app-workspace@example-project.iam.gserviceaccount.com:generateAccessToken",
+            source_credentials: JSON.parse(gcloudLogin),
+            type: "impersonated_service_account",
+          })
+        : null,
+    stored: {
+      impersonate: "app-workspace@example-project.iam.gserviceaccount.com",
+    },
+  });
+
+  assert.equal(credentials?.source, "impersonation");
+  assert.equal(
+    await credentials?.getServiceAccountEmail(),
+    "app-workspace@example-project.iam.gserviceaccount.com",
+  );
+});
+
+test("impersonation refreshes the gcloud login, then asks IAM for the account's token or a signed assertion", async () => {
+  const calls: Call[] = [];
+  const credentials = createGoogleCredentials({
+    env: {
+      GOOGLE_IMPERSONATE_SERVICE_ACCOUNT:
+        "app@example-project.iam.gserviceaccount.com",
+      HOME: "/home/node",
+    },
+    fetchImpl: async (url, init) => {
+      const href = String(url);
+
+      calls.push({ init, url: href });
+
+      if (href.endsWith(":generateAccessToken")) {
+        return jsonResponse({
+          accessToken: "impersonated",
+          expireTime: new Date(Date.now() + 3600_000).toISOString(),
+        });
+      }
+
+      if (href.endsWith(":signJwt")) {
+        return jsonResponse({ signedJwt: "signed.jwt.value" });
+      }
+
+      const form = new URLSearchParams(String(init?.body));
+
+      return jsonResponse({
+        access_token:
+          form.get("grant_type") === "refresh_token"
+            ? "user-token"
+            : "delegated",
+        expires_in: 3599,
+      });
+    },
+    readFile: loginAt(DEFAULT_LOGIN),
+  });
+
+  assert.ok(credentials);
+  assert.equal(
+    await credentials.getAccessToken({ scopes: [GOOGLE_SCOPES.drive] }),
+    "impersonated",
+  );
+
+  const generate = calls.find((call) =>
+    call.url.endsWith(":generateAccessToken"),
+  );
+
+  assert.equal(
+    new Headers(generate?.init?.headers).get("authorization"),
+    "Bearer user-token",
+  );
+  assert.deepEqual(JSON.parse(String(generate?.init?.body)).scope, [
+    GOOGLE_SCOPES.drive,
+  ]);
+  assert.equal(
+    await credentials.getAccessToken({
+      scopes: [GOOGLE_SCOPES.directoryUserReadonly],
+      subject: "admin@example.com",
+    }),
+    "delegated",
+  );
+  // The gcloud login was refreshed once and kept.
+  assert.equal(
+    calls.filter((call) =>
+      String(call.init?.body).includes("grant_type=refresh_token"),
+    ).length,
+    1,
+  );
+});

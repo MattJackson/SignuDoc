@@ -43,8 +43,13 @@ export const INTEGRATION_SETTINGS = {
   "google.addonServiceAccount": { secret: false },
   "google.adminGroup": { secret: false },
   "google.adminSubject": { secret: false },
+  "google.cloudProject": { secret: false },
   "google.customerId": { secret: false },
   "google.directory": { secret: false },
+  "google.impersonateServiceAccount": { secret: false },
+  // The key the automatic setup made for the app's own service account,
+  // off Google Cloud. GOOGLE_SERVICE_ACCOUNT_KEY wins over it.
+  "google.serviceAccountKey": { secret: true },
   "google.workspaceDomains": { secret: false },
   "notifications.expiringDays": { secret: false },
   "notifications.slack.directMessages": { secret: false },

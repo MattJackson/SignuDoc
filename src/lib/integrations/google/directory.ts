@@ -454,7 +454,11 @@ export function createDirectoryClient({
   return { getUser, isGroupMember, listUserGroups, searchUsers };
 }
 
-type SharedDirectory = { client: DirectoryClient; key: string };
+type SharedDirectory = {
+  client: DirectoryClient;
+  credentials: GoogleCredentials;
+  key: string;
+};
 
 declare global {
   var __signudocDirectoryClient: SharedDirectory | undefined;
@@ -497,13 +501,13 @@ export function getDirectoryClientFor(
   ]);
   const shared = globalThis.__signudocDirectoryClient;
 
-  if (shared && shared.key === key) {
+  if (shared && shared.key === key && shared.credentials === credentials) {
     return shared.client;
   }
 
   const client = createDirectoryClient({ config, credentials });
 
-  globalThis.__signudocDirectoryClient = { client, key };
+  globalThis.__signudocDirectoryClient = { client, credentials, key };
 
   return client;
 }
