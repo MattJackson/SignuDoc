@@ -1,4 +1,5 @@
 import type { NotificationChannelPackage } from "./channel.ts";
+import { createSlackChannel } from "./slack/channel.ts";
 
 // The channels this install can send to. Everything outside a channel's own
 // folder reaches it through here, by its id: the outbox, the rules, the
@@ -8,7 +9,7 @@ import type { NotificationChannelPackage } from "./channel.ts";
 let channels: NotificationChannelPackage[] | null = null;
 
 export function getNotificationChannels(): NotificationChannelPackage[] {
-  channels ??= [];
+  channels ??= [createSlackChannel()];
 
   return channels;
 }
