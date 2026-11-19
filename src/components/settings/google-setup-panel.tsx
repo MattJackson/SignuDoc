@@ -7,6 +7,7 @@ import {
   GoogleWorkspaceSetup,
   type GoogleSetupCallback,
 } from "@/components/settings/google-setup";
+import { needsCustomerId } from "@/lib/google-customer";
 import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { SetupTargetView } from "@/lib/google-workspace-setup";
@@ -27,7 +28,7 @@ export function GoogleSetupPanel({
   const ready =
     workspace.signIn.ready &&
     drive.picker.ready &&
-    workspace.directory.customer !== "my_customer";
+    !needsCustomerId(workspace.directory);
 
   return (
     <IntegrationPanel

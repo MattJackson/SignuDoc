@@ -18,6 +18,7 @@ import { getGoogleCredentials } from "../integrations/google/credentials.ts";
 import { readAddonConfig } from "../integrations/google/addon/config.ts";
 import { readDirectoryConfig } from "../integrations/google/directory.ts";
 import { readDirectorySyncSetting } from "../directory-sync.ts";
+import { needsCustomerId } from "../google-customer.ts";
 import { readGoogleSigningSetting } from "../google-signing.ts";
 import { readManagerPolicy } from "../manager-policy.ts";
 import {
@@ -143,8 +144,9 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     check: async ({ settings }) => {
       if (!settings.organizationName || !settings.supportAddress) {
         return {
-          detail:
-            "Name the organization and give signers an address for questions.",
+          detail: settings.organizationName
+            ? "Give signers an address for questions."
+            : "Name the organization in the Logo and organization step, and give signers an address for questions.",
           status: "not_started",
         };
       }
@@ -167,7 +169,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     id: "organization",
     settingsHref: "/settings/organization",
     summary:
-      "Your organization's name, support address, and who can create an account.",
+      "Your support address, the address emails come from, and who can create an account.",
     title: "Organization",
   },
   {
@@ -217,7 +219,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
       }
 
       const missing = [
-        readDirectoryConfig(env, stored).customer === "my_customer"
+        needsCustomerId(readDirectoryConfig(env, stored))
           ? "the customer ID"
           : null,
         readPickerConfig(env, stored).ready ? null : "the Picker key",

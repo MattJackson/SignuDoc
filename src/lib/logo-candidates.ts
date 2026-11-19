@@ -24,16 +24,26 @@ const ENTITIES: Record<string, string> = {
   quot: '"',
 };
 
+// What HTML makes of a numeric reference that is not a character.
+function fromCodePoint(code: number): string {
+  return Number.isNaN(code) ||
+    code === 0 ||
+    code > 0x10ffff ||
+    (code >= 0xd800 && code <= 0xdfff)
+    ? "\uFFFD"
+    : String.fromCodePoint(code);
+}
+
 function decodeEntities(value: string): string {
   return value.replace(
     /&(#x[0-9a-f]+|#\d+|[a-z]+);/gi,
     (whole, entity: string) => {
       if (entity.startsWith("#x") || entity.startsWith("#X")) {
-        return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
+        return fromCodePoint(Number.parseInt(entity.slice(2), 16));
       }
 
       if (entity.startsWith("#")) {
-        return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+        return fromCodePoint(Number.parseInt(entity.slice(1), 10));
       }
 
       return ENTITIES[entity.toLowerCase()] ?? whole;
@@ -121,29 +131,91 @@ function resolveUrl(value: string | undefined, base: URL): string | null {
   }
 }
 
+type Tag = { attributes: Map<string, string>; name: string };
+
+const TAG_NAMES = ["base", "link", "meta"];
+
+/**
+ * The base, link and meta tags of a page, in order, skipping comments. One
+ * pass with indexOf, so markup that never closes cannot make it slow.
+ */
+function readTags(html: string): Tag[] {
+  const tags: Tag[] = [];
+  let position = html.indexOf("<");
+
+  while (position !== -1) {
+    if (html.startsWith("<!--", position)) {
+      const close = html.indexOf("-->", position + 4);
+
+      if (close === -1) {
+        break;
+      }
+
+      position = html.indexOf("<", close + 3);
+      continue;
+    }
+
+    const name = TAG_NAMES.find(
+      (candidate) =>
+        html
+          .slice(position + 1, position + 1 + candidate.length)
+          .toLowerCase() === candidate &&
+        /[\s/>]/.test(html.charAt(position + 1 + candidate.length)),
+    );
+
+    if (name) {
+      const close = html.indexOf(">", position);
+
+      if (close === -1) {
+        break;
+      }
+
+      tags.push({
+        attributes: parseAttributes(
+          html.slice(position + 1 + name.length, close),
+        ),
+        name,
+      });
+      position = html.indexOf("<", close + 1);
+      continue;
+    }
+
+    position = html.indexOf("<", position + 1);
+  }
+
+  return tags;
+}
+
 /**
  * Every logo the page points at: touch icons, icons, the og:image, and
- * /favicon.ico, in the order the page has them.
+ * /favicon.ico, in the order the page has them. The first <base href>
+ * applies to the whole page; /favicon.ico is on the page's own origin.
  */
 export function findLogoCandidates(
   html: string,
   pageUrl: string,
 ): LogoCandidate[] {
-  let base = new URL(pageUrl);
+  const page = new URL(pageUrl);
+  const tags = readTags(html);
+  let base = page;
+
+  for (const tag of tags) {
+    if (tag.name !== "base") {
+      continue;
+    }
+
+    const href = resolveUrl(tag.attributes.get("href"), page);
+
+    if (href) {
+      base = new URL(href);
+      break;
+    }
+  }
+
   const found: LogoCandidate[] = [];
-  const text = html.replace(/<!--[\s\S]*?-->/g, "");
 
-  for (const match of text.matchAll(/<(base|link|meta)\b([^>]*)>/gi)) {
-    const tag = match[1]!.toLowerCase();
-    const attributes = parseAttributes(match[2]!);
-
+  for (const { attributes, name: tag } of tags) {
     if (tag === "base") {
-      const href = resolveUrl(attributes.get("href"), base);
-
-      if (href) {
-        base = new URL(href);
-      }
-
       continue;
     }
 
@@ -201,7 +273,7 @@ export function findLogoCandidates(
     size: null,
     source: "favicon",
     type: "image/x-icon",
-    url: new URL("/favicon.ico", base).toString(),
+    url: new URL("/favicon.ico", page).toString(),
   });
 
   return found;

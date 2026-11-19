@@ -19,8 +19,6 @@ const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 // "Connect Google Drive" first.
 // https://developers.google.com/workspace/drive/picker/guides/overview
 
-0;
-
 type PickerToken = { accessToken: string; apiKey: string; appId: string };
 
 export function DriveStart({

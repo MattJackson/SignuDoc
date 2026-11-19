@@ -321,10 +321,24 @@ export function GoogleDriveSection({
         .setDeveloperKey(payload.apiKey)
         .setOrigin(window.location.origin)
         .setTitle("Picker test: close this when it has opened")
-        .setCallback(() => {
-          if (!reported) {
+        .setCallback((result) => {
+          if (reported) {
+            return;
+          }
+
+          if (
+            result.action === picker.Action.LOADED ||
+            result.action === picker.Action.PICKED
+          ) {
             reported = true;
             setPickerTest({ message: "The Picker opened.", tone: "success" });
+          } else if (result.action === picker.Action.CANCEL) {
+            reported = true;
+            setPickerTest({
+              message:
+                "The Picker was closed before it reported that it had loaded, so this does not confirm it works. Try again and wait for it to open.",
+              tone: "error",
+            });
           }
         })
         .build()
@@ -594,7 +608,8 @@ export function GoogleDriveSection({
             value={view.openWith.secondaryExtensions.join(",")}
           />
           <p>
-            To show &quot;Open with&quot; for everyone, list the app privately with the{" "}
+            To show &quot;Open with&quot; for everyone, list the app privately
+            with the{" "}
             <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
               Google Workspace Marketplace SDK
             </ExternalLink>{" "}

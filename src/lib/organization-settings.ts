@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { normalizeBrandColor } from "./brand-color.ts";
-import { buildBrandLogoPath } from "./branding.ts";
+import { buildBrandLogoPath, MAX_PRODUCT_NAME_LENGTH } from "./branding.ts";
 import { getDb, type DbExecutor } from "./db/connection.ts";
 import { emailSchema } from "./schemas/common.ts";
 import {
@@ -137,9 +137,9 @@ const optionalBrandColor = z.preprocess(
     .nullable(),
 );
 
-/** The app name, as it is stored. Empty goes by the organization's name. */
-export const MAX_PRODUCT_NAME_LENGTH = 60;
+export { MAX_PRODUCT_NAME_LENGTH };
 
+/** The app name, as it is stored. Empty goes by the organization's name. */
 const optionalProductName = z.preprocess(
   blankToNull,
   z
@@ -186,7 +186,7 @@ const FIELD_MESSAGES: Record<OrganizationSettingsField, string> = {
   brandColor: "Enter a color as six letters and digits, such as #1a73e8",
   organizationName: "Enter the name of your organization",
   privacyUrl: "Enter a full web address starting with https://",
-  productName: "Keep the app name to 60 characters or fewer",
+  productName: `Keep the app name to ${String(MAX_PRODUCT_NAME_LENGTH)} characters or fewer`,
   retentionDays: "Enter a number of days, 30 or more, or leave this empty",
   senderAddress: "Enter a valid email address, or leave this empty",
   signupMode: "Choose who can create an account",

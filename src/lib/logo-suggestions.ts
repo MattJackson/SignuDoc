@@ -90,7 +90,10 @@ export function prepareLogo(
   }
 
   if (image.length > MAX_LOGO_BYTES) {
-    return { ok: false, reason: "This image is larger than 512 KB." };
+    return {
+      ok: false,
+      reason: `This image is larger than ${String(MAX_LOGO_BYTES / 1024)} KB.`,
+    };
   }
 
   return { bytes: image, contentType: sniffed, ok: true };

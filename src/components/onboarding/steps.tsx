@@ -16,6 +16,7 @@ import {
 } from "@/components/settings/google-workspace-panel";
 import { SealSettingsSection } from "@/components/settings/seal-settings-section";
 import { StorageCheckSection } from "@/components/settings/storage-panel";
+import { MAX_PRODUCT_NAME_LENGTH } from "@/lib/branding";
 import type { BackupSettingsView } from "@/lib/backup-config";
 import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleAddonView } from "@/lib/google-addon";
@@ -169,8 +170,9 @@ function NameStep({ data, onChanged }: StepFormProps) {
         <FieldShell
           disabled={saving}
           error={error}
-          helper={`Up to 60 characters. Leave it empty to go by ${data.organization.organizationName || "the organization's name"}.`}
+          helper={`Up to ${String(MAX_PRODUCT_NAME_LENGTH)} characters. Leave it empty to go by ${data.organization.organizationName || "the organization's name"}.`}
           label="What do you want to call this app?"
+          maxLength={MAX_PRODUCT_NAME_LENGTH}
           name="product-name"
           onChange={(event) => {
             setName(event.target.value);
