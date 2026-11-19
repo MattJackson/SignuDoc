@@ -1,6 +1,7 @@
 import { OrganizationSettings } from "@/components/settings/organization-settings";
 import { SettingsShell } from "@/components/settings/settings-shell";
 import { UpdatesPanel } from "@/components/settings/updates-panel";
+import { WorkspaceAddInSettings } from "@/components/settings/workspace-add-in-settings";
 import { WorkspacePanel } from "@/components/settings/workspace-panel";
 import { WorkspaceFilesSettings } from "@/components/settings/workspace-files-settings";
 import { isAdminUser } from "@/lib/auth/admin";
@@ -45,6 +46,7 @@ export default async function SettingsPage() {
         isAdmin={isAdmin}
         userId={session?.user.id ?? null}
       />
+      {isAdmin ? <WorkspaceAddInSettings /> : null}
       {isAdmin ? <UpdatesPanel initialStatus={getUpdateStatus(null)} /> : null}
     </div>
   );
