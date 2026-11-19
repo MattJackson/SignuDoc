@@ -5,6 +5,12 @@
 /** Where Google sends the administrator back to: add it to the OAuth client. */
 export const SETUP_CALLBACK_PATH = "/settings/google-setup";
 
+/** Where Google sends someone back to after connecting Google Drive. */
+export const DRIVE_CALLBACK_PATH = "/api/google/drive/callback";
+
+/** Where Google sends someone back to after signing in (Better Auth's). */
+export const SSO_CALLBACK_PATH = "/api/auth/callback/sso";
+
 /** The APIs the app calls, turned on in step a. */
 export const SETUP_APIS = [
   "admin.googleapis.com",
@@ -27,8 +33,16 @@ export function directoryRoleName(appName: string): string {
   return `${appName} directory reader`;
 }
 
+// The API Keys API holds a key's display name to 63 characters.
+const KEY_NAME_LIMIT = 63;
+const PICKER_SUFFIX = " Picker";
+
 export function pickerKeyName(appName: string): string {
-  return `${appName} Picker`;
+  const name = Array.from(appName)
+    .slice(0, KEY_NAME_LIMIT - PICKER_SUFFIX.length)
+    .join("");
+
+  return `${name.trimEnd()}${PICKER_SUFFIX}`;
 }
 
 export function executedDriveName(appName: string): string {

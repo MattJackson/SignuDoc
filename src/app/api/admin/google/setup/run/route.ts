@@ -30,6 +30,10 @@ import { isHostedMode } from "@/lib/utils/env";
 // step as it starts and ends, so the page shows each one live. The token
 // lives only for this request and is revoked at the end.
 
+// runAutomaticSetup counts SETUP_TIME_BUDGET_MS (240 s, workspace-setup.ts)
+// from its start, code exchange included, and starts no Google request
+// after it; one request still under way (15 s) and the revoke (15 s) end
+// well before this limit.
 export const maxDuration = 300;
 
 const bodySchema = z.object({
@@ -112,10 +116,27 @@ export async function POST(request: Request) {
     ipAddress: getClientIpAddress(request.headers),
     userAgent: getRequestUserAgent(request.headers),
   };
+  // Once the page has gone away (a closed tab), what would be sent is
+  // dropped; the run itself carries on and still revokes the token.
+  let open = true;
   const stream = new ReadableStream<Uint8Array>({
+    cancel() {
+      open = false;
+    },
     async start(controller) {
-      const send = (event: SetupEvent | { returnTo: string; type: "start" }) =>
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      const send = (
+        event: SetupEvent | { returnTo: string; type: "start" },
+      ) => {
+        if (!open) {
+          return;
+        }
+
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          open = false;
+        }
+      };
 
       send({ returnTo, type: "start" });
 
@@ -138,7 +159,13 @@ export async function POST(request: Request) {
         send({ message: "The setup stopped unexpectedly.", type: "refused" });
         send({ ok: false, revoked: false, type: "finished" });
       } finally {
-        controller.close();
+        if (open) {
+          try {
+            controller.close();
+          } catch {
+            // Already closed by the other side.
+          }
+        }
       }
     },
   });

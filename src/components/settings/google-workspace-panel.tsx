@@ -32,6 +32,12 @@ import type {
   GoogleWorkspaceView,
   GroupTestResult,
 } from "@/lib/google-workspace";
+import {
+  directoryRoleName,
+  DRIVE_CALLBACK_PATH,
+  SETUP_CALLBACK_PATH,
+  SSO_CALLBACK_PATH,
+} from "@/lib/integrations/google/workspace-setup-names";
 
 // Settings, Integrations, Google sign-in and Workspace directory, and the
 // onboarding steps of the same names. Each is a numbered checklist: what to
@@ -381,12 +387,12 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
                 <CopyValue
                   hint="Also under Authorized redirect URIs, for connecting Google Drive."
                   label="Drive redirect URI"
-                  value={`${view.siteUrl}/api/google/drive/callback`}
+                  value={`${view.siteUrl}${DRIVE_CALLBACK_PATH}`}
                 />
                 <CopyValue
                   hint="Also under Authorized redirect URIs, for the automatic setup."
                   label="Setup redirect URI"
-                  value={`${view.siteUrl}/settings/google-setup`}
+                  value={`${view.siteUrl}${SETUP_CALLBACK_PATH}`}
                 />
               </>
             ) : null}
@@ -394,7 +400,7 @@ export function GoogleSignInSection({ workspace }: { workspace: Workspace }) {
               <Notice tone="warning">
                 This site does not know its own address yet. Set APP_URL (or
                 BETTER_AUTH_URL) where it runs; the redirect URI is that address
-                followed by /api/auth/callback/sso.
+                followed by {SSO_CALLBACK_PATH}.
               </Notice>
             )}
           </div>
@@ -799,10 +805,7 @@ export function GoogleDirectorySection({
               service account from step 1.
             </li>
           </ol>
-          <CopyValue
-            label="Role name"
-            value={`${productName} directory reader`}
-          />
+          <CopyValue label="Role name" value={directoryRoleName(productName)} />
           <p>
             <strong>Or: domain-wide delegation.</strong> Open{" "}
             <ExternalLink href={ADMIN_DELEGATION_URL}>

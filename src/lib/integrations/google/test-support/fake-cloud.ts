@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 
 import {
   newId,
+  page,
   readJsonBody,
   requireScope,
   sendGoogleError,
   sendJson,
+  sendMasked,
   type FakeGoogleState,
   type FakeRequest,
   type StoredPermission,
@@ -45,6 +47,8 @@ export type FakeCloudState = {
   /** Members of each Shared Drive, by drive ID. */
   drivePermissions: Map<string, StoredPermission[]>;
   enabledServices: Set<string>;
+  /** Cloud Resource Manager leaves the project number out when true. */
+  hideProjectNumber: boolean;
   operations: Map<string, { done: boolean; response: unknown }>;
   projectNumber: string;
   roleAssignments: Array<{
@@ -61,6 +65,12 @@ export type FakeCloudState = {
       rolePrivileges: Array<{ privilegeName: string; serviceId: string }>;
     }
   >;
+  /**
+   * How many more times the Admin SDK or the API Keys API answers that it
+   * is still turned off, as Google does for a while after it is turned on.
+   * Infinity: it never comes on.
+   */
+  slowServices: Map<string, number>;
 };
 
 const cloudStates = new WeakMap<FakeGoogleState, FakeCloudState>();
@@ -76,10 +86,12 @@ export function cloudState(state: FakeGoogleState): FakeCloudState {
       deniedProjectUsers: new Set(),
       drivePermissions: new Map(),
       enabledServices: new Set(["serviceusage.googleapis.com"]),
+      hideProjectNumber: false,
       operations: new Map(),
       projectNumber: "123456789012",
       roleAssignments: [],
       roles: new Map(),
+      slowServices: new Map(),
     };
     cloudStates.set(state, cloud);
   }
@@ -249,18 +261,42 @@ function handleApiKeys(context: FakeRequest, cloud: FakeCloudState): boolean {
   }
 
   if (keys && method === "GET") {
+    const result = page(
+      Array.from(cloud.apiKeys.values()),
+      context.query,
+      "pageSize",
+      300,
+      300,
+    );
+
     sendJson(response, 200, {
-      keys: Array.from(cloud.apiKeys.values()).map((stored) => ({
+      keys: result.items.map((stored) => ({
         displayName: stored.displayName,
         name: stored.name,
         restrictions: stored.restrictions,
       })),
+      ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
     });
     return true;
   }
 
   if (keys && method === "POST") {
     const input = readJsonBody(context.body) ?? {};
+
+    // The API Keys API holds display names to 63 characters.
+    if (
+      typeof input.displayName === "string" &&
+      input.displayName.length > 63
+    ) {
+      sendGoogleError(
+        response,
+        400,
+        "invalidArgument",
+        "Display name must be 63 characters or fewer.",
+      );
+      return true;
+    }
+
     const name = `projects/${cloud.projectNumber}/locations/global/keys/${newId(context.state, "key")}`;
     const stored: FakeApiKey = {
       displayName:
@@ -341,7 +377,9 @@ function handleProjects(context: FakeRequest, cloud: FakeCloudState): boolean {
     if (projectAllowed(context, cloud)) {
       sendJson(response, 200, {
         projectId: decodeURIComponent(project[1]!),
-        projectNumber: cloud.projectNumber,
+        ...(cloud.hideProjectNumber
+          ? {}
+          : { projectNumber: cloud.projectNumber }),
       });
     }
 
@@ -465,9 +503,18 @@ function handleAdmin(context: FakeRequest, cloud: FakeCloudState): boolean {
   }
 
   if (kind === "roles" && method === "GET") {
+    const result = page(
+      Array.from(cloud.roles.values()),
+      query,
+      "maxResults",
+      100,
+      100,
+    );
+
     sendJson(response, 200, {
-      items: Array.from(cloud.roles.values()),
+      items: result.items,
       kind: "admin#directory#roles",
+      ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
     });
     return true;
   }
@@ -501,12 +548,20 @@ function handleAdmin(context: FakeRequest, cloud: FakeCloudState): boolean {
 
   if (kind === "roleassignments" && method === "GET") {
     const roleId = query.get("roleId");
-
-    sendJson(response, 200, {
-      items: cloud.roleAssignments.filter(
+    const result = page(
+      cloud.roleAssignments.filter(
         (assignment) => !roleId || assignment.roleId === roleId,
       ),
+      query,
+      "maxResults",
+      100,
+      200,
+    );
+
+    sendJson(response, 200, {
+      items: result.items,
       kind: "admin#directory#roleAssignments",
+      ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
     });
     return true;
   }
@@ -561,10 +616,21 @@ function handleDriveMembers(
   cloud.drivePermissions.set(driveId, members);
 
   if (context.method === "GET") {
-    sendJson(context.response, 200, {
-      kind: "drive#permissionList",
-      permissions: members,
-    });
+    const result = page(members, context.query, "pageSize", 100, 100);
+
+    // Only the fields asked for come back, so a mask without
+    // nextPageToken hides that there is more.
+    sendMasked(
+      context,
+      {
+        kind: "drive#permissionList",
+        permissions: result.items,
+        ...(result.nextPageToken
+          ? { nextPageToken: result.nextPageToken }
+          : {}),
+      },
+      null,
+    );
     return true;
   }
 
@@ -592,11 +658,42 @@ function handleDriveMembers(
   return true;
 }
 
+const SLOW_PATHS: Array<[RegExp, string]> = [
+  [/^\/admin\/directory\/v1\//, "admin.googleapis.com"],
+  [/^\/v2\/projects\/[^/]+\/locations\/global\/keys/, "apikeys.googleapis.com"],
+];
+
+/** Answers "still turned off" for a service set as slow. */
+function answerSlow(context: FakeRequest, cloud: FakeCloudState): boolean {
+  for (const [pattern, service] of SLOW_PATHS) {
+    const left = cloud.slowServices.get(service) ?? 0;
+
+    if (!pattern.test(context.path) || left <= 0) {
+      continue;
+    }
+
+    cloud.slowServices.set(service, left - 1);
+    sendJson(context.response, 403, {
+      error: {
+        code: 403,
+        details: [{ reason: "SERVICE_DISABLED" }],
+        errors: [{ reason: "accessNotConfigured" }],
+        message: `${service} has not been used in this project before or it is disabled.`,
+        status: "PERMISSION_DENIED",
+      },
+    });
+    return true;
+  }
+
+  return false;
+}
+
 /** Handles a request for one of the parts above. False when it is not one. */
 export function handleCloud(context: FakeRequest): boolean {
   const cloud = cloudState(context.state);
 
   return (
+    answerSlow(context, cloud) ||
     handleServiceUsage(context, cloud) ||
     handleApiKeys(context, cloud) ||
     handleProjects(context, cloud) ||

@@ -1,3 +1,6 @@
+import { checkWorkspaceAccount } from "./auth/sso.ts";
+import { getDb } from "./db/connection.ts";
+import { addonWorkspaceDomains } from "./google-addon.ts";
 import { googleProjectId } from "./google-console.ts";
 import { testSharedDrive } from "./google-drive.ts";
 import { testDirectoryAccess, testGroupLookup } from "./google-workspace.ts";
@@ -20,11 +23,14 @@ import {
 } from "./integrations/google/drive-oauth.ts";
 import { readAdminGroup } from "./google-admin-group.ts";
 import {
+  CHECK_TIME_MS,
   runWorkspaceSetup,
   SETUP_CALLBACK_PATH,
+  SETUP_TIME_BUDGET_MS,
   type SetupEvent,
   type SetupTestResult,
 } from "./integrations/google/workspace-setup.ts";
+import { logRouteError } from "./security/logging.ts";
 import { getBranding } from "./settings.ts";
 import { resolveAuthUrl, type EnvSource } from "./utils/env.ts";
 
@@ -67,10 +73,15 @@ export async function describeSetupTarget(
     serviceAccountEmail = null;
   }
 
-  const projectId =
-    googleProjectId(serviceAccountEmail) ??
-    (await readGoogleProjectId({ env }));
-  const projectNumber = await readGoogleProjectNumber({ env });
+  // One project for every Cloud call and console link: the one the site
+  // runs in (GOOGLE_CLOUD_PROJECT or the metadata server), whose number
+  // the metadata server gives, or else the service account's own, whose
+  // number step b asks Google for.
+  const runningIn = await readGoogleProjectId({ env });
+  const projectId = runningIn ?? googleProjectId(serviceAccountEmail);
+  const projectNumber = runningIn
+    ? await readGoogleProjectNumber({ env })
+    : null;
   const problem = !url
     ? "This site does not know its own address. Set APP_URL where it runs."
     : !serviceAccountEmail
@@ -95,10 +106,30 @@ export async function describeSetupTarget(
 async function runChecks(
   adminEmail: string,
   signedInEmail: string,
-  exportDriveId: string | null,
+  state: { deadline: number; exportDriveId: string | null },
   env: EnvSource,
 ): Promise<SetupTestResult[]> {
+  const { exportDriveId } = state;
   const results: SetupTestResult[] = [];
+  // A check is started only with the time it may need, so the run ends by
+  // its deadline; one that is not started says so.
+  const outOfTime = (name: string) => {
+    if (Date.now() + CHECK_TIME_MS < state.deadline) {
+      return false;
+    }
+
+    results.push({
+      message: "not run, the setup ran out of time.",
+      name,
+      ok: false,
+    });
+    return true;
+  };
+
+  if (outOfTime("Directory")) {
+    return results;
+  }
+
   const directory = await testDirectoryAccess(adminEmail, env);
 
   results.push(
@@ -113,7 +144,10 @@ async function runChecks(
       : { message: directory.message, name: "Directory", ok: false },
   );
 
-  if (readAdminGroup(env, await getIntegrationSettings(env)).group) {
+  if (
+    readAdminGroup(env, await getIntegrationSettings(env)).group &&
+    !outOfTime("Administrator group")
+  ) {
     const group = await testGroupLookup(signedInEmail, null, env);
 
     results.push(
@@ -127,7 +161,7 @@ async function runChecks(
     );
   }
 
-  if (exportDriveId) {
+  if (exportDriveId && !outOfTime("Shared Drive")) {
     const drive = await testSharedDrive(exportDriveId, env);
 
     results.push(
@@ -150,20 +184,82 @@ async function runChecks(
   return results;
 }
 
+// One automatic setup at a time, across instances: two at once would both
+// find nothing yet and both make the key, the role and the Shared Drive.
+const GOOGLE_SETUP_LOCK_ID = 746108360;
+
 /**
- * Exchanges the code from the one-time sign-in, runs every step, and
- * revokes the token whatever happened. Each event is passed on as it
- * happens.
+ * Takes the setup's lock, held by a transaction on a connection of its own
+ * that writes nothing, as the daily cleanup's is (retention-job.ts). Gives
+ * back how to let it go, or null when another run holds it.
  */
-export async function runAutomaticSetup(input: {
+async function takeSetupLock(): Promise<(() => Promise<void>) | null> {
+  const client = await getDb().connect();
+  const release = async () => {
+    await client.query("rollback").catch(() => undefined);
+    client.release();
+  };
+
+  try {
+    await client.query("begin");
+
+    const lock = await client.query<{ locked: boolean }>(
+      "select pg_try_advisory_xact_lock($1) as locked",
+      [GOOGLE_SETUP_LOCK_ID],
+    );
+
+    if (lock.rows[0]?.locked) {
+      return release;
+    }
+  } catch (error) {
+    await release();
+    throw error;
+  }
+
+  await release();
+  return null;
+}
+
+/** The ID token's hd claim: the Workspace the account belongs to. */
+function readHostedDomain(idToken: string | null): string | null {
+  try {
+    const claims = JSON.parse(
+      Buffer.from(idToken?.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ) as { hd?: unknown };
+
+    return typeof claims.hd === "string" ? claims.hd : null;
+  } catch {
+    return null;
+  }
+}
+
+type RunInput = {
   actor: IntegrationSettingsActor;
   code: string;
   codeVerifier: string;
   emit: (event: SetupEvent) => void;
   env?: EnvSource;
   exportDrive: boolean;
-}): Promise<void> {
+};
+
+/**
+ * Exchanges the code from the one-time sign-in, runs every step, and
+ * revokes the token whatever happened. Each event is passed on as it
+ * happens; one that cannot be sent (the page went away) does not stop the
+ * run.
+ */
+export async function runAutomaticSetup(input: RunInput): Promise<void> {
+  // The run's time is counted from here, so the code exchange and the
+  // reads before the steps are inside it too.
+  const deadline = Date.now() + SETUP_TIME_BUDGET_MS;
   const env = input.env ?? process.env;
+  const emit = (event: SetupEvent) => {
+    try {
+      input.emit(event);
+    } catch {
+      // Nobody is reading any more.
+    }
+  };
   const target = await describeSetupTarget(env);
 
   if (
@@ -174,14 +270,53 @@ export async function runAutomaticSetup(input: {
     !target.projectId ||
     !target.siteUrl
   ) {
-    input.emit({
+    emit({
       message: target.problem ?? "The setup cannot run here.",
       type: "refused",
     });
-    input.emit({ ok: false, revoked: true, type: "finished" });
+    emit({ ok: false, revoked: true, type: "finished" });
     return;
   }
 
+  const release = await takeSetupLock();
+
+  if (!release) {
+    emit({
+      hint: "Wait for it to finish, then start the setup again.",
+      message: "Another automatic setup is already running.",
+      type: "refused",
+    });
+    emit({ ok: false, revoked: true, type: "finished" });
+    return;
+  }
+
+  try {
+    await runWithGrant({ ...input, emit }, env, deadline, {
+      client: target.client,
+      projectId: target.projectId,
+      projectNumber: target.projectNumber,
+      redirectUri: target.redirectUri,
+      serviceAccountEmail: target.serviceAccountEmail,
+      siteUrl: target.siteUrl,
+    });
+  } finally {
+    await release();
+  }
+}
+
+async function runWithGrant(
+  input: RunInput,
+  env: EnvSource,
+  deadline: number,
+  target: {
+    client: DriveOAuthClient;
+    projectId: string;
+    projectNumber: string | null;
+    redirectUri: string;
+    serviceAccountEmail: string;
+    siteUrl: string;
+  },
+): Promise<void> {
   let token;
 
   try {
@@ -205,10 +340,24 @@ export async function runAutomaticSetup(input: {
 
   try {
     const claims = readIdTokenClaims(token.idToken);
+    // Held to the install's own Workspace, as Google sign-in is: a super
+    // admin of another organization's Workspace is not set up with.
+    const workspace = claims
+      ? checkWorkspaceAccount(
+          { hd: readHostedDomain(token.idToken) },
+          await addonWorkspaceDomains(env),
+        )
+      : null;
 
     if (!claims) {
       input.emit({
         message: "Google did not say which account signed in.",
+        type: "refused",
+      });
+    } else if (workspace && !workspace.allowed) {
+      input.emit({
+        hint: "Sign in with a super admin of this organization's Google Workspace.",
+        message: `${claims.email}: ${workspace.message}`,
         type: "refused",
       });
     } else {
@@ -219,6 +368,7 @@ export async function runAutomaticSetup(input: {
         accessToken: token.accessToken,
         adminEmail: claims.email,
         appName: productName,
+        deadline,
         emit: input.emit,
         env,
         existing: {
@@ -231,8 +381,8 @@ export async function runAutomaticSetup(input: {
         exportDrive: input.exportDrive,
         projectId: target.projectId,
         projectNumber: target.projectNumber,
-        runTests: ({ exportDriveId }) =>
-          runChecks(claims.email, input.actor.email, exportDriveId, env),
+        runTests: (state) =>
+          runChecks(claims.email, input.actor.email, state, env),
         save: async (update) => {
           await saveIntegrationSettings(update, input.actor, {
             area: "google_workspace",
@@ -244,11 +394,15 @@ export async function runAutomaticSetup(input: {
       });
     }
   } catch (error) {
+    // The page gets our own words; the log gets the error.
+    logRouteError(error, {
+      category: "google_workspace_setup_failure",
+      ipAddress: input.actor.ipAddress ?? null,
+      message: "Unexpected failure in the automatic Google setup.",
+      userId: input.actor.id,
+    });
     input.emit({
-      message:
-        error instanceof Error
-          ? error.message
-          : "The setup stopped unexpectedly.",
+      message: "The setup stopped unexpectedly.",
       type: "refused",
     });
   } finally {
