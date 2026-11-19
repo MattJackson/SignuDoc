@@ -352,6 +352,42 @@ test("a run that runs out of time stops between steps and says which were not ru
   assert.equal(outcomeOf(run.events, "tests"), undefined);
 });
 
+test("the last step's checks are not started without the time they need", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+
+  let elapsed = 0;
+  const wait = (ms: number) => {
+    elapsed += ms;
+    t.mock.timers.tick(ms);
+  };
+  // Steps a to d end just inside the budget; the checks of step f make up
+  // to four requests of 15 seconds each.
+  const run = setup(
+    {},
+    {
+      exportDrive: false,
+      fetchImpl: async (url, init) => {
+        wait(14_000);
+        return fetch(url, init);
+      },
+      runTests: async () => {
+        wait(60_000);
+        return [{ message: "Found Ada.", name: "Directory", ok: true }];
+      },
+      sleep: async (ms) => wait(ms),
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+
+  // The revoke after it can take one more request of 15 seconds, and all
+  // of it has to fit in the route's 300.
+  assert.ok(elapsed + 15_000 <= 300_000, `ran for ${String(elapsed / 1000)} s`);
+  assert.ok(elapsed <= 255_000, `ran for ${String(elapsed / 1000)} s`);
+  assert.ok(refusalOf(run.events).includes(SETUP_STEP_TITLES.tests));
+  assert.equal(outcomeOf(run.events, "tests"), undefined);
+});
+
 test("a progress report that cannot be sent does not stop the setup", async () => {
   const stored: Stored = {};
   const run = setup(stored, {
