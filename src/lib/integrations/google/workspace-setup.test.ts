@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 
 import type { IntegrationSettingsUpdate } from "../../integration-settings.ts";
 import {
@@ -15,24 +15,38 @@ import {
 import {
   buildSetupAuthorizationUrl,
   openSetupState,
+  pickerKeyName,
   runWorkspaceSetup,
   sealSetupState,
   setupScopes,
   SETUP_APIS,
+  SETUP_STEP_TITLES,
   type SetupEvent,
   type WorkspaceSetupInput,
 } from "./workspace-setup.ts";
 
 // The automatic Google Workspace setup against the fake Google server:
-// every step, run once and then again (when nothing is left to do), and
-// the refusals.
+// every step, run once and then again (when nothing is left to do), runs
+// that start from a half-done setup, and the refusals. Each test has a
+// fake Google of its own.
 
 const ADMIN = "ada@example.test";
 const NOT_ADMIN = "bob@example.test";
+const PROJECT_NUMBER = "123456789012";
+const ROLE_PRIVILEGES = [
+  { privilegeName: "USERS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
+  { privilegeName: "GROUPS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
+];
+const PICKER_RESTRICTIONS = {
+  apiTargets: [{ service: "picker.googleapis.com" }],
+  browserKeyRestrictions: {
+    allowedReferrers: ["https://sign.example.test/*"],
+  },
+};
 
 let fake: FakeGoogle;
 
-before(async () => {
+beforeEach(async () => {
   fake = await startFakeGoogle({
     users: [
       { email: ADMIN, familyName: "Admin", givenName: "Ada", isAdmin: true },
@@ -41,7 +55,7 @@ before(async () => {
   });
 });
 
-after(async () => {
+afterEach(async () => {
   await fake.close();
 });
 
@@ -101,6 +115,22 @@ function outcomes(events: SetupEvent[]) {
         event.type === "step" && event.status !== "running",
     )
     .map((event) => [event.id, event.status]);
+}
+
+function outcomeOf(events: SetupEvent[], id: string) {
+  return outcomes(events).find(([step]) => step === id)?.[1];
+}
+
+function refusalOf(events: SetupEvent[]): string {
+  const refused = events.find((event) => event.type === "refused");
+
+  return refused?.type === "refused" ? refused.message : "";
+}
+
+function serviceAccountMembers(driveId: string) {
+  return (cloudState(fake.state).drivePermissions.get(driveId) ?? []).filter(
+    (permission) => permission.emailAddress === FAKE_SERVICE_ACCOUNT_EMAIL,
+  );
 }
 
 test("the sign-in asks for the setup scopes with PKCE, and its state is sealed", () => {
@@ -165,12 +195,7 @@ test("every step runs once, then finds everything already in place", async () =>
   const [key] = Array.from(cloud.apiKeys.values());
 
   assert.equal(key?.displayName, "BusbarSigner Picker");
-  assert.deepEqual(key?.restrictions, {
-    apiTargets: [{ service: "picker.googleapis.com" }],
-    browserKeyRestrictions: {
-      allowedReferrers: ["https://sign.example.test/*"],
-    },
-  });
+  assert.deepEqual(key?.restrictions, PICKER_RESTRICTIONS);
   assert.equal(stored["drive.pickerApiKey"], key?.keyString);
   assert.equal(stored["drive.appId"], cloud.projectNumber);
   assert.equal(stored["google.customerId"], cloud.customerId);
@@ -179,10 +204,7 @@ test("every step runs once, then finds everything already in place", async () =>
   const [role] = Array.from(cloud.roles.values());
 
   assert.equal(role?.roleName, "BusbarSigner directory reader");
-  assert.deepEqual(role?.rolePrivileges, [
-    { privilegeName: "USERS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
-    { privilegeName: "GROUPS_RETRIEVE", serviceId: FAKE_ADMIN_SERVICE_ID },
-  ]);
+  assert.deepEqual(role?.rolePrivileges, ROLE_PRIVILEGES);
   assert.deepEqual(
     cloud.roleAssignments.map((item) => [item.roleId, item.assignedTo]),
     [[role?.roleId, fakeServiceAccountUniqueId(FAKE_SERVICE_ACCOUNT_EMAIL)]],
@@ -232,36 +254,43 @@ test("someone who is not a super admin is refused after the APIs", async () => {
   );
 
   assert.equal(await runWorkspaceSetup(run.input), false);
-
-  const refused = run.events.find((event) => event.type === "refused");
-
-  assert.match(
-    refused?.type === "refused" ? refused.message : "",
-    /not a Workspace super admin/,
-  );
-  assert.deepEqual(outcomes(run.events), [["apis", "skipped"]]);
+  assert.match(refusalOf(run.events), /not a Workspace super admin/);
+  assert.deepEqual(outcomes(run.events), [["apis", "done"]]);
 });
 
-test("an account with no rights on the Cloud project is stopped at the first step", async () => {
-  const cloud = cloudState(fake.state);
+test("an Admin SDK that is still being turned on is not taken for a missing super admin", async () => {
+  cloudState(fake.state).slowServices.set("admin.googleapis.com", Infinity);
 
-  cloud.deniedProjectUsers.add(ADMIN);
+  const run = setup({});
 
-  try {
-    const run = setup({});
+  assert.equal(await runWorkspaceSetup(run.input), false);
 
-    assert.equal(await runWorkspaceSetup(run.input), false);
+  const message = refusalOf(run.events);
 
-    const failed = run.events.find(
-      (event) => event.type === "step" && event.status === "failed",
-    );
+  assert.doesNotMatch(message, /not a Workspace super admin/);
+  assert.match(message, /still being turned on/);
+  assert.deepEqual(outcomes(run.events), [["apis", "done"]]);
+});
 
-    assert.equal(failed?.type === "step" && failed.id, "apis");
-    assert.equal(failed?.type === "step" && failed.googleStatus, 403);
-    assert.match(failed?.type === "step" ? (failed.hint ?? "") : "", /Owner/);
-  } finally {
-    cloud.deniedProjectUsers.delete(ADMIN);
-  }
+test("an account with no rights on the Cloud project is stopped at the first step, with Google's status only", async () => {
+  cloudState(fake.state).deniedProjectUsers.add(ADMIN);
+
+  const run = setup({});
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+
+  const failed = run.events.find(
+    (event) => event.type === "step" && event.status === "failed",
+  );
+
+  assert.equal(failed?.type === "step" && failed.id, "apis");
+  assert.equal(failed?.type === "step" && failed.googleStatus, 403);
+  assert.match(failed?.type === "step" ? (failed.hint ?? "") : "", /Owner/);
+  // Google's own wording is not passed on.
+  assert.doesNotMatch(
+    JSON.stringify(run.events),
+    /The caller does not have permission/,
+  );
 });
 
 test("failing checks fail the last step with a hint, and a Shared Drive can be left out", async () => {
@@ -288,4 +317,250 @@ test("failing checks fail the last step with a hint, and a Shared Drive can be l
     failed?.type === "step" ? (failed.hint ?? "") : "",
     /few minutes/,
   );
+});
+
+test("a run that runs out of time stops between steps and says which were not run", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+
+  let elapsed = 0;
+  const wait = (ms: number) => {
+    elapsed += ms;
+    t.mock.timers.tick(ms);
+  };
+  // Every Google call takes 15 seconds, the longest a request is let run.
+  const slowFetch: typeof fetch = async (url, init) => {
+    wait(15_000);
+    return fetch(url, init);
+  };
+  const run = setup(
+    {},
+    {
+      fetchImpl: slowFetch,
+      sleep: async (ms) => wait(ms),
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+  // Well inside the 300 seconds the platform allows, so the token can be
+  // revoked after.
+  assert.ok(elapsed <= 255_000, `ran for ${String(elapsed / 1000)} s`);
+
+  const message = refusalOf(run.events);
+
+  assert.match(message, /time/);
+  assert.ok(message.includes(SETUP_STEP_TITLES.tests), message);
+  assert.equal(outcomeOf(run.events, "tests"), undefined);
+});
+
+test("a progress report that cannot be sent does not stop the setup", async () => {
+  const stored: Stored = {};
+  const run = setup(stored, {
+    emit: () => {
+      throw new TypeError("Invalid state: Controller is already closed");
+    },
+  });
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+  assert.ok(stored["drive.pickerApiKey"]);
+  assert.equal(stored["google.directory"], "on");
+  assert.ok(stored["drive.exportDriveId"]);
+  assert.deepEqual(run.tested, [stored["drive.exportDriveId"]]);
+});
+
+test("a Shared Drive someone else made with the same name is not taken over", async () => {
+  fake.addDrive({ id: "0AFakeLookalike", name: "BusbarSigner Executed" });
+
+  const stored: Stored = {};
+  const run = setup(stored);
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+
+  const driveId = stored["drive.exportDriveId"] ?? "";
+
+  assert.notEqual(driveId, "0AFakeLookalike");
+  assert.equal(fake.state.drives.get(driveId)?.name, "BusbarSigner Executed");
+  assert.deepEqual(serviceAccountMembers("0AFakeLookalike"), []);
+  assert.equal(serviceAccountMembers(driveId).length, 1);
+});
+
+test("a long app name still makes a Picker key within Google's 63 characters", async () => {
+  for (const length of [1, 56, 57, 60, 120]) {
+    assert.ok(pickerKeyName("A".repeat(length)).length <= 63, String(length));
+  }
+
+  const appName = "A".repeat(60);
+  const stored: Stored = {};
+  const first = setup(stored, { appName });
+
+  await runWorkspaceSetup(first.input);
+  assert.equal(outcomeOf(first.events, "picker"), "done");
+
+  const second = setup(stored, { appName });
+
+  await runWorkspaceSetup(second.input);
+  assert.equal(outcomeOf(second.events, "picker"), "skipped");
+  assert.equal(cloudState(fake.state).apiKeys.size, 1);
+});
+
+test("the Shared Drive set where the site runs is the one tested", async () => {
+  fake.addDrive({ id: "0AFakeFromEnv", name: "Contracts" });
+
+  const run = setup(
+    { "drive.exportDriveId": "0AFakeOldStored" },
+    { env: { ...fake.env, GOOGLE_DRIVE_EXPORT_DRIVE_ID: "0AFakeFromEnv" } },
+  );
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "drive"), "skipped");
+  assert.deepEqual(run.tested, ["0AFakeFromEnv"]);
+});
+
+test("a Picker key saved without the project number needs attention", async () => {
+  cloudState(fake.state).hideProjectNumber = true;
+
+  const stored: Stored = {};
+  const run = setup(stored);
+
+  assert.equal(await runWorkspaceSetup(run.input), false);
+  assert.equal(outcomeOf(run.events, "picker"), "failed");
+  assert.ok(stored["drive.pickerApiKey"], "the key is still saved");
+  assert.equal(stored["drive.appId"], undefined);
+});
+
+// Runs that start from a half-done setup.
+
+test("an existing Picker key with the wrong restrictions, on a later page, is held again", async () => {
+  const cloud = cloudState(fake.state);
+
+  for (let index = 0; index < 300; index += 1) {
+    const name = `projects/${PROJECT_NUMBER}/locations/global/keys/other-${String(index)}`;
+
+    cloud.apiKeys.set(name, {
+      displayName: `Other ${String(index)}`,
+      keyString: `AIzaOther${String(index)}`,
+      name,
+      restrictions: {},
+    });
+  }
+
+  const ours = `projects/${PROJECT_NUMBER}/locations/global/keys/ours`;
+
+  cloud.apiKeys.set(ours, {
+    displayName: "BusbarSigner Picker",
+    keyString: "AIzaOurs",
+    name: ours,
+    restrictions: {},
+  });
+
+  const stored: Stored = {};
+  const run = setup(stored);
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "picker"), "done");
+  assert.equal(cloud.apiKeys.size, 301);
+  assert.deepEqual(cloud.apiKeys.get(ours)?.restrictions, PICKER_RESTRICTIONS);
+  assert.equal(stored["drive.pickerApiKey"], "AIzaOurs");
+});
+
+test("an existing role on a later page that is not assigned yet is assigned", async () => {
+  const cloud = cloudState(fake.state);
+
+  for (let index = 0; index < 100; index += 1) {
+    cloud.roles.set(`other-${String(index)}`, {
+      roleId: `other-${String(index)}`,
+      roleName: `Other ${String(index)}`,
+      rolePrivileges: [],
+    });
+  }
+
+  cloud.roles.set("ours", {
+    roleId: "ours",
+    roleName: "BusbarSigner directory reader",
+    rolePrivileges: ROLE_PRIVILEGES,
+  });
+
+  const run = setup({});
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "role"), "done");
+  assert.equal(cloud.roles.size, 101);
+  assert.deepEqual(
+    cloud.roleAssignments.map((item) => [item.roleId, item.assignedTo]),
+    [["ours", fakeServiceAccountUniqueId(FAKE_SERVICE_ACCOUNT_EMAIL)]],
+  );
+});
+
+test("the saved Shared Drive without the service account gets it added", async () => {
+  fake.addDrive({ id: "0AFakeOurs", name: "BusbarSigner Executed" });
+
+  const stored: Stored = { "drive.exportDriveId": "0AFakeOurs" };
+  const run = setup(stored);
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "drive"), "done");
+  assert.equal(stored["drive.exportDriveId"], "0AFakeOurs");
+  assert.deepEqual(
+    serviceAccountMembers("0AFakeOurs").map((member) => member.role),
+    ["fileOrganizer"],
+  );
+  assert.equal(fake.state.drives.size, 1);
+});
+
+test("a saved Shared Drive that is gone is made again", async () => {
+  const stored: Stored = { "drive.exportDriveId": "0AFakeGone" };
+  const run = setup(stored);
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "drive"), "done");
+
+  const driveId = stored["drive.exportDriveId"] ?? "";
+
+  assert.notEqual(driveId, "0AFakeGone");
+  assert.equal(fake.state.drives.get(driveId)?.name, "BusbarSigner Executed");
+  assert.equal(serviceAccountMembers(driveId).length, 1);
+});
+
+test("the service account on a later page of the drive's members is found", async () => {
+  fake.addDrive({ id: "0AFakeBusy", name: "BusbarSigner Executed" });
+
+  const members = Array.from({ length: 100 }, (_, index) => ({
+    emailAddress: `person${String(index)}@example.test`,
+    id: `perm-${String(index)}`,
+    role: "reader",
+    type: "user",
+  }));
+
+  cloudState(fake.state).drivePermissions.set("0AFakeBusy", [
+    ...members,
+    {
+      emailAddress: FAKE_SERVICE_ACCOUNT_EMAIL,
+      id: "perm-sa",
+      role: "fileOrganizer",
+      type: "user",
+    },
+  ]);
+
+  const run = setup({ "drive.exportDriveId": "0AFakeBusy" });
+
+  await runWorkspaceSetup(run.input);
+  assert.equal(outcomeOf(run.events, "drive"), "skipped");
+  assert.equal(serviceAccountMembers("0AFakeBusy").length, 1);
+});
+
+test("an API that is still coming on is tried again after a wait", async () => {
+  cloudState(fake.state).slowServices.set("apikeys.googleapis.com", 3);
+
+  const waits: number[] = [];
+  const run = setup(
+    {},
+    {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    },
+  );
+
+  assert.equal(await runWorkspaceSetup(run.input), true);
+  assert.equal(outcomeOf(run.events, "picker"), "done");
+  assert.equal(waits.filter((ms) => ms === 5000).length, 3);
 });
