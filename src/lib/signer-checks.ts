@@ -20,6 +20,11 @@ import { isProduction, resolveAuthSecret } from "./utils/env.ts";
 // - account: Part 11 envelopes only. The signer gives the email address and
 //   password of their own account on this install, which was bound to them
 //   when the envelope was sent.
+// - google: the signer is signed in to this site with Google, as the very
+//   address the envelope was sent to (google-signing.ts). Asked of
+//   employees in the Workspace domains when the administrator requires it,
+//   offered to them when the administrator offers it. Never asked of anyone
+//   outside the organization.
 //
 // Passing a check sets a cookie for this link only, valid for a few hours.
 
@@ -27,6 +32,7 @@ export const signerCheckMethods = [
   "access_code",
   "account",
   "email_code",
+  "google",
 ] as const;
 export type SignerCheckMethod = (typeof signerCheckMethods)[number];
 
@@ -46,6 +52,8 @@ export type SignerCheckState = {
   emailCodeHash: string | null;
   emailCodeSentAt: number | null;
   requireEmailCode: boolean;
+  /** Set at sending: the signer must confirm who they are with Google. */
+  requireGoogleSignIn: boolean;
 };
 
 export async function getSignerCheckState(
@@ -63,7 +71,8 @@ export async function getSignerCheckState(
         email_code_expires_at AS "emailCodeExpiresAt",
         email_code_hash AS "emailCodeHash",
         email_code_sent_at AS "emailCodeSentAt",
-        require_email_code AS "requireEmailCode"
+        require_email_code AS "requireEmailCode",
+        require_google_sign_in AS "requireGoogleSignIn"
       FROM signers
       WHERE id = $1
     `,
@@ -80,15 +89,22 @@ export async function getSignerCheckState(
       emailCodeHash: null,
       emailCodeSentAt: null,
       requireEmailCode: false,
+      requireGoogleSignIn: false,
     }
   );
 }
 
+/**
+ * Every check the signer has to pass, in the order they are asked. The
+ * Google check comes first: it is the one that takes the signer away from
+ * the page, and the others are quick once they are back.
+ */
 export function requiredSignerChecks(
   state: Pick<SignerCheckState, "accessCodeHash" | "requireEmailCode"> &
-    Partial<Pick<SignerCheckState, "accountUserId">>,
+    Partial<Pick<SignerCheckState, "accountUserId" | "requireGoogleSignIn">>,
 ): SignerCheckMethod[] {
   return [
+    ...(state.requireGoogleSignIn ? (["google"] as const) : []),
     ...(state.accessCodeHash ? (["access_code"] as const) : []),
     ...(state.accountUserId ? (["account"] as const) : []),
     ...(state.requireEmailCode ? (["email_code"] as const) : []),

@@ -71,7 +71,24 @@ import {
   signatureMeaningLabel,
 } from "./part11.ts";
 import { getBranding, readStoredSettings } from "./settings.ts";
-import { type SignatureMeaning } from "./types/domain.ts";
+import {
+  checkManagerPolicy,
+  findSenderManager,
+  judgeManagerPolicy,
+  loadManagerPolicy,
+  managerPolicyAppliesTo,
+  type SenderManager,
+  type ManagerPolicy,
+  type ManagerPolicyCheck,
+} from "./manager-policy.ts";
+import {
+  googleSigningFor,
+  isWorkspaceAddress,
+  loadGoogleSigningPolicy,
+  type GoogleSigningPolicy,
+} from "./google-signing.ts";
+import { type DirectoryClient } from "./integrations/google/directory.ts";
+import { type RecipientRole, type SignatureMeaning } from "./types/domain.ts";
 import { importPdfDocument } from "./services/document-import.ts";
 import {
   describeSignerCorrectedEvent,
@@ -125,9 +142,26 @@ import {
   getManualNudgeAvailableAt,
   isManualNudgeAvailable,
 } from "./services/reminders.ts";
-import { formatEnvelopeOwner } from "./envelope-access.ts";
 import { PERMITTED_USE_VERSION } from "./permitted-uses.ts";
 import { hashAccessCode } from "./signer-checks.ts";
+import {
+  envelopeScopeCondition,
+  formatEnvelopeOwner,
+  getEnvelopeAccess,
+  type EnvelopeScope,
+} from "./envelope-access.ts";
+import {
+  describeSignerLimit,
+  getMaxSignersPerEnvelope,
+} from "./signer-limit.ts";
+import {
+  firstStepSigners,
+  hasSharedSigningStep,
+  joinNames,
+  normalizeSigningSteps,
+  signingStepOf,
+  SigningStepError,
+} from "./signing-steps.ts";
 import { escapeHtml } from "./utils/html.ts";
 
 type CreateDraftEnvelopeOptions = {
@@ -136,6 +170,11 @@ type CreateDraftEnvelopeOptions = {
 };
 
 type CreateDraftEnvelopeInput = {
+  /**
+   * Where the document came from when it was not uploaded from this site
+   * (Google Drive, Gmail), kept on the "created" audit event.
+   */
+  importSource?: { kind: "drive" | "gmail" | "upload"; ref?: string } | null;
   sourcePdf: {
     body: Uint8Array;
     contentType?: string | null;
@@ -178,12 +217,20 @@ type CorrectSentEnvelopeSignerContext = {
 
 type CorrectSentEnvelopeSignerOptions = {
   database?: DbPool;
+  /** Replaced in tests: the Workspace directory, null when it is off. */
+  directory?: DirectoryClient | null;
   emailService?: EmailService;
   nowUnixTimestamp?: number;
 };
 
 type SendDraftEnvelopeOptions = {
   database?: DbPool;
+  /** Replaced in tests: the Workspace directory, null when it is off. */
+  directory?: DirectoryClient | null;
+  /** Replaced in tests; read from the settings otherwise. */
+  googleSigningPolicy?: GoogleSigningPolicy;
+  /** Replaced in tests; read from the settings otherwise. */
+  managerPolicy?: ManagerPolicy;
 };
 
 type VoidEnvelopeOptions = {
@@ -225,9 +272,11 @@ type SignerRow = {
   lastNotifiedAt: number | null;
   lastNudgedAt: number | null;
   name: string;
+  role: RecipientRole;
   signatureMeaning: SignatureMeaning | null;
   signedAt: number | null;
   signOrder: number;
+  signingStep: number | null;
   signingTokenExpiresAt: number | null;
   signingTokenHash: string | null;
   status: SignerRecord["status"];
@@ -301,11 +350,18 @@ type PersistedFieldRecord = FieldRecord & {
 };
 
 export type DashboardEnvelopeListItem = {
+  /**
+   * You sent it. False when you see it through a team or as administrator.
+   * Left out on the landing page's sample cards.
+   */
+  canManage?: boolean;
   contextLine: string;
   createdAtLabel: string;
   /** Out for signature and past its deadline. */
   expired?: boolean;
   id: string;
+  /** Who sent it, for an envelope someone else sent. */
+  sentByLabel?: string | null;
   searchableEmails: readonly string[];
   /** Who sent it, in an administrator's list of every envelope. */
   senderLabel?: string;
@@ -332,10 +388,20 @@ export type ReviewSignerSummary = {
   id: string;
   name: string;
   order: number;
+  /** A signer, or an approver who has no fields. */
+  role: RecipientRole;
+  /** The step of the signing order; signers who share one sign together. */
+  step: number;
 };
 
 export type ReviewEnvelopeData = {
   canSend: boolean;
+  /**
+   * The administrator suggests the sender's manager approves first, and
+   * they are not in the first step: what to say about it. Does not stop
+   * the send.
+   */
+  managerSuggestion: string | null;
   /**
    * The install's signing provider, when the sender may choose signatures
    * in the signers' own names. Null without one, or in Part 11 mode.
@@ -361,13 +427,19 @@ export type DraftSignerStepSigner = {
   name: string;
   order: number;
   requireEmailCode?: boolean;
+  /** A signer, or an approver who has no fields. */
+  role: RecipientRole;
   /** Set on the signers step only. */
   signatureMeaning?: SignatureMeaning | null;
+  /** The step of the signing order; signers who share one sign together. */
+  step: number;
 };
 
 export type DraftSignerStepData = {
   copyRecipients: readonly CopyRecipientRecord[];
   envelopeId: string;
+  /** The most signers this install allows on one envelope. */
+  maxSigners: number;
   /** Part 11 mode is on, so each signer needs a meaning and an account. */
   part11Mode?: boolean;
   signers: readonly DraftSignerStepSigner[];
@@ -391,8 +463,12 @@ export type EnvelopeDetailSignerView = {
   metaLabel: string;
   name: string;
   order: number;
+  /** An approver's "signed" is an approval and "declined" a rejection. */
+  role: RecipientRole;
   status: "declined" | "pending" | "signed" | "waiting";
   statusDateLabel?: string;
+  /** The step of the signing order; signers who share one sign together. */
+  step: number;
 };
 
 export type EnvelopeDetailTimelineItem = {
@@ -415,6 +491,11 @@ export type EnvelopeDetailDeadline = {
 };
 
 export type EnvelopeDetailData = {
+  /**
+   * The viewer sent it and may change it. False for a teammate or an
+   * administrator who can only look (envelope-access.ts).
+   */
+  canManage: boolean;
   /** People who get a copy of the finished document without signing. */
   copyRecipients: readonly CopyRecipientRecord[];
   createdAtLabel: string;
@@ -431,6 +512,8 @@ export type EnvelopeDetailData = {
    * example "Qualified electronic signatures through eID Easy".
    */
   signatureTypeLabel: string | null;
+  /** Who sent it, when that is not the viewer. */
+  sentByLabel: string | null;
   signers: readonly EnvelopeDetailSignerView[];
   status: EnvelopeRecord["status"];
   timeline: readonly EnvelopeDetailTimelineItem[];
@@ -445,8 +528,9 @@ export type DraftEnvelopeDocument = {
 };
 
 /**
- * Copy recipients are stored after every signer. Signers use 1 to 10, and a
- * rewrite of the signer list parks rows 1000 higher for a moment.
+ * Copy recipients are stored after every signer. Signers use 1 up to
+ * MAX_SIGNERS_CEILING (100), and a rewrite of the signer list parks rows
+ * 1000 higher for a moment.
  */
 const COPY_RECIPIENT_SIGN_ORDER_BASE = 500;
 
@@ -530,7 +614,10 @@ const TIMELINE_TONE_MAP: Record<
   AuditEventRecord["event"],
   EnvelopeDetailTimelineItem["tone"]
 > = {
+  approved: "success",
   completed: "success",
+  handed_over: "neutral",
+  rejected: "danger",
   consented: "neutral",
   copied: "accent",
   created: "accent",
@@ -702,7 +789,14 @@ export async function createDraftEnvelope(
           createdAt: now,
           envelopeId,
           event: "created",
-          metadata: null,
+          metadata: input.importSource
+            ? {
+                importedFrom: input.importSource.kind,
+                ...(input.importSource.ref
+                  ? { importRef: input.importSource.ref.slice(0, 200) }
+                  : {}),
+              }
+            : null,
         },
         tx,
       );
@@ -943,9 +1037,11 @@ export async function copyEnvelopeToDraft(
               updated_at,
               access_code_hash,
               require_email_code,
-              signature_meaning
+              signature_meaning,
+              signing_step,
+              role
             ) VALUES (
-              $1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7, $8, $9, $10
+              $1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7, $8, $9, $10, $11, $12
             )
           `,
           [
@@ -959,6 +1055,9 @@ export async function copyEnvelopeToDraft(
             null,
             checks.get(signer.id)?.requireEmailCode ?? false,
             null,
+            signingStepOf(signer),
+            // An approver stays an approver in the copy.
+            signer.role ?? "signer",
           ],
         );
       }
@@ -1182,6 +1281,55 @@ async function getEnvelopeByIdForUser(
   return row ? mapEnvelopeRow(row) : null;
 }
 
+/**
+ * The envelope, for anyone who may read it: its sender, someone on a team
+ * with them, or an administrator (envelope-access.ts). Only for showing it.
+ * Everything that changes an envelope reads it with getEnvelopeByIdForUser,
+ * which finds the sender's own envelopes and no others.
+ */
+async function getReadableEnvelope(
+  viewerId: string,
+  envelopeId: string,
+  database: DbExecutor,
+): Promise<{ canManage: boolean; envelope: EnvelopeRecord } | null> {
+  const access = await getEnvelopeAccess(viewerId, envelopeId, database);
+
+  if (!access) {
+    return null;
+  }
+
+  const envelope = await getEnvelopeByIdForUser(
+    access.ownerId,
+    envelopeId,
+    database,
+  );
+
+  return envelope ? { canManage: access.canManage, envelope } : null;
+}
+
+/** "Name (email)" for each of these accounts, by id. */
+async function describeSenders(
+  userIds: readonly string[],
+  database: DbExecutor,
+): Promise<Map<string, string>> {
+  if (userIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await queryMany<{ email: string; id: string; name: string }>(
+    database,
+    `SELECT id, name, email FROM "user" WHERE id = ANY($1::text[])`,
+    [[...userIds]],
+  );
+
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      formatEnvelopeOwner({ ownerEmail: row.email, ownerName: row.name }),
+    ]),
+  );
+}
+
 async function listSignersForEnvelopeIds(
   envelopeIds: readonly string[],
   database: DbExecutor,
@@ -1199,7 +1347,9 @@ async function listSignersForEnvelopeIds(
         envelope_id AS "envelopeId",
         name,
         email,
+        role,
         sign_order AS "signOrder",
+        signing_step AS "signingStep",
         status,
         signing_token_hash AS "signingTokenHash",
         signing_token_expires_at AS "signingTokenExpiresAt",
@@ -1214,7 +1364,8 @@ async function listSignersForEnvelopeIds(
         updated_at AS "updatedAt"
       FROM signers
       WHERE envelope_id IN (${placeholders})
-        AND role = 'signer'
+        -- Everyone in the signing order: signers and approvers.
+        AND role IN ('signer', 'approver')
       ORDER BY envelope_id ASC, sign_order ASC, id ASC
     `,
     envelopeIds,
@@ -1433,22 +1584,30 @@ function buildDashboardContextLine(
   }
 
   if (envelope.status === "sent") {
-    const currentSigner =
-      signers.find((signer) => signer.status === "notified") ??
-      signers.find((signer) => signer.status === "pending");
+    // Everyone whose turn it is: one signer, or all of a step that signs
+    // at the same time.
+    const waiting = signers.filter((signer) => signer.status === "notified");
+    const currentSigners =
+      waiting.length > 0
+        ? waiting
+        : signers.filter((signer) => signer.status === "pending").slice(0, 1);
+    const waitingOn =
+      currentSigners.length > 0
+        ? currentSigners.map((signer) => signer.email).join(", ")
+        : "—";
 
     if (isEnvelopeExpired(envelope, Math.floor(Date.now() / 1000))) {
-      return `Expired ${formatShortDate(envelope.expiresAt!)} · was waiting on: ${currentSigner?.email ?? "—"}`;
+      return `Expired ${formatShortDate(envelope.expiresAt!)} · was waiting on: ${waitingOn}`;
     }
 
-    return `Waiting on: ${currentSigner?.email ?? "—"}`;
+    return `Waiting on: ${waitingOn}`;
   }
 
   if (envelope.status === "declined") {
     const declinedSigner = signers.find(
       (signer) => signer.status === "declined",
     );
-    return `Declined by: ${declinedSigner?.email ?? "—"}`;
+    return `${declinedSigner?.role === "approver" ? "Rejected" : "Declined"} by: ${declinedSigner?.email ?? "—"}`;
   }
 
   if (envelope.status === "voided") {
@@ -1480,7 +1639,10 @@ function buildDashboardStatusLabel(
       (signer) => signer.status === "signed",
     ).length;
 
-    return `${String(signedCount)} of ${String(signers.length)} signed`;
+    // An approval is a turn done, not a signature.
+    return `${String(signedCount)} of ${String(signers.length)} ${
+      signers.some((signer) => signer.role === "approver") ? "done" : "signed"
+    }`;
   }
 
   return dashboardStatusLabels[envelope.status];
@@ -1548,10 +1710,90 @@ function getMissingSignatureSigner(
 ): PersistedSignerRecord | undefined {
   return signers.find(
     (signer) =>
+      signer.role !== "approver" &&
       !(fieldsBySigner.get(signer.id) ?? []).some(
         (field) => field.type === "signature",
       ),
   );
+}
+
+/**
+ * Approvers are not offered in Part 11 mode. An approval there would be an
+ * electronic signature under 21 CFR 11 (11.50 lists approval as a meaning),
+ * with the account, password and manifestation that go with one, and the
+ * Part 11 validation (docs/part11) covers signers only.
+ */
+const PART11_APPROVER_MESSAGE =
+  "Part 11 mode has no approvers. Make each approver a signer with the meaning Approval, so they sign with their account and password.";
+
+/** The administrator's rule about the sender's manager, for this draft. */
+async function checkManagerPolicyForSender(
+  userId: string,
+  signers: readonly Pick<
+    PersistedSignerRecord,
+    "email" | "role" | "signOrder" | "signingStep"
+  >[],
+  {
+    database,
+    directory,
+    part11,
+    policy,
+  }: {
+    database: DbExecutor;
+    directory?: DirectoryClient | null;
+    part11: boolean;
+    policy?: ManagerPolicy;
+  },
+): Promise<ManagerPolicyCheck> {
+  const sender = await queryOne<{ email: string }>(
+    database,
+    `SELECT email FROM "user" WHERE id = $1`,
+    [userId],
+  );
+
+  if (!sender) {
+    return { status: "not_applicable" };
+  }
+
+  return checkManagerPolicy({ email: sender.email, id: userId }, signers, {
+    database,
+    directory,
+    part11,
+    policy,
+  });
+}
+
+/**
+ * What stops the signing order from going out, about signers and
+ * approvers, in words for the sender: someone has to sign, every signer
+ * needs a Signature field, and an approver has no fields at all.
+ */
+function describeSigningOrderProblem(
+  signers: readonly PersistedSignerRecord[],
+  fieldsBySigner: ReadonlyMap<string, readonly FieldRecord[]>,
+): string | null {
+  if (!signers.some((signer) => signer.role !== "approver")) {
+    return "Add at least one signer. Approvers approve or reject, so someone else has to sign.";
+  }
+
+  const approverWithFields = signers.find(
+    (signer) =>
+      signer.role === "approver" &&
+      (fieldsBySigner.get(signer.id) ?? []).length > 0,
+  );
+
+  if (approverWithFields) {
+    return `${approverWithFields.name} is an approver, and approvers have no fields. Remove their fields, or make them a signer.`;
+  }
+
+  const missingSignatureSigner = getMissingSignatureSigner(
+    signers,
+    fieldsBySigner,
+  );
+
+  return missingSignatureSigner
+    ? `Every signer must have at least one Signature field before sending. ${missingSignatureSigner.name} is missing one.`
+    : null;
 }
 
 function buildVoidNotificationEmail(input: {
@@ -1672,9 +1914,28 @@ function buildTimelineDescription(event: AuditEventRecord): string {
     case "copied":
       return "Copied from an earlier envelope";
     case "created":
-      return "Envelope created";
-    case "sent":
-      return `Sent to ${targetLabel}`;
+      return event.metadata?.importedFrom === "drive"
+        ? "Envelope created from Google Drive"
+        : event.metadata?.importedFrom === "gmail"
+          ? "Envelope created from Gmail"
+          : "Envelope created";
+    case "sent": {
+      // A first step of several signers names them all.
+      const stepSigners = Array.isArray(event.metadata?.stepSigners)
+        ? event.metadata.stepSigners.flatMap((entry: unknown) =>
+            typeof entry === "object" &&
+            entry !== null &&
+            "signerName" in entry &&
+            typeof entry.signerName === "string"
+              ? [entry.signerName]
+              : [],
+          )
+        : [];
+
+      return stepSigners.length > 1
+        ? `Sent to ${joinNames(stepSigners)} to sign at the same time`
+        : `Sent to ${targetLabel}`;
+    }
     case "viewed":
       return `Viewed by ${targetLabel}`;
     case "signed":
@@ -1690,6 +1951,24 @@ function buildTimelineDescription(event: AuditEventRecord): string {
       return declineReason
         ? `Declined by ${targetLabel} — ${declineReason}`
         : `Declined by ${targetLabel}`;
+    case "approved":
+      return `Approved by ${targetLabel}`;
+    case "rejected":
+      return declineReason
+        ? `Rejected by ${targetLabel} — ${declineReason}`
+        : `Rejected by ${targetLabel}`;
+    case "handed_over": {
+      const toLabel =
+        typeof event.metadata?.toEmail === "string"
+          ? event.metadata.toEmail
+          : "another account";
+      const fromLabel =
+        typeof event.metadata?.fromEmail === "string"
+          ? event.metadata.fromEmail
+          : "its sender";
+
+      return `Handed over from ${fromLabel} to ${toLabel}`;
+    }
     case "reminded_manual":
       return `Manual reminder sent to ${targetLabel}`;
     case "reminded_auto":
@@ -1730,12 +2009,14 @@ function buildDetailSignerStatusLabel(
   signer: PersistedSignerRecord,
   previousSignerName?: string,
 ): string | undefined {
+  const approver = signer.role === "approver";
+
   if (signer.status === "signed" && signer.signedAt) {
-    return `Signed ${formatShortDate(signer.signedAt)}`;
+    return `${approver ? "Approved" : "Signed"} ${formatShortDate(signer.signedAt)}`;
   }
 
   if (signer.status === "declined" && signer.declinedAt) {
-    return `Declined ${formatShortDate(signer.declinedAt)}`;
+    return `${approver ? "Rejected" : "Declined"} ${formatShortDate(signer.declinedAt)}`;
   }
 
   if (signer.status === "notified") {
@@ -1763,12 +2044,37 @@ function buildDetailSignerMetaLabel(
   signer: PersistedSignerRecord,
   assignedFieldCount: number,
 ): string {
+  const approver = signer.role === "approver";
+
   if (envelope.status === "voided" && signer.status === "notified") {
-    return "Last notified signer before void";
+    return approver
+      ? "Last notified approver before void"
+      : "Last notified signer before void";
   }
 
   if (signer.status === "declined" && signer.declineReason) {
-    return `Decline reason: ${signer.declineReason}`;
+    return `${approver ? "Rejection" : "Decline"} reason: ${signer.declineReason}`;
+  }
+
+  // An approver has no fields to count.
+  if (approver) {
+    if (envelope.status === "declined" && signer.status === "pending") {
+      return "Skipped after decline";
+    }
+
+    if (envelope.status === "voided" && signer.status === "pending") {
+      return "Not reached before void";
+    }
+
+    if (signer.status === "signed") {
+      return "Approved";
+    }
+
+    if (signer.status === "declined") {
+      return "Rejected";
+    }
+
+    return signer.status === "notified" ? "Current approver" : "Approver";
   }
 
   if (envelope.status === "declined" && signer.status === "pending") {
@@ -1797,41 +2103,25 @@ export type DashboardEnvelopePage = {
   hasMore: boolean;
 };
 
+/**
+ * One page of the envelopes a dashboard lists. `scope` chooses whose: the
+ * user's own (the default), theirs and their teammates', or every one they
+ * can see (envelope-access.ts), which for an administrator is every sent
+ * envelope in the install and their own drafts. Each item says whether the
+ * user may change it; in "all", each names its sender.
+ */
 export async function listEnvelopesForUser(
   userId: string,
-  filters: Partial<EnvelopeListFilters> = {},
+  filters: Partial<EnvelopeListFilters> & { scope?: EnvelopeScope } = {},
   database: DbExecutor = getDb(),
 ): Promise<DashboardEnvelopePage> {
-  return listEnvelopes(userId, filters, database);
-}
-
-/**
- * Every envelope in the install, whoever sent it, each with its sender.
- * Other members' drafts are left out: a draft is its sender's own until it
- * is sent. For an administrator: the caller checks the role.
- */
-export async function listAllEnvelopesForAdmin(
-  adminUserId: string,
-  filters: Partial<EnvelopeListFilters> = {},
-  database: DbExecutor = getDb(),
-): Promise<DashboardEnvelopePage> {
-  return listEnvelopes(null, filters, database, adminUserId);
-}
-
-async function listEnvelopes(
-  ownerUserId: string | null,
-  filters: Partial<EnvelopeListFilters>,
-  database: DbExecutor,
-  adminUserId?: string,
-): Promise<DashboardEnvelopePage> {
-  const parsedFilters = envelopeListFiltersSchema.parse(filters);
-  const values: unknown[] =
-    ownerUserId === null ? [adminUserId ?? ""] : [ownerUserId];
-  const clauses =
-    ownerUserId === null
-      ? ["(status <> 'draft' OR user_id = $1)"]
-      : ["user_id = $1"];
-  let nextParamIndex = values.length + 1;
+  const { scope = "mine", ...listFilters } = filters;
+  const parsedFilters = envelopeListFiltersSchema.parse(listFilters);
+  const values: unknown[] = [userId];
+  const clauses = [envelopeScopeCondition(scope, "$1")];
+  let nextParamIndex = 2;
+  // Someone else's envelopes may be listed: search their senders too.
+  const othersListed = scope !== "mine";
 
   if (parsedFilters.status) {
     clauses.push(`status = $${String(nextParamIndex)}`);
@@ -1850,8 +2140,8 @@ async function listEnvelopes(
           WHERE signers.envelope_id = envelopes.id
             AND lower(signers.email) LIKE ${searchPlaceholder} ESCAPE '\\'
         )${
-          // Across the install, the sender too.
-          ownerUserId === null
+          // Across a team or the install, the sender too.
+          othersListed
             ? `
         OR EXISTS (
           SELECT 1
@@ -1920,39 +2210,41 @@ async function listEnvelopes(
       listFieldsForEnvelopeIds(envelopeIds, database),
       listCopyRecipientsForEnvelopeIds(envelopeIds, database),
     ]);
-  const sendersById =
-    ownerUserId === null
-      ? await listSendersById(
-          envelopes.map((envelope) => envelope.userId),
-          database,
-        )
-      : null;
+  const sendersById = othersListed
+    ? await listSendersById(
+        envelopes.map((envelope) => envelope.userId),
+        database,
+      )
+    : null;
 
   const items = envelopes.map((envelope) => {
     const signers = signersByEnvelope.get(envelope.id) ?? [];
     const fields = fieldsByEnvelope.get(envelope.id) ?? [];
+    const canManage = envelope.userId === userId;
     const sender = sendersById?.get(envelope.userId);
+    const senderName = sender
+      ? formatEnvelopeOwner({
+          ownerEmail: sender.email,
+          ownerName: sender.name,
+        })
+      : null;
 
     return {
-      ...(sendersById
-        ? {
-            senderLabel: sender
-              ? formatEnvelopeOwner({
-                  ownerEmail: sender.email,
-                  ownerName: sender.name,
-                })
-              : "Unknown sender",
-          }
+      canManage,
+      // Everyone's list names the sender of every envelope, one's own too.
+      ...(scope === "all"
+        ? { senderLabel: senderName ?? "Unknown sender" }
         : {}),
       contextLine: buildDashboardContextLine(envelope, signers, fields),
       createdAtLabel: formatShortDate(envelope.createdAt),
       expired: isEnvelopeExpired(envelope, Math.floor(Date.now() / 1000)),
       id: envelope.id,
+      sentByLabel: canManage ? null : (senderName ?? "Another account"),
       // The search on the server matches copy recipients too.
       searchableEmails: [
         ...signers,
         ...(copyRecipientsByEnvelope.get(envelope.id) ?? []),
-        // Across the install, the sender too.
+        // Across a team or the install, the sender too.
         ...(sender ? [sender] : []),
       ].map((recipient) => recipient.email),
       status: envelope.status,
@@ -1962,6 +2254,24 @@ async function listEnvelopes(
   });
 
   return { envelopes: items, hasMore };
+}
+
+/**
+ * Every envelope in the install, whoever sent it, each with its sender.
+ * Other members' drafts are left out: a draft is its sender's own until it
+ * is sent. For an administrator: the caller checks the role (anyone else
+ * gets what they could read anyway, their own and their teams').
+ */
+export async function listAllEnvelopesForAdmin(
+  adminUserId: string,
+  filters: Partial<EnvelopeListFilters> = {},
+  database: DbExecutor = getDb(),
+): Promise<DashboardEnvelopePage> {
+  return listEnvelopesForUser(
+    adminUserId,
+    { ...filters, scope: "all" },
+    database,
+  );
 }
 
 type SenderRow = { email: string; id: string; name: string | null };
@@ -1990,19 +2300,31 @@ export async function getEnvelopeDetailDataForUser(
   envelopeId: string,
   database: DbExecutor = getDb(),
 ): Promise<EnvelopeDetailData | null> {
-  const envelope = await getEnvelopeByIdForUser(userId, envelopeId, database);
+  // The sender, a teammate or an administrator. Only the sender is offered
+  // anything that changes it, and only the sender's requests to change it
+  // are carried out.
+  const readable = await getReadableEnvelope(userId, envelopeId, database);
 
-  if (!envelope) {
+  if (!readable) {
     return null;
   }
 
-  const [signersByEnvelope, fieldsByEnvelope, auditEvents, copyRecipients] =
-    await Promise.all([
-      listSignersForEnvelopeIds([envelopeId], database),
-      listFieldsForEnvelopeIds([envelopeId], database),
-      listAuditEventsForEnvelope(envelopeId, database),
-      listCopyRecipientsForEnvelopeId(envelopeId, database),
-    ]);
+  const { canManage, envelope } = readable;
+  const [
+    signersByEnvelope,
+    fieldsByEnvelope,
+    auditEvents,
+    copyRecipients,
+    senders,
+  ] = await Promise.all([
+    listSignersForEnvelopeIds([envelopeId], database),
+    listFieldsForEnvelopeIds([envelopeId], database),
+    listAuditEventsForEnvelope(envelopeId, database),
+    listCopyRecipientsForEnvelopeId(envelopeId, database),
+    canManage
+      ? Promise.resolve(new Map<string, string>())
+      : describeSenders([envelope.userId], database),
+  ]);
   const signers = signersByEnvelope.get(envelopeId) ?? [];
   const fields = fieldsByEnvelope.get(envelopeId) ?? [];
   const fieldCountsBySigner = new Map(
@@ -2021,8 +2343,24 @@ export async function getEnvelopeDetailDataForUser(
     tone: TIMELINE_TONE_MAP[event.event],
   }));
 
-  const signerViews = signers.map((signer, index) => {
-    const previousSignerName = index > 0 ? signers[index - 1]?.name : undefined;
+  const signerViews = signers.map((signer) => {
+    const step = signingStepOf(signer);
+    // Whoever signs in the step just before this signer's.
+    const previousStep = signers
+      .map(signingStepOf)
+      .filter((other) => other < step)
+      .reduce<number | null>(
+        (latest, other) => (latest === null || other > latest ? other : latest),
+        null,
+      );
+    const previousSignerName =
+      previousStep === null
+        ? undefined
+        : joinNames(
+            signers
+              .filter((other) => signingStepOf(other) === previousStep)
+              .map((other) => other.name),
+          );
     const signerStatus: EnvelopeDetailSignerView["status"] =
       signer.status === "notified" ? "waiting" : signer.status;
 
@@ -2036,32 +2374,45 @@ export async function getEnvelopeDetailDataForUser(
       ),
       name: signer.name,
       order: signer.signOrder,
+      role: signer.role ?? "signer",
       status: signerStatus,
       statusDateLabel: buildDetailSignerStatusLabel(
         envelope,
         signer,
         previousSignerName,
       ),
+      step,
     };
   });
-  const currentSigner = signers.find((signer) => signer.status === "notified");
+  // Everyone whose turn it is. A reminder goes to each of them whose last
+  // one is far enough back (reminders.ts), so the button works while any of
+  // them can have one.
+  const waitingSigners = signers.filter(
+    (signer) => signer.status === "notified",
+  );
   let manualReminder: EnvelopeDetailManualReminderState | null = null;
 
   const nowUnixTimestamp = Math.floor(Date.now() / 1000);
   const expired = isEnvelopeExpired(envelope, nowUnixTimestamp);
 
-  if (envelope.status === "sent" && currentSigner && expired) {
+  if (envelope.status === "sent" && waitingSigners.length > 0 && expired) {
     // A reminder would carry a link that no longer works.
     manualReminder = { canSend: false, nextAvailableAtLabel: null };
-  } else if (envelope.status === "sent" && currentSigner) {
-    const nextAvailableAt =
-      typeof currentSigner.lastNudgedAt === "number"
-        ? getManualNudgeAvailableAt(currentSigner.lastNudgedAt)
-        : null;
-    const canSend = isManualNudgeAvailable(
-      currentSigner.lastNudgedAt,
-      nowUnixTimestamp,
+  } else if (envelope.status === "sent" && waitingSigners.length > 0) {
+    const canSend = waitingSigners.some((signer) =>
+      isManualNudgeAvailable(signer.lastNudgedAt, nowUnixTimestamp),
     );
+    const nextAvailableAt = waitingSigners
+      .map((signer) =>
+        typeof signer.lastNudgedAt === "number"
+          ? getManualNudgeAvailableAt(signer.lastNudgedAt)
+          : null,
+      )
+      .reduce<number | null>(
+        (earliest, at) =>
+          at !== null && (earliest === null || at < earliest) ? at : earliest,
+        null,
+      );
 
     manualReminder = {
       canSend,
@@ -2073,6 +2424,7 @@ export async function getEnvelopeDetailDataForUser(
   }
 
   return {
+    canManage,
     copyRecipients,
     createdAtLabel: formatLongDate(envelope.createdAt),
     deadline:
@@ -2092,6 +2444,9 @@ export async function getEnvelopeDetailDataForUser(
         : null,
     manualReminder,
     part11: Boolean(envelope.part11),
+    sentByLabel: canManage
+      ? null
+      : (senders.get(envelope.userId) ?? "Another account"),
     signatureTypeLabel: describeSignatureType(envelope),
     signers: signerViews,
     status: envelope.status,
@@ -2116,6 +2471,7 @@ export async function getDraftSignerStepDataForUser(
   return {
     copyRecipients: await listCopyRecipientsForEnvelopeId(envelopeId, database),
     envelopeId,
+    maxSigners: getMaxSignersPerEnvelope(),
     part11Mode: (await readStoredSettings(database))?.part11Mode ?? false,
     signers: (await listSignersForEnvelopeId(envelopeId, database)).map(
       (signer) => ({
@@ -2125,7 +2481,9 @@ export async function getDraftSignerStepDataForUser(
         name: signer.name,
         order: signer.signOrder,
         requireEmailCode: checks.get(signer.id)?.requireEmailCode ?? false,
+        role: signer.role ?? "signer",
         signatureMeaning: checks.get(signer.id)?.signatureMeaning ?? null,
+        step: signingStepOf(signer),
       }),
     ),
     status: envelope.status,
@@ -2257,7 +2615,10 @@ export async function getEnvelopeThumbnailForUser(
     storageService?: StorageService;
   } = {},
 ): Promise<EnvelopeThumbnail> {
-  const envelope = await getEnvelopeByIdForUser(userId, envelopeId, database);
+  // Anyone who may see the envelope sees its picture on their dashboard.
+  // Only its sender stores one (saveEnvelopeThumbnailForUser).
+  const envelope = (await getReadableEnvelope(userId, envelopeId, database))
+    ?.envelope;
 
   if (!envelope) {
     throw new EnvelopeDocumentAccessError("Envelope not found.", 404);
@@ -2274,7 +2635,7 @@ export async function getEnvelopeThumbnailForUser(
       buildEnvelopeThumbnailKey({
         envelopeId: envelope.id,
         sourcePdfKey: envelope.sourcePdfKey,
-        userId,
+        userId: envelope.userId,
       }),
     );
 
@@ -2323,6 +2684,8 @@ export async function getPrepareEnvelopeDataForUser(
       id: signer.id,
       name: signer.name,
       order: signer.signOrder,
+      role: signer.role ?? "signer",
+      step: signingStepOf(signer),
     })),
     status: envelope.status,
     title: envelope.title,
@@ -2349,24 +2712,37 @@ export async function getReviewEnvelopeDataForUser(
   const signers = signersByEnvelope.get(envelopeId) ?? [];
   const fields = fieldsByEnvelope.get(envelopeId) ?? [];
   const fieldsBySigner = buildFieldsBySigner(fields);
-  const missingSignatureSigner = getMissingSignatureSigner(
-    signers,
-    fieldsBySigner,
-  );
+  const signingOrderProblem =
+    signers.length > 0
+      ? describeSigningOrderProblem(signers, fieldsBySigner)
+      : null;
   const isEmpty = signers.length === 0 || fields.length === 0;
   const choiceProblem = describeChoiceProblem(signers, fields);
   const provider = configuredSigningProvider();
-  const part11Mode = provider
-    ? ((await readStoredSettings(database))?.part11Mode ?? false)
-    : false;
+  const part11Mode = (await readStoredSettings(database))?.part11Mode ?? false;
+  const hasApprovers = signers.some((signer) => signer.role === "approver");
+  const approverProblem =
+    hasApprovers && part11Mode ? PART11_APPROVER_MESSAGE : null;
+  const managerCheck = await checkManagerPolicyForSender(userId, signers, {
+    database,
+    part11: part11Mode,
+  });
+  const disabledReason =
+    signingOrderProblem ??
+    choiceProblem ??
+    approverProblem ??
+    (managerCheck.status === "blocked" ? managerCheck.message : null);
 
   return {
-    canSend: !isEmpty && !missingSignatureSigner && !choiceProblem,
-    signingProvider: provider && !part11Mode ? { name: provider.name } : null,
+    canSend: !isEmpty && !disabledReason,
+    managerSuggestion:
+      managerCheck.status === "suggested" ? managerCheck.message : null,
+    // Approvers approve on SignuDoc's own page, so a signing provider is
+    // not offered alongside them (see sendDraftEnvelope).
+    signingProvider:
+      provider && !part11Mode && !hasApprovers ? { name: provider.name } : null,
     copyRecipients,
-    disabledReason: missingSignatureSigner
-      ? `Every signer must have at least one Signature field before sending. ${missingSignatureSigner.name} is missing one.`
-      : choiceProblem,
+    disabledReason,
     envelopeId,
     filename: envelope.sourcePdfFilename,
     isEmpty,
@@ -2383,6 +2759,8 @@ export async function getReviewEnvelopeDataForUser(
       id: signer.id,
       name: signer.name,
       order: signer.signOrder,
+      role: signer.role ?? "signer",
+      step: signingStepOf(signer),
     })),
     sizeLabel: formatFileSize(envelope.sourcePdfSizeBytes),
     status: envelope.status,
@@ -2441,7 +2819,12 @@ export async function sendDraftEnvelope(
   userId: string,
   envelopeId: string,
   input: SendDraftEnvelopeInput,
-  { database = getDb() }: SendDraftEnvelopeOptions = {},
+  {
+    database = getDb(),
+    directory,
+    googleSigningPolicy,
+    managerPolicy,
+  }: SendDraftEnvelopeOptions = {},
 ): Promise<SendDraftEnvelopeResult> {
   const envelope = await getEnvelopeByIdForUser(userId, envelopeId, database);
 
@@ -2472,16 +2855,13 @@ export async function sendDraftEnvelope(
     );
   }
 
-  const missingSignatureSigner = getMissingSignatureSigner(
+  const signingOrderProblem = describeSigningOrderProblem(
     signers,
     buildFieldsBySigner(fields),
   );
 
-  if (missingSignatureSigner) {
-    throw new EnvelopeMutationError(
-      `Every signer must have at least one Signature field before sending. ${missingSignatureSigner.name} is missing one.`,
-      400,
-    );
+  if (signingOrderProblem) {
+    throw new EnvelopeMutationError(signingOrderProblem, 400);
   }
 
   const choiceProblem = describeChoiceProblem(signers, fields);
@@ -2498,6 +2878,84 @@ export async function sendDraftEnvelope(
   // provider. Part 11 envelopes are signed with the signers' accounts, and
   // the two are not combined.
   const signatureLevel = input.signatureLevel ?? "simple";
+  const hasApprovers = signers.some((signer) => signer.role === "approver");
+
+  // Approvers are SignuDoc's own. In Part 11 mode an approval would be an
+  // electronic signature with everything Part 11 asks of one, so the
+  // approver signs instead (see PART11_APPROVER_MESSAGE). With signatures
+  // through a signing provider, the finished document is the last
+  // signer's own signed revision, and an approval makes none.
+  if (hasApprovers && part11) {
+    throw new EnvelopeMutationError(PART11_APPROVER_MESSAGE, 400);
+  }
+
+  if (hasApprovers && signatureLevel !== "simple") {
+    throw new EnvelopeMutationError(
+      "Approvers work with SignuDoc signatures only. Send with simple signatures, or make the approvers signers.",
+      400,
+    );
+  }
+
+  // The administrator's rule about the sender's manager, checked again here
+  // whatever the review page showed: the directory may have changed since.
+  const managerCheck = await checkManagerPolicyForSender(userId, signers, {
+    database,
+    directory,
+    part11,
+    policy: managerPolicy,
+  });
+
+  if (managerCheck.status === "blocked") {
+    throw new EnvelopeMutationError(managerCheck.message, 400);
+  }
+
+  // Employees who must confirm who they are with Google before they open
+  // it (google-signing.ts), decided now and kept with each signer.
+  const googleSigning = part11
+    ? null
+    : (googleSigningPolicy ??
+      (await loadGoogleSigningPolicy().catch((error: unknown) => {
+        // The setting could not be read. Sending without the check would
+        // quietly drop a requirement, so the send stops instead.
+        console.error("Could not read the Google signing setting:", error);
+        throw new EnvelopeMutationError(
+          "The site's settings could not be read just now. Try again in a moment.",
+          503,
+        );
+      })));
+  const googleRequiredSignerIds = signers
+    .filter(
+      (signer) =>
+        googleSigning !== null &&
+        googleSigningFor(googleSigning, signer, { part11 }) === "require",
+    )
+    .map((signer) => signer.id);
+
+  // Signing at the same time is for SignuDoc's own simple signatures.
+  //
+  // * Part 11 mode keeps one signer after another. Its validation
+  //   (docs/part11, SYS-08 and OQ-06) is written for that order, and a
+  //   changed sequence would need the install's OQ run again before use.
+  // * A signature in the signer's own name is added to the PDF on top of
+  //   the one before it, so two cannot be made at once: the second would
+  //   be refused once the first was saved, after the signer had already
+  //   been through the provider.
+  if (hasSharedSigningStep(signers)) {
+    if (part11) {
+      throw new EnvelopeMutationError(
+        "Part 11 mode signs one signer after another. Give each signer their own step in the signing order.",
+        400,
+      );
+    }
+
+    if (signatureLevel !== "simple") {
+      throw new EnvelopeMutationError(
+        "Advanced and qualified signatures are added one after another. Give each signer their own step, or send with simple signatures.",
+        400,
+      );
+    }
+  }
+
   const signingProvider =
     signatureLevel === "simple" ? null : configuredSigningProvider();
 
@@ -2548,7 +3006,9 @@ export async function sendDraftEnvelope(
     }
   }
 
-  const firstSigner = signers[0];
+  // Everyone in the first step of the signing order is invited now.
+  const firstSigners = firstStepSigners(signers);
+  const firstSigner = firstSigners[0];
 
   if (!firstSigner) {
     throw new EnvelopeMutationError(
@@ -2571,10 +3031,17 @@ export async function sendDraftEnvelope(
   const sentAt = Math.floor(Date.now() / 1000);
   const sentAuditAt = Math.max(sentAt, envelope.createdAt + 1);
   const expiresAt = deadlineFromDays(sentAt, input.expiresInDays);
-  const issuedLink = await issueSigningLink({
-    expiresInSeconds: expiresAt - sentAt,
-    issuedAt: sentAt,
-  });
+  const issuedLinks = new Map<string, IssuedSigningLink>();
+
+  for (const signer of firstSigners) {
+    issuedLinks.set(
+      signer.id,
+      await issueSigningLink({
+        expiresInSeconds: expiresAt - sentAt,
+        issuedAt: sentAt,
+      }),
+    );
+  }
 
   try {
     await withTransaction(async (tx) => {
@@ -2639,11 +3106,25 @@ export async function sendDraftEnvelope(
             declined_at = NULL,
             decline_reason = NULL,
             user_id = NULL,
+            require_google_sign_in = false,
             updated_at = $1
           WHERE envelope_id = $2
         `,
         [sentAt, envelopeId],
       );
+
+      if (googleRequiredSignerIds.length > 0) {
+        await tx.query(
+          `
+            UPDATE signers
+            SET require_google_sign_in = true
+            WHERE envelope_id = $1
+              AND id = ANY($2::text[])
+              AND role IN ('signer', 'approver')
+          `,
+          [envelopeId, googleRequiredSignerIds],
+        );
+      }
 
       if (signingProvider) {
         await tx.query(
@@ -2682,35 +3163,39 @@ export async function sendDraftEnvelope(
         }
       }
 
-      const updatedSigner = await tx.query(
-        `
-          UPDATE signers
-          SET
-            status = 'notified',
-            signing_token_hash = $1,
-            signing_token_expires_at = $2,
-            turn_started_at = $3,
-            last_notified_at = $4,
-            updated_at = $5
-          WHERE id = $6
-            AND envelope_id = $7
-        `,
-        [
-          issuedLink.tokenHash,
-          issuedLink.exp,
-          sentAt,
-          sentAt,
-          sentAt,
-          firstSigner.id,
-          envelopeId,
-        ],
-      );
-
-      if (updatedSigner.rowCount !== 1) {
-        throw new EnvelopeMutationError(
-          "Unable to activate the first signer for this envelope.",
-          500,
+      for (const signer of firstSigners) {
+        const issuedLink = issuedLinks.get(signer.id)!;
+        const updatedSigner = await tx.query(
+          `
+            UPDATE signers
+            SET
+              status = 'notified',
+              signing_token_hash = $1,
+              signing_token_expires_at = $2,
+              turn_started_at = $3,
+              last_notified_at = $4,
+              updated_at = $5
+            WHERE id = $6
+              AND envelope_id = $7
+              AND role IN ('signer', 'approver')
+          `,
+          [
+            issuedLink.tokenHash,
+            issuedLink.exp,
+            sentAt,
+            sentAt,
+            sentAt,
+            signer.id,
+            envelopeId,
+          ],
         );
+
+        if (updatedSigner.rowCount !== 1) {
+          throw new EnvelopeMutationError(
+            "Unable to activate the first signer for this envelope.",
+            500,
+          );
+        }
       }
 
       await recordAuditEvent(
@@ -2737,6 +3222,16 @@ export async function sendDraftEnvelope(
             signerEmail: firstSigner.email,
             signerId: firstSigner.id,
             signerName: firstSigner.name,
+            // Everyone invited, when the first step has more than one.
+            ...(firstSigners.length > 1
+              ? {
+                  stepSigners: firstSigners.map((signer) => ({
+                    signerEmail: signer.email,
+                    signerId: signer.id,
+                    signerName: signer.name,
+                  })),
+                }
+              : {}),
           },
           userAgent: input.userAgent ?? null,
         },
@@ -2747,22 +3242,33 @@ export async function sendDraftEnvelope(
     throw error;
   }
 
-  let invitationMessageId: string | undefined;
+  // The first invitation decides whether the envelope went out. If it
+  // fails, nothing has been delivered, and the envelope goes back to being
+  // a draft. Once one has been accepted the envelope is out: a later one
+  // that fails is logged, and the sender's reminder (or the automatic one)
+  // sends that signer a new link.
+  const invitationMessageIds = new Map<string, string | undefined>();
+  let branding: Branding;
 
   try {
-    invitationMessageId = (
-      await emailService.send(
-        buildSigningInvitationEmail({
-          branding: await getBranding(),
-          envelopeTitle: envelope.title,
-          expiresAt,
-          senderName: input.senderName,
-          signerEmail: firstSigner.email,
-          signerName: firstSigner.name,
-          signingUrl: issuedLink.url,
-        }),
-      )
-    ).messageId;
+    branding = await getBranding();
+    invitationMessageIds.set(
+      firstSigner.id,
+      (
+        await emailService.send(
+          buildSigningInvitationEmail({
+            branding,
+            envelopeTitle: envelope.title,
+            expiresAt,
+            role: firstSigner.role,
+            senderName: input.senderName,
+            signerEmail: firstSigner.email,
+            signerName: firstSigner.name,
+            signingUrl: issuedLinks.get(firstSigner.id)!.url,
+          }),
+        )
+      ).messageId,
+    );
   } catch (error) {
     await withTransaction(async (tx) => {
       await tx.query(
@@ -2831,24 +3337,73 @@ export async function sendDraftEnvelope(
     throw error;
   }
 
-  await recordEmailSent(
-    {
-      envelopeId,
-      messageId: invitationMessageId,
-      recipient: firstSigner.email,
-      signerId: firstSigner.id,
-      template: "signing_invitation",
-    },
-    database,
-  );
+  for (const signer of firstSigners.slice(1)) {
+    try {
+      invitationMessageIds.set(
+        signer.id,
+        (
+          await emailService.send(
+            buildSigningInvitationEmail({
+              branding,
+              envelopeTitle: envelope.title,
+              expiresAt,
+              role: signer.role,
+              senderName: input.senderName,
+              signerEmail: signer.email,
+              signerName: signer.name,
+              signingUrl: issuedLinks.get(signer.id)!.url,
+            }),
+          )
+        ).messageId,
+      );
+    } catch (error) {
+      console.error(
+        `Failed to send the invitation for envelope ${envelopeId} to ${signer.email}:`,
+        error,
+      );
+    }
+  }
+
+  for (const signer of firstSigners) {
+    if (!invitationMessageIds.has(signer.id)) {
+      continue;
+    }
+
+    await recordEmailSent(
+      {
+        envelopeId,
+        messageId: invitationMessageIds.get(signer.id),
+        recipient: signer.email,
+        signerId: signer.id,
+        template: "signing_invitation",
+      },
+      database,
+    );
+  }
 
   return sendEnvelopeResponseSchema.parse({
     envelopeId,
     expiresAt,
-    notifiedSignerName: firstSigner.name,
+    // Only those whose invitation went out.
+    notifiedSignerName: describeNotifiedSigners(
+      firstSigners
+        .filter((signer) => invitationMessageIds.has(signer.id))
+        .map((signer) => signer.name),
+    ),
     redirectPath: `/envelopes/${envelopeId}`,
     sentAt,
   });
+}
+
+/** Who was invited, short enough for the message the sender sees. */
+function describeNotifiedSigners(names: readonly string[]): string {
+  const all = joinNames(names);
+
+  if (all.length <= 160 || names.length < 2) {
+    return all.slice(0, 160);
+  }
+
+  return `${names[0]!.slice(0, 120)} and ${String(names.length - 1)} others`;
 }
 
 type ChangeEnvelopeDeadlineInput = {
@@ -2947,6 +3502,49 @@ const SENT_ENVELOPE_SIGNER_CORRECTION_MESSAGE =
   "Only an envelope that is out for signature can have a signer corrected.";
 
 /**
+ * For a change of an approver's address: the rule in force and the sender's
+ * manager as the directory has them, looked up before the envelope is
+ * locked. Null when the rule is off or the person is not an approver.
+ */
+async function lookUpManagerForApproverCorrection(
+  userId: string,
+  envelopeId: string,
+  signerId: string,
+  database: DbExecutor,
+  directory: DirectoryClient | null | undefined,
+): Promise<{ found: SenderManager; policy: ManagerPolicy } | null> {
+  const approver = await queryOne<{ role: string }>(
+    database,
+    `SELECT role FROM signers WHERE id = $1 AND envelope_id = $2`,
+    [signerId, envelopeId],
+  );
+
+  if (approver?.role !== "approver") {
+    return null;
+  }
+
+  const policy = await loadManagerPolicy(process.env, database);
+  const sender = await queryOne<{ email: string }>(
+    database,
+    `SELECT email FROM "user" WHERE id = $1`,
+    [userId],
+  );
+
+  if (
+    policy.mode === "off" ||
+    !sender ||
+    !(await managerPolicyAppliesTo(userId, policy, database))
+  ) {
+    return null;
+  }
+
+  return {
+    found: await findSenderManager(sender.email, { directory }),
+    policy,
+  };
+}
+
+/**
  * Fixes the name and/or email of a signer who has not signed or declined on
  * an envelope that is out for signature. The signing link they already have
  * stops working. If it is their turn, a new invitation goes to the
@@ -2968,6 +3566,7 @@ export async function correctSentEnvelopeSigner(
   context: CorrectSentEnvelopeSignerContext,
   {
     database = getDb(),
+    directory,
     emailService,
     nowUnixTimestamp = Math.floor(Date.now() / 1000),
   }: CorrectSentEnvelopeSignerOptions = {},
@@ -2978,6 +3577,41 @@ export async function correctSentEnvelopeSigner(
   // holding the others while they wait on the lock would starve it.
   const branding = await getBranding();
   const emailAddresses = emailService ? null : await resolveEmailAddresses();
+  // Whether the corrected person must confirm who they are with Google
+  // (google-signing.ts): an employee's address, when it was required at
+  // sending or the setting requires it now. A correction never drops the
+  // requirement for an employee; someone outside the organization is never
+  // asked. Read before the lock, like the settings above. Part 11
+  // envelopes are not corrected at all.
+  const googleSigning = await loadGoogleSigningPolicy().catch(
+    (error: unknown) => {
+      // The setting could not be read. Going on would quietly drop a
+      // requirement, so the correction stops instead.
+      console.error("Could not read the Google signing setting:", error);
+      throw new EnvelopeMutationError(
+        "The site's settings could not be read just now. Try again in a moment.",
+        503,
+      );
+    },
+  );
+  // The administrator's rule about the sender's manager, for a change of an
+  // approver's address. The directory is asked here, before the lock, and
+  // the lock only judges what was found.
+  const managerLookup =
+    parsedInput.email === undefined
+      ? null
+      : await lookUpManagerForApproverCorrection(
+          userId,
+          envelopeId,
+          signerId,
+          database,
+          directory,
+        );
+  const googleRequiredFor = (email: string, requiredBefore: boolean) =>
+    isWorkspaceAddress(email, googleSigning.domains) &&
+    (requiredBefore ||
+      googleSigningFor(googleSigning, { email }, { part11: false }) ===
+        "require");
 
   return withTransaction(async (tx) => {
     const envelope = await queryOne<{
@@ -3031,6 +3665,7 @@ export async function correctSentEnvelopeSigner(
       emailCodeSentAt: number | null;
       lastNotifiedAt: number | null;
       name: string;
+      requireGoogleSignIn: boolean;
       role: string;
       signOrder: number;
       signingTokenExpiresAt: number | null;
@@ -3042,6 +3677,7 @@ export async function correctSentEnvelopeSigner(
       `
         SELECT
           consented_at AS "consentedAt",
+          require_google_sign_in AS "requireGoogleSignIn",
           email,
           email_code_attempts AS "emailCodeAttempts",
           email_code_expires_at AS "emailCodeExpiresAt",
@@ -3062,7 +3698,7 @@ export async function correctSentEnvelopeSigner(
       [signerId, envelopeId],
     );
 
-    if (!signer || signer.role !== "signer") {
+    if (!signer || (signer.role !== "signer" && signer.role !== "approver")) {
       throw new EnvelopeMutationError("Envelope not found.", 404);
     }
 
@@ -3117,6 +3753,47 @@ export async function correctSentEnvelopeSigner(
       );
     }
 
+    // The administrator's rule about the sender's manager may have been
+    // met when this was sent. Changing an approver's address must not swap
+    // out the manager it required, so the rule is checked again with the new one.
+    if (
+      managerLookup &&
+      signer.role === "approver" &&
+      nextEmail.toLowerCase() !== signer.email.toLowerCase() &&
+      (await managerPolicyAppliesTo(userId, managerLookup.policy, tx))
+    ) {
+      const current = await listSignersForEnvelopeId(envelopeId, tx);
+      // Refused only when this change itself breaks a rule the order met:
+      // an envelope the rule did not cover when it was sent, or a directory
+      // that cannot be asked, never stops a correction.
+      const before = judgeManagerPolicy(
+        managerLookup.policy,
+        managerLookup.found,
+        current,
+      );
+      const managerCheck = judgeManagerPolicy(
+        managerLookup.policy,
+        managerLookup.found,
+        current.map((person) =>
+          person.id === signerId ? { ...person, email: nextEmail } : person,
+        ),
+      );
+
+      // A lookup that failed says nothing about the manager, and the outage
+      // passes: the person is asked to try again, so the required manager
+      // cannot be swapped out meanwhile.
+      if (
+        managerLookup.found.status === "lookup_failed" &&
+        managerCheck.status === "blocked"
+      ) {
+        throw new EnvelopeMutationError(managerCheck.message, 503);
+      }
+
+      if (before.status === "satisfied" && managerCheck.status === "blocked") {
+        throw new EnvelopeMutationError(managerCheck.message, 409);
+      }
+    }
+
     let issuedLink: IssuedSigningLink | null = null;
     let tokenHash: string | null = null;
     let tokenExpiresAt: number | null = null;
@@ -3158,6 +3835,7 @@ export async function correctSentEnvelopeSigner(
           email_code_expires_at = NULL,
           email_code_attempts = 0,
           email_code_sent_at = NULL,
+          require_google_sign_in = $9,
           updated_at = $6
         WHERE id = $7
           AND envelope_id = $8
@@ -3172,6 +3850,7 @@ export async function correctSentEnvelopeSigner(
         nowUnixTimestamp,
         signerId,
         envelopeId,
+        googleRequiredFor(nextEmail, signer.requireGoogleSignIn),
       ],
     );
 
@@ -3205,6 +3884,7 @@ export async function correctSentEnvelopeSigner(
             branding,
             envelopeTitle: envelope.title,
             expiresAt: envelope.expiresAt,
+            role: signer.role === "approver" ? "approver" : "signer",
             senderName: context.senderName,
             signerEmail: nextEmail,
             signerName: nextName,
@@ -3324,7 +4004,39 @@ export async function changeEnvelopeReminders(
   });
 }
 
+/** A signer signed between the void's first read and its lock. */
+class VoidRouteChangedError extends Error {
+  constructor() {
+    super("A signer signed while the envelope was being voided.");
+    this.name = "VoidRouteChangedError";
+  }
+}
+
 export async function voidSentEnvelope(
+  userId: string,
+  envelopeId: string,
+  input: VoidEnvelopeInput,
+  options: VoidEnvelopeOptions = {},
+): Promise<VoidEnvelopeResult> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await voidSentEnvelopeOnce(userId, envelopeId, input, options);
+    } catch (error) {
+      if (!(error instanceof VoidRouteChangedError)) {
+        throw error;
+      }
+
+      if (attempt >= 5) {
+        throw new EnvelopeMutationError(
+          "Signers were signing while you voided this envelope. Try again.",
+          409,
+        );
+      }
+    }
+  }
+}
+
+async function voidSentEnvelopeOnce(
   userId: string,
   envelopeId: string,
   input: VoidEnvelopeInput,
@@ -3460,6 +4172,26 @@ export async function voidSentEnvelope(
         "Only sent envelopes can be voided.",
         409,
       );
+    }
+
+    // The certificates show the signers as they were read before the lock.
+    // A signer who signed in between (one of several signing at the same
+    // time, say) would be shown as still waiting, without their signature
+    // in the audit trail shown. Then the void starts again from what is
+    // there now.
+    const statusesNow = await tx.query<{ id: string; status: string }>(
+      `SELECT id, status FROM signers WHERE envelope_id = $1 AND role IN ('signer', 'approver')`,
+      [envelopeId],
+    );
+
+    if (
+      statusesNow.rows.length !== signers.length ||
+      statusesNow.rows.some(
+        (row) =>
+          signers.find((signer) => signer.id === row.id)?.status !== row.status,
+      )
+    ) {
+      throw new VoidRouteChangedError();
     }
 
     const certificate = await storeEnvelopeCertificatePdf(
@@ -3648,6 +4380,11 @@ export async function replaceDraftEnvelopeFields(
     listFieldsForEnvelopeIds([envelopeId], database),
   ]);
   const signerIds = new Set(signers.map((signer) => signer.id));
+  const approverIds = new Set(
+    signers
+      .filter((signer) => signer.role === "approver")
+      .map((signer) => signer.id),
+  );
   const pageNumbers = new Set(pages.map((page) => page.pageNumber));
   const existingFields = existingFieldsByEnvelope.get(envelopeId) ?? [];
   const existingFieldMetadata = new Map(
@@ -3661,6 +4398,13 @@ export async function replaceDraftEnvelopeFields(
     if (!signerIds.has(parsedField.signerId)) {
       throw new EnvelopeMutationError(
         "Each field must be assigned to an existing signer on this envelope.",
+        400,
+      );
+    }
+
+    if (approverIds.has(parsedField.signerId)) {
+      throw new EnvelopeMutationError(
+        "Approvers approve or reject the document and have no fields. Give the field to a signer.",
         400,
       );
     }
@@ -3840,6 +4584,27 @@ export async function replaceDraftEnvelopeSigners(
     throw new EnvelopeMutationError(duplicateCopyRecipientEmailMessage, 400);
   }
 
+  const maxSigners = getMaxSignersPerEnvelope();
+
+  if (parsedInput.signers.length > maxSigners) {
+    throw new EnvelopeMutationError(describeSignerLimit(maxSigners), 400);
+  }
+
+  // Each signer's step of the signing order, in the order of the list.
+  let signingSteps: number[];
+
+  try {
+    signingSteps = normalizeSigningSteps(
+      parsedInput.signers.map((signer) => signer.signingStep),
+    );
+  } catch (error) {
+    if (error instanceof SigningStepError) {
+      throw new EnvelopeMutationError(error.message, 400);
+    }
+
+    throw error;
+  }
+
   const existingSignerIds = new Set(existingSigners.map((signer) => signer.id));
   const usedSignerIds = new Set<string>();
   const updatedAt = Math.floor(Date.now() / 1000);
@@ -3865,8 +4630,10 @@ export async function replaceDraftEnvelopeSigners(
       id: persistedSignerId,
       name: signer.name,
       requireEmailCode: signer.requireEmailCode,
+      role: signer.role ?? "signer",
       signatureMeaning: signer.signatureMeaning,
       signOrder: index + 1,
+      signingStep: signingSteps[index]!,
     };
   });
 
@@ -3906,7 +4673,9 @@ export async function replaceDraftEnvelopeSigners(
               updated_at = $4,
               access_code_hash = CASE WHEN $7::boolean THEN $8 ELSE access_code_hash END,
               require_email_code = COALESCE($9, require_email_code),
-              signature_meaning = CASE WHEN $10::boolean THEN $11 ELSE signature_meaning END
+              signature_meaning = CASE WHEN $10::boolean THEN $11 ELSE signature_meaning END,
+              signing_step = $12,
+              role = $13
             WHERE id = $5 AND envelope_id = $6
           `,
           [
@@ -3921,8 +4690,18 @@ export async function replaceDraftEnvelopeSigners(
             signer.requireEmailCode ?? null,
             signer.signatureMeaning !== undefined,
             signer.signatureMeaning ?? null,
+            signer.signingStep,
+            signer.role,
           ],
         );
+
+        // Someone who becomes an approver has no fields any more.
+        if (signer.role === "approver") {
+          await tx.query(
+            `DELETE FROM fields WHERE envelope_id = $1 AND signer_id = $2`,
+            [envelopeId, signer.id],
+          );
+        }
       } else {
         await tx.query(
           `
@@ -3945,9 +4724,11 @@ export async function replaceDraftEnvelopeSigners(
               updated_at,
               access_code_hash,
               require_email_code,
-              signature_meaning
+              signature_meaning,
+              signing_step,
+              role
             ) VALUES (
-              $1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7, $8, $9, $10
+              $1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7, $8, $9, $10, $11, $12
             )
           `,
           [
@@ -3961,6 +4742,8 @@ export async function replaceDraftEnvelopeSigners(
             signer.accessCodeHash ?? null,
             signer.requireEmailCode ?? false,
             signer.signatureMeaning ?? null,
+            signer.signingStep,
+            signer.role,
           ],
         );
       }
@@ -4021,8 +4804,10 @@ export async function replaceDraftEnvelopeSigners(
         id: signer.id,
         name: signer.name,
         requireEmailCode: checks.get(signer.id)?.requireEmailCode ?? false,
+        role: signer.role ?? "signer",
         signatureMeaning: checks.get(signer.id)?.signatureMeaning ?? null,
         signOrder: signer.signOrder,
+        signingStep: signingStepOf(signer),
       }),
     ),
     updatedAt,

@@ -99,13 +99,29 @@ export const signingPayloadSchema = z.object({
     })
     .nullable()
     .optional(),
+  /**
+   * Set for an employee who may, or had to, confirm who they are by being
+   * signed in to this site with Google (google-signing.ts). Confirmed once
+   * they have, for this link in this browser.
+   */
+  googleSignIn: z
+    .object({
+      confirmed: z.boolean(),
+      required: z.boolean(),
+    })
+    .nullable()
+    .optional(),
   senderName: z.string().trim().min(1).max(320),
   signer: z.object({
     email: emailSchema,
     id: idSchema,
     name: nameSchema,
     order: z.number().int().positive(),
+    // An approver approves or rejects; there are no fields to fill in.
+    role: z.enum(["signer", "approver"]).optional(),
   }),
+  /** Where an approver's approval is sent. */
+  approveUrl: z.string().trim().min(1).optional(),
   state: z.literal("ready"),
   submitUrl: z.string().trim().min(1),
   visibleFields: z.array(signingVisibleFieldSchema),
@@ -150,6 +166,11 @@ export const signerCheckRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("account"),
     password: z.string().min(1).max(128),
   }),
+  // An employee: the session this browser is signed in with, which must be
+  // a Google sign-in as the address the document was sent to.
+  z.object({
+    method: z.literal("google"),
+  }),
 ]);
 
 /** What the signer has typed so far in one field, to check it fits. */
@@ -162,12 +183,19 @@ export const signerConsentRequestSchema = z.object({
   disclosureVersion: z.string().trim().min(1).max(40),
 });
 
+/** An approver's approval. There is nothing else to send. */
+export const approvalSubmissionSchema = z.object({
+  clientTimezoneOffsetMinutes: z.number().int().min(-840).max(840),
+});
+
+type SignerCheckName = "access_code" | "account" | "email_code" | "google";
+
 export type SigningVerificationState = {
   emailCodeSentAt: number | null;
   envelopeTitle: string;
   maskedEmail: string;
-  pending: Array<"access_code" | "account" | "email_code">;
-  required: Array<"access_code" | "account" | "email_code">;
+  pending: SignerCheckName[];
+  required: SignerCheckName[];
   senderName: string;
 };
 export type SigningDeclineResponse = z.infer<

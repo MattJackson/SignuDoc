@@ -73,8 +73,12 @@ type EnvelopeDetailSigner = {
   metaLabel: string;
   name: string;
   order: number;
+  /** An approver's "signed" is shown as approved, "declined" as rejected. */
+  role?: "approver" | "signer";
   status: SignerStatus;
   statusDateLabel?: string;
+  /** Signers who share a step sign at the same time. */
+  step?: number;
   tint?: string;
 };
 
@@ -250,6 +254,13 @@ export function EnvelopeDetailShell({
     activeRecord.status === "sent"
       ? activeRecord.signers.find((signer) => signer.status === "waiting")
       : null;
+  // Someone on the sender's team, or an administrator, sees the envelope
+  // but cannot change it. The server refuses their changes too.
+  const canManage = record.canManage !== false && isOwnEnvelope;
+  const stepOf = (signer: EnvelopeDetailSigner) => signer.step ?? signer.order;
+  const signsAtTheSameTime =
+    new Set(activeRecord.signers.map(stepOf)).size <
+    activeRecord.signers.length;
 
   function handleDownload(fileType: DownloadFileType) {
     // This starts a file download from an API route, not a page navigation.
@@ -547,6 +558,7 @@ export function EnvelopeDetailShell({
           <div className="flex min-w-0 items-center gap-5">
             <span className="hidden h-28 shrink-0 items-center justify-center rounded-2xl bg-(--surface) px-4 py-3 sm:flex">
               <DocumentThumbnail
+                canBackfill={canManage}
                 envelopeId={envelopeId}
                 title={activeRecord.title}
               />
@@ -585,11 +597,17 @@ export function EnvelopeDetailShell({
                   </span>
                 ) : null}
               </div>
+              {record.sentByLabel && !ownerLabel ? (
+                <p className="text-sm text-(--secondary)">
+                  Sent by {record.sentByLabel}. You can follow it and download
+                  its finished files; only the sender can change it.
+                </p>
+              ) : null}
             </div>
           </div>
 
           <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
-            {isOwnEnvelope && activeRecord.status === "draft" ? (
+            {canManage && activeRecord.status === "draft" ? (
               <>
                 <ShellButton
                   onClick={() => setActiveModal("delete-draft")}
@@ -603,7 +621,7 @@ export function EnvelopeDetailShell({
               </>
             ) : null}
 
-            {isOwnEnvelope && activeRecord.status === "sent" ? (
+            {canManage && activeRecord.status === "sent" ? (
               <>
                 <ShellButton
                   onClick={() => setActiveModal("void-envelope")}
@@ -652,7 +670,7 @@ export function EnvelopeDetailShell({
 
             {activeRecord.status !== "draft" ? (
               <>
-                {isOwnEnvelope ? (
+                {canManage ? (
                   <ShellButton
                     onClick={() => {
                       setActionError(null);
@@ -748,7 +766,7 @@ export function EnvelopeDetailShell({
             >
               {deadlineText}
             </p>
-            {isOwnEnvelope ? (
+            {canManage ? (
               <button
                 className="btn-quiet shrink-0"
                 onClick={() => {
@@ -768,7 +786,7 @@ export function EnvelopeDetailShell({
             <p className="text-sm leading-6 text-(--secondary)">
               {remindersText}
             </p>
-            {isOwnEnvelope ? (
+            {canManage ? (
               <button
                 className="btn-quiet shrink-0"
                 onClick={() => {
@@ -798,7 +816,7 @@ export function EnvelopeDetailShell({
               View templates
             </Link>
           </div>
-        ) : isOwnEnvelope && activeRecord.signers.length > 0 ? (
+        ) : canManage && activeRecord.signers.length > 0 ? (
           <div
             className={`well flex flex-col gap-3 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between ${
               deadlineText || deadline ? "mt-3" : "mt-5"
@@ -860,7 +878,7 @@ export function EnvelopeDetailShell({
                         color: palette.color,
                       }}
                     >
-                      {signer.order}
+                      {signsAtTheSameTime ? stepOf(signer) : signer.order}
                     </span>
 
                     <div className="min-w-0 flex-1">
@@ -883,14 +901,20 @@ export function EnvelopeDetailShell({
                               className="size-3.5"
                               strokeWidth={2.6}
                             />
-                            {signerStatusLabelMap[signer.status]}
+                            {signer.role === "approver" &&
+                            signer.status === "signed"
+                              ? "Approved"
+                              : signer.role === "approver" &&
+                                  signer.status === "declined"
+                                ? "Rejected"
+                                : signerStatusLabelMap[signer.status]}
                           </span>
                           {signer.statusDateLabel ? (
                             <p className="text-xs text-(--tertiary)">
                               {signer.statusDateLabel}
                             </p>
                           ) : null}
-                          {isOwnEnvelope &&
+                          {canManage &&
                           activeRecord.status === "sent" &&
                           !record.part11 &&
                           (signer.status === "waiting" ||
@@ -1038,7 +1062,11 @@ export function EnvelopeDetailShell({
           }}
           signers={[...activeRecord.signers]
             .sort((left, right) => left.order - right.order)
-            .map((signer) => ({ id: signer.id, name: signer.name }))}
+            .map((signer) => ({
+              id: signer.id,
+              name: signer.name,
+              role: signer.role,
+            }))}
         />
       ) : null}
 
