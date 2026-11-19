@@ -344,6 +344,22 @@ Away from Vercel, a few things Vercel does for you are yours to set:
 - Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`.
 - Leave `EMAIL_DRIVER` unset. The capture driver is for development only.
 
+## Docker
+
+The repository's `Dockerfile` builds one image that serves the app and runs the migrations. It needs a Postgres database and the settings from [Self-hosting somewhere else](#self-hosting-somewhere-else), kept in an env file (`DATABASE_URL`, `APP_URL`, `BETTER_AUTH_SECRET`, and so on).
+
+```bash
+docker build -t signudoc .
+
+# Apply the migrations first, and again on every upgrade.
+docker run --rm --env-file .env signudoc node db/migrate.mjs
+
+# Then start the app on port 8080.
+docker run -d -p 8080:8080 --env-file .env -v signudoc-data:/data signudoc
+```
+
+The container runs as a non-root user and answers `GET /api/health` for health checks (it does not query the database). With the default local file storage, files are written under `/data/storage`, so mount a volume at `/data` as above or they are lost with the container; with `BLOB_READ_WRITE_TOKEN` set nothing is stored locally. From inside a container, `localhost` is the container itself, so point `DATABASE_URL` at your database's real host name.
+
 Self-hosted operators are responsible for:
 
 - linking to their own terms and privacy policy under Settings, Organization;
