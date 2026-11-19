@@ -25,6 +25,8 @@ export const STAND_INS: Record<string, string | (() => string)> = {
   'clauses.join(" AND ")': `${envelopeScopeCondition("all", "$1")} AND status = $2 AND (lower(title) LIKE $3 ESCAPE '\\' OR EXISTS (SELECT 1 FROM signers WHERE signers.envelope_id = envelopes.id AND lower(signers.email) LIKE $3 ESCAPE '\\') OR EXISTS (SELECT 1 FROM public."user" sender WHERE sender.id = envelopes.user_id AND (lower(sender.email) LIKE $3 ESCAPE '\\' OR lower(sender.name) LIKE $3 ESCAPE '\\')))`,
   limitPlaceholder: "$4",
   offsetPlaceholder: "$5",
+  // envelope-deletion.ts: how many scheduled deletions one run takes.
+  "String(SCHEDULED_DELETIONS_PER_RUN)": "100",
   // retention.ts: one "$n" per envelope.
   'envelopeIds .map((_, index) => `$${String(index + 1)}`) .join(", ")':
     "$1, $2",

@@ -814,36 +814,32 @@ test("notices that keep failing go behind the others, so later senders are still
   const start = 500_000_000;
 
   // A full batch of requests whose sender's email keeps bouncing…
+  // Two statements rather than one data-modifying WITH, so that the same
+  // setup runs on the SQLite backend too.
   await database.query(
     `
-      with made as (
-        insert into envelopes (
-          id, user_id, title, status, source_pdf_key, source_pdf_filename,
-          source_pdf_size_bytes, page_count, source_pdf_hash, sent_at,
-          completed_at
-        )
-        select
-          gen_random_uuid()::text, $1, 'Lease', 'completed',
-          'users/' || $1 || '/envelopes/' || n || '/source.pdf', 'lease.pdf',
-          4, 1, $2, $3, $3
-        from generate_series(1, $4::int) as n
-        returning id
+      insert into envelopes (
+        id, user_id, title, status, source_pdf_key, source_pdf_filename,
+        source_pdf_size_bytes, page_count, source_pdf_hash, sent_at,
+        completed_at
       )
+      select
+        gen_random_uuid()::text, $1, 'Lease', 'completed',
+        'users/' || $1 || '/envelopes/' || n || '/source.pdf', 'lease.pdf',
+        4, 1, $2, $3, $3
+      from generate_series(1, $4::int) as n
+    `,
+    [unreachable.userId, SOURCE_HASH, start, SCHEDULED_DELETIONS_PER_RUN],
+  );
+  await database.query(
+    `
       insert into scheduled_envelope_deletions (
         envelope_id, requested_by_user_id, requested_by_email, requested_at,
         delete_after
       )
-      select id, $5, $6, $3, $3 + $7 from made
+      select id, $2, $3, $4, $4 + $5 from envelopes where user_id = $1
     `,
-    [
-      unreachable.userId,
-      SOURCE_HASH,
-      start,
-      SCHEDULED_DELETIONS_PER_RUN,
-      admin.userId,
-      admin.email,
-      WAIT,
-    ],
+    [unreachable.userId, admin.userId, admin.email, start, WAIT],
   );
   // …and one asked for after them.
   const later = await createEnvelope(reachable.userId, { status: "completed" });
