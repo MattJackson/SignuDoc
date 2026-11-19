@@ -118,6 +118,11 @@ import {
   type SignerCheckMethod,
   type SignerCheckState,
 } from "./signer-checks.ts";
+import {
+  enqueueWorkspaceExport,
+  readExportDestination,
+  scheduleWorkspaceExport,
+} from "./workspace/exports.ts";
 
 export type SigningRequestMeta = {
   ipAddress?: string | null;
@@ -2806,6 +2811,9 @@ export async function submitSigningForToken(
     // The seal's key and the install's name, read before the transaction:
     // sealing inside it then needs no second connection from the pool.
     const seal = await loadInstallSealer();
+    // Where a copy of the executed envelope goes, if anywhere, read now
+    // for the same reason: its outbox row is written in the completion.
+    const exportDestination = await readExportDestination();
     // Set once this submission may have stored the final files.
     let finalArtifactsStored = false;
     let finalArtifacts: Awaited<ReturnType<typeof finalizeEnvelope>>;
@@ -2953,6 +2961,16 @@ export async function submitSigningForToken(
           );
         }
 
+        // In the same transaction, so a completed envelope always has its
+        // copy waiting (workspace/exports.ts), and a rolled-back one never.
+        if (exportDestination) {
+          await enqueueWorkspaceExport(tx, {
+            destination: exportDestination,
+            envelopeId: context.envelope.id,
+            nowSeconds: artifacts.generatedAt,
+          });
+        }
+
         await recordAuditEvent(
           {
             actorEmail: signedAuditEvent.actorEmail,
@@ -2983,6 +3001,14 @@ export async function submitSigningForToken(
         return artifacts;
       }, database);
       signingStatePersisted = true;
+
+      if (exportDestination) {
+        scheduleWorkspaceExport(context.envelope.id, {
+          database,
+          storageService,
+        });
+      }
+
       await deleteReplacedRevision(replacedRevisionKey, storageService);
     } catch (error) {
       if (finalArtifactsStored) {

@@ -49,6 +49,9 @@ export const systemAuditEventTypes = [
   "directory_sign_in_blocked",
   "directory_sign_in_unblocked",
   "envelopes_handed_over",
+  "workspace_files_connected",
+  "workspace_files_disconnected",
+  "workspace_export_retried",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];
