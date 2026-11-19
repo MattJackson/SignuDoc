@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 
+import { getAuthSessionFromHeaders } from "@/lib/auth/server";
 import { getDb } from "@/lib/db/connection";
 import { logRouteError } from "@/lib/security/logging";
 import {
@@ -49,18 +50,26 @@ export async function POST(request: Request, context: VerifyRouteContext) {
   }
 
   try {
-    const methods = await verifySignerCheck(
-      token,
-      await request.json().catch(() => null),
-      {
-        database: getDb(),
-        requestMeta: {
-          ipAddress: getClientIpAddress(request.headers),
-          userAgent: getRequestUserAgent(request.headers),
-        },
-        verifiedMethods: verifiedMethodsForRequest(token, request),
+    const body: unknown = await request.json().catch(() => null);
+    // The Google check looks at the session this browser is signed in to
+    // the site with. Nothing else needs it, so it is only read for that.
+    const wantsGoogle =
+      typeof body === "object" &&
+      body !== null &&
+      "method" in body &&
+      body.method === "google";
+    const session = wantsGoogle
+      ? await getAuthSessionFromHeaders(request.headers).catch(() => null)
+      : null;
+    const methods = await verifySignerCheck(token, body, {
+      database: getDb(),
+      requestMeta: {
+        ipAddress: getClientIpAddress(request.headers),
+        userAgent: getRequestUserAgent(request.headers),
       },
-    );
+      signedInSessionToken: session?.session.token ?? null,
+      verifiedMethods: verifiedMethodsForRequest(token, request),
+    });
     const tokenHash = hashOpaqueToken(token);
     const cookie = buildVerificationCookieValue(tokenHash, methods);
     const response = NextResponse.json(

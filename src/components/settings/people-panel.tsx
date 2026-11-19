@@ -326,6 +326,11 @@ export function PeoplePanel({ part11Mode = false }: { part11Mode?: boolean }) {
                     {person.closing ? (
                       <span className="pill pill-warning">Closing</span>
                     ) : null}
+                    {person.directoryBlockedAt !== null ? (
+                      <span className="pill pill-danger">
+                        Sign-in blocked by Google Workspace
+                      </span>
+                    ) : null}
                     {showsPart11(person) ? (
                       person.identityVerifiedAt !== null ? (
                         <span
