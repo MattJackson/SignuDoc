@@ -556,67 +556,77 @@ export function GoogleDriveSection({
 
         <CheckItem
           ok={null}
-          title='3. Optional: "Open with" this site in Drive'
+          title='3. Optional extra: "Open with" this site in Drive'
         >
           <p>
-            Open the{" "}
-            <ExternalLink href={consoleUrl(DRIVE_UI_PATH, project)}>
-              Google Drive API, Drive UI integration
-            </ExternalLink>{" "}
-            page, paste these values, upload the icon, tick{" "}
-            <strong>Importing</strong> (so Google Docs open too) and save.
+            The Gmail and Drive add-on already lets people send files from
+            Drive&apos;s side panel. This adds {productName} to Drive&apos;s
+            &quot;Open with&quot; menu as well.
           </p>
-          <CopyValue label="Application name" value={productName} />
-          <CopyValue
-            label="Short description"
-            value={`Send documents for signature with ${productName}.`}
-          />
-          <CopyValue
-            label="Long description"
-            value={`Open a PDF, Word document or Google Doc in ${productName} to send it for signature.`}
-          />
-          <p>
-            <a
-              className="font-semibold text-(--accent-ink) underline"
-              download="drive-app-icon-256.png"
-              href="/api/admin/notifications/slack-icon?size=256&download=1"
-            >
-              Download the 256 by 256 icon
-            </a>
-          </p>
-          {view.openUrl ? (
-            <CopyValue label="Open URL" value={view.openUrl} />
-          ) : (
+          <details className="space-y-3">
+            <summary className="cursor-pointer font-semibold text-(--fg)">
+              Show the Drive UI integration steps
+            </summary>
             <p>
-              Set APP_URL first: the open URL is this site&apos;s address
-              followed by /api/google/drive/open.
+              Open the{" "}
+              <ExternalLink href={consoleUrl(DRIVE_UI_PATH, project)}>
+                Google Drive API, Drive UI integration
+              </ExternalLink>{" "}
+              page, paste these values, upload the icon, tick{" "}
+              <strong>Importing</strong> (so Google Docs open too) and save.
             </p>
-          )}
-          <CopyValue
-            label="Default MIME types"
-            value={view.openWith.defaultMimeTypes.join(",")}
-          />
-          <CopyValue
-            label="Default file extensions"
-            value={view.openWith.defaultExtensions.join(",")}
-          />
-          <CopyValue
-            label="Secondary MIME types"
-            value={view.openWith.secondaryMimeTypes.join(",")}
-          />
-          <CopyValue
-            label="Secondary file extensions"
-            value={view.openWith.secondaryExtensions.join(",")}
-          />
-          <p>
-            To show &quot;Open with&quot; for everyone, list the app privately
-            with the{" "}
-            <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
-              Google Workspace Marketplace SDK
-            </ExternalLink>{" "}
-            (Drive integration on, drive.file scope), then install it for the
-            domain from the Admin console.
-          </p>
+            <CopyValue label="Application name" value={productName} />
+            <CopyValue
+              label="Short description"
+              value={`Send documents for signature with ${productName}.`}
+            />
+            <CopyValue
+              label="Long description"
+              value={`Open a PDF, Word document or Google Doc in ${productName} to send it for signature.`}
+            />
+            <p>
+              <a
+                className="font-semibold text-(--accent-ink) underline"
+                download="drive-app-icon-256.png"
+                href="/api/admin/notifications/slack-icon?size=256&download=1"
+              >
+                Download the 256 by 256 icon
+              </a>
+            </p>
+            {view.openUrl ? (
+              <CopyValue label="Open URL" value={view.openUrl} />
+            ) : (
+              <p>
+                Set APP_URL first: the open URL is this site&apos;s address
+                followed by /api/google/drive/open.
+              </p>
+            )}
+            <CopyValue
+              label="Default MIME types"
+              value={view.openWith.defaultMimeTypes.join(",")}
+            />
+            <CopyValue
+              label="Default file extensions"
+              value={view.openWith.defaultExtensions.join(",")}
+            />
+            <CopyValue
+              label="Secondary MIME types"
+              value={view.openWith.secondaryMimeTypes.join(",")}
+            />
+            <CopyValue
+              label="Secondary file extensions"
+              value={view.openWith.secondaryExtensions.join(",")}
+            />
+            <p>
+              To show &quot;Open with&quot; for everyone, list the app privately
+              with the{" "}
+              <ExternalLink href={consoleUrl(MARKETPLACE_SDK_PATH, project)}>
+                Google Workspace Marketplace SDK
+              </ExternalLink>{" "}
+              (Drive integration on, drive.file scope), then install it for the
+              domain from the Admin console.
+            </p>
+          </details>
         </CheckItem>
 
         <CheckItem

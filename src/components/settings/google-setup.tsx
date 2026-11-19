@@ -15,7 +15,6 @@ import {
   ActionRow,
   CheckItem,
   CopyValue,
-  ExternalButton,
   ExternalLink,
   linkClassName,
   Notice,
@@ -32,33 +31,41 @@ import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
 import type { SetupTargetView } from "@/lib/google-workspace-setup";
 import {
+  ADDON_DEPLOYMENT_ID,
   directoryRoleName,
   DRIVE_CALLBACK_PATH,
   executedDriveName,
+  identitySentence,
+  impersonationFlags,
   pickerKeyName,
   SETUP_APIS,
   SETUP_CALLBACK_PATH,
   SETUP_STEP_ORDER,
   SETUP_STEP_TITLES,
   SSO_CALLBACK_PATH,
+  workspaceAccountId,
   type SetupEvent,
   type SetupStepId,
   type SetupStepStatus,
 } from "@/lib/integrations/google/workspace-setup-names";
 
-// Google Workspace setup, in onboarding and at /settings/google-setup:
-// Automatic (one copy-paste step for the OAuth client, then one sign-in as
-// a super admin that does the rest on the server) or Manual (the same
-// steps a to f, each a link, values to copy, a field to paste into and a
-// test). Drive's "Open with" and the Marketplace listing have no API and
-// stay an optional manual step at the end.
+// Google Workspace setup, in onboarding and at /settings/google-setup, on
+// any host: Automatic (one copy-paste step for the OAuth client, then one
+// sign-in as a super admin, a choice of Cloud project, and the server does
+// the rest) or Manual (the same steps, each a link, values to copy, a field
+// to paste into and a test). Rolling the add-on out to the whole domain
+// goes through a private Marketplace listing, which has no API, so it stays
+// one guided step at the end.
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 const ADMIN_ROLES_URL = "https://admin.google.com/ac/roles";
 const ADMIN_ACCOUNT_SETTINGS_URL =
   "https://admin.google.com/ac/accountsettings/profile";
 const SHARED_DRIVES_URL = "https://drive.google.com/drive/shared-drives";
-const DRIVE_UI_PATH = "/apis/api/drive.googleapis.com/drive_sdk";
+const MARKETPLACE_CONFIG_PATH =
+  "/apis/api/appsmarket-component.googleapis.com/googleapps_sdk";
+const MARKETPLACE_LISTING_PATH =
+  "/apis/api/appsmarket-component.googleapis.com/googleapps_sdk_publish";
 const INTERRUPTED_MESSAGE = "The setup stopped before it finished.";
 const INTERRUPTED_HINT =
   "Run it again; what is done already is kept. The one-time Google sign-in was never stored, and it expires within the hour.";
@@ -88,7 +95,11 @@ type StepState = {
   status: SetupStepStatus;
 };
 
+type ProjectOffer = Extract<SetupEvent, { type: "choose" }>;
+
 type RunState = {
+  /** The projects offered, while the run waits for a choice. */
+  choice: ProjectOffer | null;
   finished: { ok: boolean; revoked: boolean } | null;
   refused: { hint?: string; message: string } | null;
   returnTo: string | null;
@@ -97,6 +108,7 @@ type RunState = {
 };
 
 const EMPTY_RUN: RunState = {
+  choice: null,
   finished: null,
   refused: null,
   returnTo: null,
@@ -212,9 +224,14 @@ function apply(
   switch (event.type) {
     case "start":
       return { ...current, returnTo: event.returnTo };
+    case "choose":
+      return { ...current, choice: event };
+    case "waiting":
+      return current;
     case "step":
       return {
         ...current,
+        choice: null,
         steps: {
           ...current.steps,
           [event.id]: {
@@ -228,11 +245,13 @@ function apply(
     case "refused":
       return {
         ...current,
+        choice: null,
         refused: { hint: event.hint, message: event.message },
       };
     case "finished":
       return {
         ...current,
+        choice: null,
         finished: { ok: event.ok, revoked: event.revoked },
         running: false,
       };
@@ -278,9 +297,116 @@ function StatusIcon({ status }: { status: SetupStepStatus | "waiting" }) {
   );
 }
 
+/** The Cloud projects the administrator can use, and a new one. */
+function ProjectChooser({ offer }: { offer: ProjectOffer }) {
+  const [selected, setSelected] = useState(
+    offer.preselected ?? offer.projects[0]?.projectId ?? "new",
+  );
+  const [pending, setPending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setPending(true);
+    setError(null);
+
+    const { ok, payload } = await postJson<{ ok?: boolean }>(
+      "/api/admin/google/setup/choose",
+      {
+        choice:
+          selected === "new"
+            ? { create: true }
+            : { create: false, projectId: selected },
+        runId: offer.runId,
+      },
+    ).catch(() => ({ ok: false, payload: null }));
+
+    setPending(false);
+
+    if (ok) {
+      setSent(true);
+    } else {
+      setError(payload?.error ?? GENERIC_ERROR_MESSAGE);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-2xl bg-(--surface) px-4 py-3.5">
+      <p className="text-sm font-bold text-(--fg)">
+        Which Google Cloud project should this site use?
+      </p>
+      <p className="text-sm leading-6 text-(--secondary)">
+        The APIs, the Picker key, the add-on and (off Cloud Run) the site&apos;s
+        service account go in it. None of the APIs needs billing, so a new
+        project needs no billing account. Choose within{" "}
+        {Math.round(offer.waitSeconds / 60)} minutes.
+        {offer.reason ? ` ${offer.reason}` : ""}
+      </p>
+      <fieldset className="max-h-72 space-y-1 overflow-y-auto">
+        <legend className="sr-only">Cloud project</legend>
+        {offer.projects.map((project) => (
+          <label
+            className="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-1.5 text-sm has-[:checked]:bg-(--accent-softer)"
+            key={project.projectId}
+          >
+            <input
+              checked={selected === project.projectId}
+              className="size-4 accent-(--accent)"
+              disabled={pending || sent}
+              name="setup-project"
+              onChange={() => setSelected(project.projectId)}
+              type="radio"
+            />
+            <span>
+              <span className="font-semibold text-(--fg)">{project.name}</span>{" "}
+              <span className="text-(--tertiary)">{project.projectId}</span>
+              {project.projectId === offer.preselected ? (
+                <span className="text-(--tertiary)"> (suggested)</span>
+              ) : null}
+            </span>
+          </label>
+        ))}
+        <label className="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-1.5 text-sm has-[:checked]:bg-(--accent-softer)">
+          <input
+            checked={selected === "new"}
+            className="size-4 accent-(--accent)"
+            disabled={pending || sent}
+            name="setup-project"
+            onChange={() => setSelected("new")}
+            type="radio"
+          />
+          <span>
+            <span className="font-semibold text-(--fg)">
+              Create &ldquo;{offer.newProjectName}&rdquo;
+            </span>{" "}
+            <span className="text-(--tertiary)">
+              {offer.organization
+                ? "in your organization"
+                : "with no organization"}
+            </span>
+          </span>
+        </label>
+      </fieldset>
+      <ActionRow>
+        <ShellButton
+          disabled={pending || sent}
+          loading={pending}
+          onClick={() => void submit()}
+        >
+          {sent ? "Setting up..." : "Use this project"}
+        </ShellButton>
+      </ActionRow>
+      {error ? <Notice tone="error">{error}</Notice> : null}
+    </div>
+  );
+}
+
 function RunResults({ run }: { run: RunState }) {
   return (
     <div aria-live="polite" className="space-y-3">
+      {run.choice ? (
+        <ProjectChooser key={run.choice.runId} offer={run.choice} />
+      ) : null}
       <ol className="space-y-2">
         {SETUP_STEP_ORDER.map((id, index) => {
           const step = run.steps[id];
@@ -294,7 +420,7 @@ function RunResults({ run }: { run: RunState }) {
               <StatusIcon status={status} />
               <div className="min-w-0 flex-1 space-y-1 text-sm leading-6">
                 <p className="font-bold text-(--fg)">
-                  {String.fromCharCode(97 + index)}. {SETUP_STEP_TITLES[id]}{" "}
+                  {index + 1}. {SETUP_STEP_TITLES[id]}{" "}
                   <span className="text-xs font-semibold text-(--tertiary)">
                     {STATUS_LABELS[status]}
                   </span>
@@ -352,7 +478,7 @@ function ModeChoice({
           [
             "automatic",
             "Automatic",
-            "Paste one OAuth client, then sign in once as a super admin. This site turns on the APIs, makes the Picker key, the directory role and the Shared Drive, and tests them.",
+            "Paste one OAuth client, sign in once as a super admin and choose a Cloud project. This site turns on the APIs, gives itself an identity, makes the Picker key, the directory role, the Shared Drive and the add-on, and tests them.",
           ],
           [
             "manual",
@@ -558,7 +684,6 @@ function AutomaticSetup({
       `Google did not finish the sign-in (${callback.error.slice(0, 60)}).`)
     : null;
   const showRun = run.running || run.finished !== null || run.refused !== null;
-  const project = target.projectId;
 
   return (
     <SetupSteps>
@@ -569,30 +694,46 @@ function AutomaticSetup({
         title="B. Sign in as a Workspace super admin and set everything up"
       >
         <p>
-          You sign in once with a super admin who can also change the Cloud
-          project (an Owner). This site then does steps a to f on its own and
-          shows each as it goes, then revokes the sign-in. The token is never
-          stored, and the setup can be run again at any time.
+          You sign in once with a super admin who can also change Cloud projects
+          (an Owner), and choose the project to use, or have one made. This site
+          then does the steps below on its own and shows each as it goes, then
+          revokes the sign-in. The token is never stored, and the setup can be
+          run again at any time. It works wherever the site runs; on Cloud Run
+          no key is needed.
         </p>
+        <IdentityNotice target={target} />
         <ul className="list-disc space-y-1 pl-5">
-          <li>a. Turn on {SETUP_APIS.length} Google APIs in the project.</li>
+          <li>Make the new project, if you choose one.</li>
+          <li>Turn on {SETUP_APIS.length} Google APIs. None needs billing.</li>
           <li>
-            b. Create the Picker key &ldquo;{pickerKeyName(productName)}
-            &rdquo;, held to the Picker API and this site.
-          </li>
-          <li>c. Read and save the Workspace customer ID.</li>
-          <li>
-            d. Create the admin role &ldquo;{directoryRoleName(productName)}
-            &rdquo; (Users and Groups, read) and give it to{" "}
-            {target.serviceAccountEmail ?? "the site's service account"}.
+            Give the site its own identity: on Cloud Run the service account it
+            runs as; elsewhere &ldquo;{workspaceAccountId(productName)}
+            &rdquo;, with a key stored encrypted, or, where your organization
+            forbids keys, impersonated with your gcloud login.
           </li>
           <li>
-            e. Create the Shared Drive &ldquo;{executedDriveName(productName)}
+            Create the Picker key &ldquo;{pickerKeyName(productName)}&rdquo;,
+            held to the Picker API and this site.
+          </li>
+          <li>Read and save the Workspace customer ID.</li>
+          <li>
+            Create the admin role &ldquo;{directoryRoleName(productName)}
+            &rdquo; (Users and Groups, read) and give it to the service account.
+          </li>
+          <li>
+            Create the Shared Drive &ldquo;{executedDriveName(productName)}
             &rdquo; for executed copies, with the service account as Content
             manager.
           </li>
-          <li>f. Test the directory, the admin group and the Shared Drive.</li>
+          <li>
+            Deploy the Gmail and Drive add-on and install it for you
+            {target.addonProblem ? " (skipped: see below)" : ""}.
+          </li>
+          <li>Test the directory, the admin group and the Shared Drive.</li>
         </ul>
+        {target.addonProblem ? (
+          <Notice tone="info">{target.addonProblem}</Notice>
+        ) : null}
         <label className="flex items-center gap-3 text-sm font-semibold text-(--fg)">
           <input
             checked={exportDrive}
@@ -640,32 +781,129 @@ function AutomaticSetup({
         ) : null}
       </CheckItem>
 
-      <OptionalDriveStep project={project} />
+      <MarketplaceStep target={target} />
     </SetupSteps>
   );
 }
 
-function OptionalDriveStep({ project }: { project: string | null }) {
+/** Which Google identity the site uses, and what to do about a missing one. */
+function IdentityNotice({ target }: { target: SetupTargetView }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-sm leading-6 text-(--secondary)">
+        <strong className="text-(--fg)">Identity:</strong>{" "}
+        {target.identityProblem ?? identitySentence(target.identity)}
+      </p>
+      {target.impersonationPending ? (
+        <Notice tone="warning">
+          <p>
+            Your organization does not allow service account keys, so this site
+            acts as {target.impersonationPending} with your gcloud login. Run{" "}
+            <code>gcloud auth application-default login</code>, then start the
+            container with:
+          </p>
+          <CopyValue
+            label="docker run flags"
+            value={impersonationFlags(target.impersonationPending)}
+          />
+        </Notice>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Rolls the add-on out to the whole domain: a private Marketplace listing,
+ * which has no API, then the domain install in the Admin console.
+ */
+function MarketplaceStep({ target }: { target: SetupTargetView }) {
+  const { productName } = useBranding();
+  const project = target.projectId;
+  const site = target.siteUrl;
+  const listingUrl = target.projectNumber
+    ? `https://workspace.google.com/marketplace/app/${encodeURIComponent(workspaceAccountId(productName).replace(/-workspace$/, ""))}/${target.projectNumber}`
+    : null;
+
   return (
     <CheckItem
       ok={null}
       optional
-      title='Optional: "Open with" in Drive and the Marketplace listing'
+      title="Give the Gmail and Drive add-on to everyone"
     >
+      {target.addonProblem ? (
+        <Notice tone="info">{target.addonProblem}</Notice>
+      ) : null}
       <p>
-        Google has no API for these either. To open PDFs from Drive with this
-        site, fill in the Drive UI integration; to install the Gmail and Drive
-        add-on for everyone, list it in the Workspace Marketplace. Settings,
-        Google Drive and Gmail and Drive add-on have the values to paste.
+        The setup deploys the add-on and installs it for you. For everyone else,
+        list it privately in the Google Workspace Marketplace (Google has no API
+        for that), then install it for the domain. The links open{" "}
+        {project ? <strong>{project}</strong> : "your project"}.
       </p>
-      <ActionRow>
-        <ExternalButton href={consoleUrl(DRIVE_UI_PATH, project)}>
-          Drive UI integration
-        </ExternalButton>
-        <ShellButton href="/settings/integrations/google-drive" variant="ghost">
-          Google Drive settings
-        </ShellButton>
-      </ActionRow>
+      <ol className="list-decimal space-y-2 pl-5">
+        <li>
+          <ExternalLink href={consoleUrl(MARKETPLACE_CONFIG_PATH, project)}>
+            Open App configuration
+          </ExternalLink>
+          : visibility <strong>Private</strong>, installation{" "}
+          <strong>Admin only</strong>, app integration{" "}
+          <strong>Google Workspace add-on</strong> with the deployment ID below,
+          the scopes below, and the developer details. Save.
+        </li>
+        <li>
+          <ExternalLink href={consoleUrl(MARKETPLACE_LISTING_PATH, project)}>
+            Open Store listing
+          </ExternalLink>
+          : paste the name and descriptions, upload the icons (PNG, 32, 48, 96
+          and 128 pixels square, below) and a screenshot, paste the links, and
+          choose <strong>Publish</strong>. A private listing is live at once.
+        </li>
+        <li>
+          {listingUrl ? (
+            <ExternalLink href={listingUrl}>Open the listing</ExternalLink>
+          ) : (
+            "Open the listing"
+          )}{" "}
+          and choose <strong>Admin install</strong> to install it for everyone,
+          or in the Admin console, Apps, Google Workspace Marketplace apps, add
+          it from the list of apps.
+        </li>
+      </ol>
+      <div className="grid gap-4">
+        <CopyValue label="App name" value={productName} />
+        <CopyValue
+          label="Short description"
+          value={`Send documents from Gmail and Drive for signature with ${productName}.`}
+        />
+        <CopyValue
+          label="Detailed description"
+          value={`Open a PDF or Word attachment in Gmail, or select files in Drive, and send them for signature with ${productName}, your organization's own e-signature service. Signed copies come back to Drive.`}
+        />
+        <CopyValue label="Deployment ID" value={ADDON_DEPLOYMENT_ID} />
+        <CopyValue label="OAuth scopes" value={target.addonScopes.join(",")} />
+        {site ? (
+          <>
+            <p>
+              Icons:{" "}
+              {[32, 48, 96, 128].map((size, index) => (
+                <span key={size}>
+                  {index > 0 ? ", " : ""}
+                  <a
+                    className={linkClassName}
+                    download={`addon-icon-${String(size)}.png`}
+                    href={`/api/admin/notifications/slack-icon?size=${String(size)}&download=1`}
+                  >
+                    {size} by {size}
+                  </a>
+                </span>
+              ))}
+              .
+            </p>
+            <CopyValue label="Support URL" value={`${site}/contact`} />
+            <CopyValue label="Privacy policy URL" value={`${site}/privacy`} />
+            <CopyValue label="Terms of service URL" value={`${site}/terms`} />
+          </>
+        ) : null}
+      </div>
     </CheckItem>
   );
 }
@@ -974,6 +1212,7 @@ function ManualSetup({
         ok={null}
         title="d. Let the service account read the directory"
       >
+        <IdentityNotice target={target} />
         <ol className="list-decimal space-y-1 pl-5">
           <li>
             Open{" "}
@@ -1064,7 +1303,7 @@ function ManualSetup({
         </ActionRow>
       </CheckItem>
 
-      <OptionalDriveStep project={project} />
+      <MarketplaceStep target={target} />
     </SetupSteps>
   );
 }

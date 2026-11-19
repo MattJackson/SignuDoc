@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
@@ -13,6 +14,7 @@ import {
   EnvLockedNotice,
   ExternalLink,
   IntegrationPanel,
+  linkClassName,
   Notice,
   SetupSteps,
   TestResult,
@@ -34,6 +36,7 @@ import type {
 } from "@/lib/google-workspace";
 import {
   directoryRoleName,
+  identitySentence,
   DRIVE_CALLBACK_PATH,
   SETUP_CALLBACK_PATH,
   SSO_CALLBACK_PATH,
@@ -759,17 +762,24 @@ export function GoogleDirectorySection({
           {serviceAccount.email ? (
             <>
               <p>
-                {serviceAccount.source === "metadata"
-                  ? "This site runs on Google Cloud as this service account, with no key stored:"
-                  : "This site uses the service account in GOOGLE_SERVICE_ACCOUNT_KEY:"}
+                {identitySentence(
+                  serviceAccount.source
+                    ? {
+                        email: serviceAccount.email,
+                        source: serviceAccount.source,
+                      }
+                    : null,
+                )}
               </p>
               <CopyValue label="Service account" value={serviceAccount.email} />
             </>
           ) : (
             <p>
-              {serviceAccount.problem} Run the site on Cloud Run (or anywhere on
-              Google Cloud) with its own service account, or set
-              GOOGLE_SERVICE_ACCOUNT_KEY to a service account key.
+              {serviceAccount.problem} Run the{" "}
+              <Link className={linkClassName} href="/settings/google-setup">
+                automatic setup
+              </Link>
+              , which makes one on any host, or set GOOGLE_SERVICE_ACCOUNT_KEY.
             </p>
           )}
         </CheckItem>

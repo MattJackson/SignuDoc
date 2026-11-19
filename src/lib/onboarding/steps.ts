@@ -238,7 +238,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     id: "google-workspace",
     settingsHref: "/settings/google-setup",
     summary:
-      "Set up Google sign-in, the Workspace directory, the Drive Picker and a Shared Drive, automatically with one super admin sign-in, or step by step.",
+      "Set up Google sign-in, the Workspace directory, the Drive Picker, a Shared Drive and the Gmail and Drive add-on, on any host: automatically with one super admin sign-in, or step by step.",
     title: "Google Workspace",
   },
   {

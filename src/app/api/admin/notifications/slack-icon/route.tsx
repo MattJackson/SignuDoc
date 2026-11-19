@@ -121,8 +121,10 @@ export async function GET(request: Request) {
   // of messages on the same page uses it as the app's picture).
   const params = new URL(request.url).searchParams;
   const download = params.get("download") === "1";
-  // ?size=256 is the size Drive's "Open with" setup asks for.
-  const size = params.get("size") === "256" ? 256 : SIZE;
+  // ?size=256 is the size Drive's "Open with" setup asks for; 32, 48, 96
+  // and 128 are the add-on's Marketplace listing icons.
+  const asked = Number(params.get("size"));
+  const size = [32, 48, 96, 128, 256].includes(asked) ? asked : SIZE;
 
   try {
     const image = new ImageResponse(await iconContent(size), {
