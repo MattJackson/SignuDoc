@@ -9,6 +9,11 @@ import {
 } from "@/lib/pdf-thumbnail";
 
 type DocumentThumbnailProps = {
+  /**
+   * May draw and store a missing picture. Only the sender can: someone who
+   * sees the envelope through a team gets the stand-in page instead.
+   */
+  canBackfill?: boolean;
   className?: string;
   /** Leave out for a plain stand-in page. */
   envelopeId?: string;
@@ -25,6 +30,7 @@ type ThumbnailState = "drawn" | "loading" | "missing" | "stored";
  * for next time. If that cannot be done either, a stand-in page is shown.
  */
 export function DocumentThumbnail({
+  canBackfill = true,
   className,
   envelopeId,
   title,
@@ -75,6 +81,14 @@ export function DocumentThumbnail({
   }, []);
 
   function handleStoredThumbnailMissing() {
+    if (!canBackfill) {
+      if (isMountedRef.current) {
+        setState("missing");
+      }
+
+      return;
+    }
+
     if (
       !envelopeId ||
       state !== "loading" ||

@@ -1,7 +1,19 @@
-export const MAX_SIGNERS_PER_ENVELOPE = 10;
+/**
+ * The most signers an install can allow on one envelope. The number an
+ * install allows is set with MAX_SIGNERS_PER_ENVELOPE, up to this, and is
+ * DEFAULT_MAX_SIGNERS_PER_ENVELOPE when it is not set (see signer-limit.ts).
+ * Copy recipients are stored after the signers, from 501 on, so this has to
+ * stay well under that.
+ */
+export const MAX_SIGNERS_CEILING = 100;
+export const DEFAULT_MAX_SIGNERS_PER_ENVELOPE = 25;
 /** People who get a copy of the finished document without signing. */
 export const MAX_COPY_RECIPIENTS_PER_ENVELOPE = 10;
 export const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
+/** The largest non-PDF document that is converted to a PDF (Google Drive). */
+export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
+/** What a person is told when a file passes either limit. */
+export const FILE_TOO_LARGE_TO_CONVERT_MESSAGE = `This file is too large: PDFs can be up to ${String(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB, and other documents up to ${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB before conversion.`;
 export const SIGNING_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const RECIPIENT_DOWNLOAD_LINK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const MANUAL_NUDGE_COOLDOWN_SECONDS = 24 * 60 * 60;
@@ -67,7 +79,18 @@ export const auditEventTypes = [
   "reauthentication_failed",
   "copied",
   "signer_corrected",
+  "approved",
+  "rejected",
+  "handed_over",
 ] as const;
+
+/**
+ * What a person in the signing order does. A signer fills in and signs
+ * their fields; an approver reviews the document and approves or rejects
+ * it, with no fields of their own. Copy recipients are kept apart (role
+ * 'cc') and are never in the signing order.
+ */
+export const recipientRoles = ["signer", "approver"] as const;
 
 /**
  * What a signature means, for Part 11 envelopes (21 CFR 11.50(a)(3)). The
@@ -106,6 +129,7 @@ export const emailTemplateKinds = [
 
 export type EnvelopeStatus = (typeof envelopeStatuses)[number];
 export type SignerStatus = (typeof signerStatuses)[number];
+export type RecipientRole = (typeof recipientRoles)[number];
 export type FieldType = (typeof fieldTypes)[number];
 export type FieldInputMethod = (typeof fieldInputMethods)[number];
 export type AuditEventType = (typeof auditEventTypes)[number];

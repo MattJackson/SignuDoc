@@ -43,6 +43,20 @@ export const systemAuditEventTypes = [
   "logo_changed",
   "email_domain_changed",
   "envelope_deleted",
+  "backup_settings_changed",
+  "backup_run_requested",
+  "team_created",
+  "team_updated",
+  "team_deleted",
+  "team_member_added",
+  "team_member_removed",
+  "google_drive_connected",
+  "google_drive_disconnected",
+  "drive_export_retried",
+  "directory_sync_run",
+  "directory_sign_in_blocked",
+  "directory_sign_in_restored",
+  "envelopes_handed_over",
 ] as const;
 
 export type SystemAuditEventType = (typeof systemAuditEventTypes)[number];
@@ -72,7 +86,7 @@ export type RecordSystemAuditEventInput = {
 };
 
 /** One key for the whole chain: writers take turns. */
-const SYSTEM_AUDIT_LOCK_ID = 746108325;
+export const SYSTEM_AUDIT_LOCK_ID = 746108328;
 
 type ChainedFields = Omit<SystemAuditEvent, never>;
 

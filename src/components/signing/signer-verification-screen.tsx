@@ -1,7 +1,7 @@
 "use client";
 
 import { ShieldCheckIcon } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { Brand } from "@/components/layout/brand";
 import { PublicLegalFooter } from "@/components/layout/public-legal-links";
@@ -24,7 +24,155 @@ const METHOD_COPY: Record<Method, { helper: string; label: string }> = {
     helper: "We email a 6-digit code to the address this document was sent to.",
     label: "Code from your email",
   },
+  google: {
+    helper:
+      "Your organization asks you to sign in with your Google Workspace account first, as the address this document was sent to.",
+    label: "Google sign-in",
+  },
 };
+
+/**
+ * Hands the signer to Google through the site's own sign-in, and brings
+ * them back to this signing page, where the check runs again.
+ */
+export async function startGoogleSignInForSigning(
+  token: string,
+): Promise<string | null> {
+  const origin = window.location.origin;
+  const back = `${origin}/sign/${encodeURIComponent(token)}?google=1`;
+
+  try {
+    const response = await fetch("/api/auth/sign-in/social", {
+      body: JSON.stringify({
+        callbackURL: back,
+        errorCallbackURL: `${origin}/sign/${encodeURIComponent(token)}`,
+        newUserCallbackURL: back,
+        provider: "sso",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      url?: string;
+    } | null;
+
+    if (!response.ok || !payload?.url) {
+      return "Google sign-in could not be started. Try again in a moment.";
+    }
+
+    window.location.assign(payload.url);
+    return null;
+  } catch {
+    return "Google sign-in could not be started. Try again in a moment.";
+  }
+}
+
+/** Asks the server to look at this browser's Google sign-in for the link. */
+export async function confirmGoogleSignInForSigning(
+  token: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `/api/signing/${encodeURIComponent(token)}/verify`,
+      {
+        body: JSON.stringify({ method: "google" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+
+    return response.ok
+      ? null
+      : (payload?.error ?? "Your Google sign-in could not be checked.");
+  } catch {
+    return "Your Google sign-in could not be checked.";
+  }
+}
+
+function GoogleCheck({
+  maskedEmail,
+  token,
+}: {
+  maskedEmail: string;
+  token: string;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const autoChecked = useRef(false);
+
+  async function check() {
+    setIsBusy(true);
+    setError(null);
+
+    const problem = await confirmGoogleSignInForSigning(token);
+
+    if (problem) {
+      setError(problem);
+      setIsBusy(false);
+      return;
+    }
+
+    // Back without ?google=1, so a reload does not check again.
+    window.location.assign(`/sign/${encodeURIComponent(token)}`);
+  }
+
+  // Back from Google: check straight away, once.
+  useEffect(() => {
+    if (autoChecked.current) {
+      return;
+    }
+
+    autoChecked.current = true;
+
+    if (new URLSearchParams(window.location.search).get("google") === "1") {
+      // After this render, not during the effect: check() sets state.
+      void Promise.resolve().then(() => check());
+    }
+    // Only on arriving: later checks are the buttons'.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="mt-8 grid gap-5">
+      <p className="text-sm leading-6 text-(--secondary)">
+        {METHOD_COPY.google.helper} ({maskedEmail})
+      </p>
+      {error ? (
+        <p className="notice notice-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <ShellButton
+          loading={isBusy}
+          onClick={async () => {
+            setIsBusy(true);
+            const problem = await startGoogleSignInForSigning(token);
+
+            if (problem) {
+              setError(problem);
+              setIsBusy(false);
+            }
+          }}
+          type="button"
+        >
+          Continue with Google
+        </ShellButton>
+        <ShellButton
+          disabled={isBusy}
+          onClick={() => void check()}
+          type="button"
+          variant="secondary"
+        >
+          I&apos;m signed in, check again
+        </ShellButton>
+      </div>
+    </div>
+  );
+}
 
 export function SignerVerificationScreen({
   state,
@@ -139,7 +287,14 @@ export function SignerVerificationScreen({
               ? ` Step ${String(step)} of ${String(state.required.length)}.`
               : ""}
           </p>
-          <form className="mt-8 grid gap-5" onSubmit={handleSubmit}>
+          {method === "google" ? (
+            <GoogleCheck maskedEmail={state.maskedEmail} token={token} />
+          ) : null}
+          <form
+            className="mt-8 grid gap-5"
+            hidden={method === "google"}
+            onSubmit={handleSubmit}
+          >
             {method === "account" ? (
               <FieldShell
                 autoComplete="username"

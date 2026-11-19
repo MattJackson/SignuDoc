@@ -38,7 +38,7 @@ export default async function PrepareEnvelopePage({
       redirect(`/envelopes/${id}`);
     }
 
-    if (record.signers.length === 0) {
+    if (record.signers.every((signer) => signer.role === "approver")) {
       redirect(`/envelopes/${id}/signers`);
     }
   }
