@@ -174,7 +174,7 @@ async function run(
     env,
     exportDrive: false,
     sleep: (ms) =>
-      new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+      new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 20))),
   });
 
   await Promise.all(choices);
