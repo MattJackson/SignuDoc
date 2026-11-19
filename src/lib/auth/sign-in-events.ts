@@ -26,6 +26,7 @@ import {
   MAX_FAILED_SIGN_INS,
   SIGN_IN_LOCKED_MESSAGE,
 } from "../sign-in-security.ts";
+import { syncAdminRoleFromGroup } from "../workspace/admin-group.ts";
 
 // Puts sign-ins and changes to how people sign in into the install's audit
 // trail, and stops sign-in for an address after too many wrong passwords
@@ -484,6 +485,13 @@ async function afterProviderSignIn(ctx: HookContext, returned: unknown) {
       event: "sign_in_succeeded",
       metadata: { method: "sso", provider },
       targetUserId: session.user.id,
+    });
+    // An administrator group in the organization's directory decides who
+    // is an administrator (workspace/admin-group.ts). It never refuses the
+    // sign-in.
+    await syncAdminRoleFromGroup({
+      email: session.user.email,
+      id: session.user.id,
     });
     return;
   }

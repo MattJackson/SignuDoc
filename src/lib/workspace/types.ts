@@ -195,10 +195,19 @@ export type WorkspaceCheck = {
 export type WorkspaceCheckTarget =
   "adminGroup" | "identity" | WorkspaceCapability;
 
+/**
+ * Who runs a check: the administrator in Settings. A directory check looks
+ * them up, and the administrator group check asks whether they are in it.
+ */
+export type WorkspaceCheckContext = { email?: string };
+
 /** Every provider has this: its identity, and checks for Settings. */
 export interface WorkspaceSetup {
   /** Runs the checks for one target. Never throws; [] when not offered. */
-  check(target: WorkspaceCheckTarget): Promise<WorkspaceCheck[]>;
+  check(
+    target: WorkspaceCheckTarget,
+    context?: WorkspaceCheckContext,
+  ): Promise<WorkspaceCheck[]>;
   identity(): Promise<WorkspaceIdentity>;
 }
 

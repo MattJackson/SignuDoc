@@ -9,6 +9,10 @@ import {
 import { after, before, test } from "node:test";
 
 import { createGoogleCredentials, GOOGLE_SCOPES } from "../credentials.ts";
+import {
+  createGoogleDirectory,
+  readGoogleDirectoryConfig,
+} from "../directory.ts";
 import { GOOGLE_APPS, ROOT_FOLDER_ID } from "./fake-drive.ts";
 import {
   createFakeServiceAccountKey,
@@ -250,6 +254,54 @@ test("delegation: a token for a Workspace user, and the manager in relations", a
   );
 
   assert.equal(refused.status, 403);
+});
+
+test("the app's directory searches people and checks nested groups", async () => {
+  const credentials = createGoogleCredentials({ env: env() });
+
+  assert.ok(credentials);
+
+  const directory = createGoogleDirectory({
+    config: readGoogleDirectoryConfig(null, {}),
+    credentials,
+    env: env(),
+  });
+
+  // Daniel is suspended, Olga is in another Workspace, Pat has none.
+  assert.deepEqual(await directory.searchPeople("da"), [
+    { email: "dana@acme.example", name: "Dana Admin" },
+  ]);
+  assert.deepEqual(await directory.searchPeople("sam sender"), [
+    { email: "sam@acme.example", name: "Sam Sender" },
+  ]);
+  assert.equal(
+    await directory.isGroupMember(
+      "signudoc-admins@acme.example",
+      "sam@acme.example",
+    ),
+    true,
+  );
+  assert.equal(
+    await directory.isGroupMember(
+      "signudoc-admins@acme.example",
+      "olga@other.example",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    (await directory.listPersonGroups("sam@acme.example")).map(
+      (group) => group.email,
+    ),
+    ["leads@acme.example"],
+  );
+  assert.deepEqual(await directory.getPerson("sam@acme.example"), {
+    archived: false,
+    email: "sam@acme.example",
+    managerEmail: "dana@acme.example",
+    name: "Sam Sender",
+    suspended: false,
+  });
+  assert.equal(await directory.getPerson("nobody@acme.example"), null);
 });
 
 test("an assertion signed with another key is refused", async () => {

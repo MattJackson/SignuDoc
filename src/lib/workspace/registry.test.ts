@@ -131,5 +131,7 @@ test("the Google package with nothing configured says what to set", async () => 
   assert.equal(identity.configured, false);
   assert.match(identity.description, /GOOGLE_SERVICE_ACCOUNT_KEY/);
   assert.equal((await setupForGoogle.check("identity"))[0]?.ok, false);
-  assert.deepEqual(await setupForGoogle.check("directory"), []);
+  // With no identity the directory cannot be read either.
+  assert.equal((await setupForGoogle.check("directory"))[0]?.ok, false);
+  assert.deepEqual(await setupForGoogle.check("files"), []);
 });

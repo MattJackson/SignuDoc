@@ -299,25 +299,124 @@ export async function setPersonRole(
     );
 
     if (keeperId) {
-      // The account's row has been held since it was read above. A closed
-      // account's envelopes are handed over only while holding the
-      // keeper's row too, so none can arrive here after this has looked.
-      const moved = await tx.query(
-        `
-          UPDATE envelopes
-          SET user_id = $1
-          WHERE user_id = $2 AND handed_over_at IS NOT NULL
-        `,
-        [keeperId, targetUserId],
-      );
-
-      if ((moved.rowCount ?? 0) > 0) {
-        console.info(
-          `Moved ${moved.rowCount} handed-over envelopes from ${targetUserId}, no longer an administrator, to ${keeperId}.`,
-        );
-      }
+      await moveHandedOverEnvelopes(tx, keeperId, targetUserId);
     }
 
     return mapPerson({ ...target, role });
+  }, database);
+}
+
+// The account's row has been held since it was read. A closed account's
+// envelopes are handed over only while holding the keeper's row too, so
+// none can arrive after this has looked.
+async function moveHandedOverEnvelopes(
+  tx: DbExecutor,
+  keeperId: string,
+  targetUserId: string,
+) {
+  const moved = await tx.query(
+    `
+      UPDATE envelopes
+      SET user_id = $1
+      WHERE user_id = $2 AND handed_over_at IS NOT NULL
+    `,
+    [keeperId, targetUserId],
+  );
+
+  if ((moved.rowCount ?? 0) > 0) {
+    console.info(
+      `Moved ${moved.rowCount} handed-over envelopes from ${targetUserId}, no longer an administrator, to ${keeperId}.`,
+    );
+  }
+}
+
+export type DirectoryRoleResult =
+  | { changed: true; from: PersonRole; to: PersonRole }
+  | {
+      changed: false;
+      reason: "closing" | "last_admin" | "missing" | "same" | "unverified";
+    };
+
+/**
+ * Sets an account's role to what the organization's directory says (the
+ * administrator group, workspace/admin-group.ts), with nobody acting: the
+ * change is recorded as the directory's. The same rules hold as for an
+ * administrator's change, and they are not errors here but reasons nothing
+ * changed. Above all, the last administrator keeps the role whatever the
+ * directory says, so a group emptied by mistake cannot leave the install
+ * with none.
+ */
+export async function setPersonRoleFromDirectory(
+  targetUserId: string,
+  role: PersonRole,
+  source: { group: string; provider: string },
+  database: DbPool = getDb(),
+): Promise<DirectoryRoleResult> {
+  return withTransaction(async (tx) => {
+    await tx.query("SELECT pg_advisory_xact_lock($1)", [ROLE_CHANGE_LOCK_ID]);
+
+    const target = await queryOne<PersonRow>(
+      tx,
+      `SELECT ${PERSON_COLUMNS} FROM "user" u WHERE u.id = $1 FOR UPDATE OF u`,
+      [targetUserId],
+    );
+
+    if (!target) {
+      return { changed: false, reason: "missing" } as const;
+    }
+
+    const from: PersonRole = target.role === "admin" ? "admin" : "user";
+
+    if (from === role) {
+      return { changed: false, reason: "same" } as const;
+    }
+
+    let keeperId: string | null = null;
+
+    if (role === "admin") {
+      // Only an address the account has confirmed is taken as the one the
+      // directory lists.
+      if (!target.emailVerified) {
+        return { changed: false, reason: "unverified" } as const;
+      }
+
+      if (target.closing) {
+        return { changed: false, reason: "closing" } as const;
+      }
+    } else {
+      keeperId = await findRecordKeeper(targetUserId, tx);
+
+      if (!keeperId) {
+        return { changed: false, reason: "last_admin" } as const;
+      }
+    }
+
+    await tx.query(
+      `UPDATE "user" SET role = $1, "updatedAt" = now() WHERE id = $2`,
+      [role, targetUserId],
+    );
+    await recordSystemAuditEvent(
+      {
+        actorEmail: null,
+        actorUserId: null,
+        event: "role_changed",
+        metadata: {
+          from,
+          group: source.group,
+          source: source.provider,
+          targetEmail: target.email,
+          targetName: target.name,
+          to: role,
+        },
+        targetUserId,
+      },
+      tx,
+    );
+
+    if (keeperId) {
+      await moveHandedOverEnvelopes(tx, keeperId, targetUserId);
+    }
+
+    return { changed: true, from, to: role } as const;
   }, database);
 }
