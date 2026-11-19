@@ -35,3 +35,40 @@ test("nothing sent leaves nothing to change", () => {
     name: "Ann",
   });
 });
+
+test("Google's photo hosts lh3 to lh6 are accepted, and no other", () => {
+  for (const number of [3, 4, 5, 6]) {
+    const picture = `https://lh${String(number)}.googleusercontent.com/a/x=s96-c`;
+
+    assert.equal(readGoogleProfile({ picture }).image, picture);
+  }
+
+  for (const host of [
+    "lh2.googleusercontent.com",
+    "lh7.googleusercontent.com",
+    "lh33.googleusercontent.com",
+    "googleusercontent.com",
+  ]) {
+    assert.equal(
+      readGoogleProfile({ picture: `https://${host}/a/x` }).image,
+      null,
+      host,
+    );
+  }
+});
+
+test("a name is capped at 200 characters, and a missing, blank or non-string name is no name", () => {
+  assert.equal(readGoogleProfile({ name: "a".repeat(300) }).name?.length, 200);
+  assert.equal(readGoogleProfile({ name: "a".repeat(200) }).name?.length, 200);
+
+  for (const name of [
+    undefined,
+    null,
+    42,
+    ["Ann"],
+    { value: "Ann" },
+    " \t\n ",
+  ]) {
+    assert.equal(readGoogleProfile({ name }).name, null, String(name));
+  }
+});

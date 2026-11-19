@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import type { DbExecutor } from "./db/connection.ts";
 import {
+  MAX_PRODUCT_NAME_LENGTH,
   OrganizationSettingsError,
+  parseProductName,
   updateOrganizationSettings,
 } from "./organization-settings.ts";
 import { resolveSettings, type AppSettings } from "./settings.ts";
@@ -282,4 +284,71 @@ test("the hosted service keeps its own color whatever the form sends", async () 
   );
 
   assert.equal(result.brandColor, null);
+});
+
+test("an app name is trimmed, its spaces collapsed, blank means none, and it has a cap", () => {
+  assert.deepEqual(parseProductName("  Acme   Sign\t Pro "), {
+    ok: true,
+    value: "Acme Sign Pro",
+  });
+
+  for (const blank of ["", "   ", null, undefined]) {
+    assert.deepEqual(parseProductName(blank), { ok: true, value: null });
+  }
+
+  assert.deepEqual(parseProductName("a".repeat(MAX_PRODUCT_NAME_LENGTH)), {
+    ok: true,
+    value: "a".repeat(MAX_PRODUCT_NAME_LENGTH),
+  });
+
+  for (const tooLong of [
+    "a".repeat(MAX_PRODUCT_NAME_LENGTH + 1),
+    ` ${"a ".repeat(40)}`.repeat(2),
+  ]) {
+    const result = parseProductName(tooLong);
+
+    assert.equal(result.ok, false);
+  }
+
+  assert.equal(parseProductName(42).ok, false);
+});
+
+test("the app name is saved as parsed, cleared when blank, and kept when the form does not send it", async () => {
+  const current = resolveSettings(stored, {});
+  const named = { ...storedRow, product_name: "Old Name" };
+
+  const saved = await updateOrganizationSettings(
+    { ...form, productName: "  New    Name " },
+    current,
+    fakeDatabase(named).database,
+  );
+
+  assert.equal(saved.productName, "New Name");
+
+  const cleared = await updateOrganizationSettings(
+    { ...form, productName: "   " },
+    current,
+    fakeDatabase(named).database,
+  );
+
+  assert.equal(cleared.productName, null);
+
+  const kept = await updateOrganizationSettings(
+    form,
+    current,
+    fakeDatabase(named).database,
+  );
+
+  assert.equal(kept.productName, "Old Name");
+
+  await assert.rejects(
+    updateOrganizationSettings(
+      { ...form, productName: "a".repeat(MAX_PRODUCT_NAME_LENGTH + 1) },
+      current,
+      fakeDatabase(named).database,
+    ),
+    (error: unknown) =>
+      error instanceof OrganizationSettingsError &&
+      "productName" in error.fieldErrors,
+  );
 });

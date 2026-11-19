@@ -74,7 +74,49 @@ test("a <base> changes where relative addresses point", () => {
   );
 
   assert.equal(found[0]!.url, "https://cdn.example.com/assets/i.png");
-  assert.equal(found.at(-1)!.url, "https://cdn.example.com/favicon.ico");
+  // /favicon.ico is looked for on the page's own origin, not under <base>.
+  assert.equal(found.at(-1)!.url, "https://www.example.com/favicon.ico");
+});
+
+test("the first <base href> applies to the whole page, including links before it", () => {
+  const found = findLogoCandidates(
+    `<link rel="icon" href="a.png"><base target="_blank"><base href="https://cdn.example.com/one/"><base href="https://other.example.com/two/"><link rel="icon" href="b.png">`,
+    PAGE,
+  );
+
+  assert.deepEqual(
+    found.slice(0, 2).map((candidate) => candidate.url),
+    ["https://cdn.example.com/one/a.png", "https://cdn.example.com/one/b.png"],
+  );
+});
+
+test("numeric character references outside Unicode become U+FFFD instead of throwing", () => {
+  for (const reference of [
+    "&#x110000;",
+    "&#xD800;",
+    "&#99999999999;",
+    "&#0;",
+  ]) {
+    assert.equal(
+      parseAttributes(`content="a${reference}b"`).get("content"),
+      "a\uFFFDb",
+    );
+  }
+
+  assert.equal(parseAttributes(`content="&#x41;&#66;"`).get("content"), "AB");
+});
+
+test("hostile unterminated markup is scanned in linear time", () => {
+  for (const hostile of [
+    "<!--".repeat(262_144),
+    "<link ".repeat(174_762),
+    "<meta ".repeat(174_762) + "<!--",
+  ]) {
+    const started = Date.now();
+
+    findLogoCandidates(hostile, PAGE);
+    assert.ok(Date.now() - started < 1000, "scanning took too long");
+  }
 });
 
 test("the largest PNG comes first, then SVG, then og:image, then .ico, each once", () => {

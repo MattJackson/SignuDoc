@@ -561,3 +561,54 @@ test("a new install timestamps its seals from the start; a claimed older one kee
 
   assert.equal(await storedTimestampUrl(), null);
 });
+
+async function storedInstallerUserId(): Promise<string | null> {
+  const result = await database.query<{ installer_user_id: string | null }>(
+    `select installer_user_id from public.app_settings where id`,
+  );
+
+  return result.rows[0]?.installer_user_id ?? null;
+}
+
+test("setup records the account it made as the installer", async () => {
+  let createdId = "";
+
+  await completeSetup(setupInput, {
+    createAdminAccount: async ({ email }) => {
+      createdId = await insertUser(email);
+
+      return { userId: createdId };
+    },
+    database,
+    env,
+  });
+
+  assert.equal(await storedInstallerUserId(), createdId);
+});
+
+test("claiming an older install records the claiming account as the installer", async () => {
+  const claimEnv = { SETUP_TOKEN: "a-secret-of-the-owner" };
+  const userId = await insertUser("early@customer.example");
+
+  await completeSetup(
+    {
+      organizationName: "Second Wind Partners",
+      setupToken: claimEnv.SETUP_TOKEN,
+      supportAddress: "desk@customer.example",
+    },
+    {
+      createAdminAccount: async () => {
+        throw new Error("nobody is created when an install is claimed");
+      },
+      database,
+      env: claimEnv,
+      sessionUser: {
+        email: "early@customer.example",
+        emailVerified: true,
+        id: userId,
+      },
+    },
+  );
+
+  assert.equal(await storedInstallerUserId(), userId);
+});
