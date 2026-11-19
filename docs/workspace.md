@@ -75,3 +75,64 @@ directory, Drive and the Cloud calls of the setup) that the tests start on
 127.0.0.1. `GOOGLE_API_BASE_URL` and `GOOGLE_OAUTH_BASE_URL` point the app at
 it; they only take a loopback address, so set by mistake on a real
 deployment they are ignored.
+
+## Directory
+
+With the directory on, anyone sending a document sees people from the
+organization's directory as they type a signer's or copy recipient's name or
+address, and can pick one. Only active people are offered, and only their name
+and address reach the browser. Outside recipients are still typed in full.
+
+It is off until an administrator turns it on, in Settings or with
+`WORKSPACE_DIRECTORY=on`, so a site that could reach a directory does not
+start asking it unasked. The site only ever reads the directory.
+
+For Google Workspace, turn on the **Admin SDK API** in the Google Cloud
+project of the site's service account, then give that account read access in
+one of two ways:
+
+1. **A read-only administrator role (recommended).** In the Admin console,
+   under Account, Admin roles, create a role with only the Admin API
+   privileges **Users, Read** and **Groups, Read**, and assign it to the
+   service account. The site then reads the directory as itself, with no
+   domain-wide delegation, so it can never act as anyone in the
+   organization. Enter the Workspace's **Customer ID** (Admin console,
+   Account, Account settings; it starts with `C`) in Settings, or set
+   `GOOGLE_WORKSPACE_CUSTOMER_ID`.
+2. **Domain-wide delegation.** In the Admin console, under Security, API
+   controls, Domain-wide delegation, add the service account's client ID with
+   exactly these two scopes:
+
+   ```
+   https://www.googleapis.com/auth/admin.directory.user.readonly
+   https://www.googleapis.com/auth/admin.directory.group.readonly
+   ```
+
+   and name an administrator to read the directory as, in Settings or with
+   `GOOGLE_WORKSPACE_ADMIN_SUBJECT`. The Customer ID can then stay empty.
+
+**Test directory** in Settings looks you up through the same access the site
+uses, whether or not the directory is on yet. Google's errors are reported
+by their status only.
+
+## Administrators from a group
+
+Name a group, in Settings or with `WORKSPACE_ADMIN_GROUP`
+(`signudoc-admins@yourcompany.com`), and the directory decides who is an
+administrator: each time someone signs in with single sign-on, a member of
+the group (directly or through a nested group) becomes an administrator, and
+an administrator who has left it stops being one. It needs the directory to
+be on.
+
+- The last administrator is never removed, so a group emptied by mistake
+  cannot leave the site with none.
+- If the directory cannot be asked, nothing changes: a failed lookup is not
+  taken as "not a member", and the sign-in goes ahead.
+- Only an account whose address is confirmed is made an administrator.
+- Password sign-ins change nothing, so a break-glass account kept for when
+  the identity provider is down keeps its role.
+- Every change is in the site audit trail as a role change, with no one
+  acting and the group named.
+
+**Test administrator group** in Settings tells you whether you are in the
+group, before it can take your role away. Add yourself first.

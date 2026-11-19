@@ -30,6 +30,15 @@ export const WORKSPACE_SETTINGS = {
   "addIn.provider": { env: "WORKSPACE_ADDIN_PROVIDER" },
   "directory.provider": { env: "WORKSPACE_DIRECTORY_PROVIDER" },
   "files.provider": { env: "WORKSPACE_FILES_PROVIDER" },
+  // "on" turns the directory on: suggestions and the administrator group.
+  "directory.enabled": { env: "WORKSPACE_DIRECTORY" },
+  // A group's address. Its members are administrators (admin-group.ts).
+  "directory.adminGroup": { env: "WORKSPACE_ADMIN_GROUP" },
+  // The Google Workspace customer the directory is read for.
+  "google.customerId": { env: "GOOGLE_WORKSPACE_CUSTOMER_ID" },
+  // A Workspace administrator to read the directory as, with domain-wide
+  // delegation. Empty: the service account reads it with its own role.
+  "google.adminSubject": { env: "GOOGLE_WORKSPACE_ADMIN_SUBJECT" },
 } as const satisfies Record<string, { env: string }>;
 
 export type WorkspaceSettingKey = keyof typeof WORKSPACE_SETTINGS;
