@@ -1,0 +1,424 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { PLANNED_CHANNELS, safeErrorCode } from "./channel.ts";
+import {
+  BURST_KINDS,
+  IN_PLACE_KINDS,
+  listNotificationEvents,
+  notificationEventKinds,
+  notificationKindFor,
+  NOTIFICATION_EVENTS,
+} from "./events.ts";
+import {
+  buildNotificationMessage,
+  headlineText,
+  readNotificationPayload,
+  type NotificationEnvelope,
+} from "./message.ts";
+import {
+  MAX_DELIVERY_ATTEMPTS,
+  placementFor,
+  retryDelaySeconds,
+  updateForFailure,
+} from "./outbox.ts";
+import {
+  buildSlackTestMessage,
+  describeSlackError,
+  readNotificationThresholds,
+} from "./settings.ts";
+
+// The channel-independent parts of notifications: the event model, the
+// messages, and the retry schedule.
+
+const envelope: NotificationEnvelope = {
+  expiresAt: null,
+  id: "env-1",
+  ownerEmail: "sam@example.com",
+  ownerName: "Sam Sender",
+  signedCount: 1,
+  signerCount: 2,
+  status: "sent",
+  title: "Master services agreement",
+};
+
+test("audit events map to notification kinds, and the rest are dropped", () => {
+  assert.equal(notificationKindFor("audit", "sent"), "envelope_sent");
+  assert.equal(notificationKindFor("audit", "viewed"), "envelope_viewed");
+  assert.equal(notificationKindFor("audit", "signed"), "envelope_signed");
+  assert.equal(notificationKindFor("audit", "completed"), "envelope_completed");
+  assert.equal(notificationKindFor("audit", "declined"), "envelope_declined");
+  assert.equal(notificationKindFor("audit", "approved"), "envelope_approved");
+  assert.equal(notificationKindFor("audit", "rejected"), "envelope_rejected");
+  assert.equal(notificationKindFor("audit", "voided"), "envelope_voided");
+  assert.equal(notificationKindFor("audit", "expired"), "envelope_expired");
+  assert.equal(notificationKindFor("audit", "email_sent"), null);
+  assert.equal(notificationKindFor("audit", "consented"), null);
+  assert.equal(notificationKindFor("audit", "some_future_event"), null);
+  assert.equal(notificationKindFor("job", "envelope_stuck"), "envelope_stuck");
+  assert.equal(notificationKindFor("job", "backup_failed"), "backup_failed");
+  assert.equal(notificationKindFor("job", "signed"), null);
+});
+
+test("every kind has a definition, and the job's own kinds come from no audit event", () => {
+  assert.equal(listNotificationEvents().length, notificationEventKinds.length);
+
+  for (const kind of notificationEventKinds) {
+    assert.equal(NOTIFICATION_EVENTS[kind].kind, kind);
+  }
+
+  for (const kind of [
+    "envelope_expiring_soon",
+    "envelope_stuck",
+    "backup_failed",
+  ] as const) {
+    assert.equal(NOTIFICATION_EVENTS[kind].auditEvent, null);
+  }
+
+  assert.equal(NOTIFICATION_EVENTS.backup_failed.audience, "admin");
+});
+
+test("a message says what happened, who did it, and where the envelope stands", () => {
+  const message = buildNotificationMessage({
+    appUrl: "https://sign.example.com/",
+    envelope,
+    kind: "envelope_signed",
+    occurredAt: 1_900_000_000,
+    payload: { signerEmail: "riley@example.com", signerName: "Riley" },
+  });
+
+  assert.equal(
+    headlineText(message.headline),
+    "Riley signed Master services agreement — 1 of 2 signed",
+  );
+  assert.deepEqual(
+    message.headline.filter((part) => part.strong).map((part) => part.text),
+    ["Master services agreement"],
+  );
+  assert.deepEqual(message.details, [
+    "Out for signature",
+    "Sent by Sam Sender",
+  ]);
+  assert.equal(message.progress, "1 of 2 signed");
+  assert.equal(message.tone, "progress");
+  assert.equal(message.occurredAt, 1_900_000_000);
+  assert.deepEqual(message.actions, [
+    {
+      id: "open",
+      label: "Open envelope",
+      url: "https://sign.example.com/envelopes/env-1",
+    },
+  ]);
+  assert.equal(
+    message.text,
+    "Riley signed Master services agreement — 1 of 2 signed · Out for signature · Sent by Sam Sender",
+  );
+});
+
+test("each kind has its own headline, and none shouts", () => {
+  const headlines = notificationEventKinds.map((kind) =>
+    headlineText(
+      buildNotificationMessage({
+        appUrl: null,
+        envelope: kind === "backup_failed" ? null : envelope,
+        kind,
+        payload: { expiresAt: 1_900_000_000, idleDays: 7, signerName: "Riley" },
+      }).headline,
+    ),
+  );
+
+  assert.equal(new Set(headlines).size, headlines.length);
+  assert.ok(headlines.some((line) => /no activity for 7 days/.test(line)));
+  assert.ok(headlines.some((line) => /expires on/.test(line)));
+  assert.ok(headlines.every((line) => !line.includes("!")));
+});
+
+test("buttons: the certificate when complete, a reminder only for the sender", () => {
+  const actionIds = (
+    kind: Parameters<typeof buildNotificationMessage>[0]["kind"],
+    forSender: boolean,
+    status = "sent",
+  ) =>
+    buildNotificationMessage({
+      appUrl: "https://sign.example.com",
+      envelope: { ...envelope, status },
+      forSender,
+      kind,
+      payload: {},
+    }).actions.map((action) => action.id);
+
+  assert.deepEqual(actionIds("envelope_completed", false, "completed"), [
+    "certificate",
+    "open",
+  ]);
+  assert.deepEqual(actionIds("envelope_stuck", true), ["remind", "open"]);
+  assert.deepEqual(actionIds("envelope_expiring_soon", true), [
+    "remind",
+    "open",
+  ]);
+  assert.deepEqual(actionIds("envelope_stuck", false), ["open"]);
+  assert.deepEqual(actionIds("envelope_signed", true), ["open"]);
+  assert.equal(
+    buildNotificationMessage({
+      appUrl: "https://sign.example.com",
+      envelope: { ...envelope, status: "completed" },
+      kind: "envelope_completed",
+      payload: {},
+    }).actions[0]?.url,
+    "https://sign.example.com/api/envelopes/env-1/download?type=evidence",
+  );
+});
+
+test("without the site's address there are no buttons", () => {
+  assert.deepEqual(
+    buildNotificationMessage({
+      appUrl: null,
+      envelope,
+      kind: "envelope_completed",
+      payload: {},
+    }).actions,
+    [],
+  );
+  assert.deepEqual(
+    buildNotificationMessage({
+      appUrl: "https://sign.example.com",
+      envelope: null,
+      kind: "backup_failed",
+      payload: { status: "partial" },
+    }).actions,
+    [
+      {
+        id: "settings",
+        label: "Open Settings",
+        url: "https://sign.example.com/settings",
+      },
+    ],
+  );
+});
+
+test("progress edits one direct message, outcomes post a new one, and bursts wait", () => {
+  assert.equal(placementFor("envelope_signed", "user", true), "in_place");
+  assert.equal(placementFor("envelope_viewed", "user", true), "in_place");
+  assert.equal(placementFor("envelope_completed", "user", true), "new_message");
+  assert.equal(placementFor("envelope_declined", "user", true), "new_message");
+  assert.equal(placementFor("envelope_stuck", "user", true), "new_message");
+  assert.equal(
+    placementFor("envelope_completed", "channel", true),
+    "channel_thread",
+  );
+  assert.equal(placementFor("backup_failed", "channel", false), "standalone");
+  assert.equal(placementFor("backup_failed", "user", false), "standalone");
+  assert.ok(BURST_KINDS.has("envelope_signed"));
+  assert.ok(!BURST_KINDS.has("envelope_completed"));
+  assert.ok(!IN_PLACE_KINDS.has("envelope_expiring_soon"));
+});
+
+test("a payload keeps who did it and nothing else", () => {
+  assert.deepEqual(
+    readNotificationPayload({
+      declineReason: "Private reason",
+      documentText: "secret",
+      signerEmail: " riley@example.com ",
+      signerName: "Riley",
+      idleDays: 7,
+      expiresAt: "not a number",
+    }),
+    { idleDays: 7, signerEmail: "riley@example.com", signerName: "Riley" },
+  );
+  assert.deepEqual(readNotificationPayload(null), {});
+  assert.deepEqual(readNotificationPayload("text"), {});
+});
+
+test("retries wait longer each time, up to six hours", () => {
+  const none = () => 0;
+
+  assert.equal(retryDelaySeconds(1, none), 60);
+  assert.equal(retryDelaySeconds(2, none), 120);
+  assert.equal(retryDelaySeconds(3, none), 240);
+  assert.equal(retryDelaySeconds(20, none), 6 * 60 * 60);
+  // Up to a fifth more, so many failures do not all retry at once.
+  assert.equal(
+    retryDelaySeconds(1, () => 1),
+    72,
+  );
+});
+
+test("a failure becomes a later attempt, a pause, or the end", () => {
+  const now = 1_000_000;
+  const none = () => 0;
+
+  assert.deepEqual(
+    updateForFailure(
+      { error: "internal_error", outcome: "retry", retryAfterSeconds: null },
+      1,
+      now,
+      none,
+    ),
+    {
+      countAttempt: true,
+      error: "internal_error",
+      nextAttemptAt: now + 60,
+      status: "pending",
+    },
+  );
+  // Slack's own Retry-After wins when it is longer than the backoff.
+  assert.deepEqual(
+    updateForFailure(
+      { error: "http_503", outcome: "retry", retryAfterSeconds: 600 },
+      1,
+      now,
+      none,
+    ),
+    {
+      countAttempt: true,
+      error: "http_503",
+      nextAttemptAt: now + 600,
+      status: "pending",
+    },
+  );
+  // A rate limit is a pause, not a failed attempt.
+  assert.deepEqual(
+    updateForFailure(
+      { error: "ratelimited", outcome: "rate_limited", retryAfterSeconds: 30 },
+      MAX_DELIVERY_ATTEMPTS,
+      now,
+      none,
+    ),
+    {
+      countAttempt: false,
+      error: "ratelimited",
+      nextAttemptAt: now + 30,
+      status: "pending",
+    },
+  );
+  assert.deepEqual(
+    updateForFailure(
+      { error: "channel_not_found", outcome: "failed" },
+      1,
+      now,
+      none,
+    ),
+    { error: "channel_not_found", status: "failed" },
+  );
+  assert.deepEqual(
+    updateForFailure(
+      { error: "invalid_auth", outcome: "auth" },
+      MAX_DELIVERY_ATTEMPTS,
+      now,
+      none,
+    ),
+    { error: "invalid_auth", status: "failed" },
+  );
+  assert.equal(
+    updateForFailure({ error: "invalid_auth", outcome: "auth" }, 2, now, none)
+      .status,
+    "pending",
+  );
+});
+
+test("thresholds come from the environment, then settings, then defaults", () => {
+  assert.deepEqual(readNotificationThresholds({}, {}), {
+    expiringDays: 3,
+    expiringFromEnv: false,
+    stuckDays: 7,
+    stuckFromEnv: false,
+  });
+  assert.deepEqual(
+    readNotificationThresholds(
+      { NOTIFICATION_STUCK_DAYS: "0" },
+      { "notifications.expiringDays": "5", "notifications.stuckDays": "10" },
+    ),
+    {
+      expiringDays: 5,
+      expiringFromEnv: false,
+      stuckDays: 0,
+      stuckFromEnv: true,
+    },
+  );
+  assert.equal(
+    readNotificationThresholds({}, { "notifications.stuckDays": "999" })
+      .stuckDays,
+    60,
+  );
+});
+
+test("error codes are kept short and plain", () => {
+  assert.equal(safeErrorCode("channel_not_found"), "channel_not_found");
+  assert.equal(safeErrorCode("has spaces"), "unknown_error");
+  assert.equal(safeErrorCode(42), "unknown_error");
+  assert.equal(safeErrorCode("x".repeat(81)), "unknown_error");
+});
+
+test("the channels to come are listed, and Slack is not among them", () => {
+  assert.deepEqual(
+    PLANNED_CHANNELS.map((channel) => channel.id),
+    ["google_chat", "teams", "webhook"],
+  );
+});
+
+test("an expired envelope's message says it expired and has no due date", () => {
+  // An envelope that passed its deadline keeps the stored status 'sent'.
+  const message = buildNotificationMessage({
+    appUrl: "https://sign.example.com",
+    envelope: { ...envelope, expiresAt: 1_800_000_000, status: "sent" },
+    kind: "envelope_expired",
+    occurredAt: 1_800_000_100,
+    payload: {},
+  });
+
+  assert.ok(message.details.includes("Expired"), message.details.join(" | "));
+  assert.ok(
+    message.details.every((detail) => !detail.startsWith("Due ")),
+    message.details.join(" | "),
+  );
+});
+
+test("locally made client errors are not described as Slack's answer", () => {
+  for (const code of ["network_error", "timeout", "invalid_response"]) {
+    assert.doesNotMatch(describeSlackError(code), /Slack answered/);
+  }
+
+  const http = describeSlackError("http_503");
+
+  assert.doesNotMatch(http, /Slack answered/);
+  assert.match(http, /503/);
+});
+
+function collectButtons(value: unknown, found: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectButtons(item, found);
+    }
+  } else if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+
+    if (record.type === "button") {
+      found.push(record);
+    }
+
+    for (const child of Object.values(record)) {
+      collectButtons(child, found);
+    }
+  }
+
+  return found;
+}
+
+test("button text stays within Block Kit's 75 characters, even with a long name", () => {
+  const content = buildSlackTestMessage("envelope_completed", {
+    appUrl: "https://sign.example.test",
+    brand: { logoUrl: null, name: "N".repeat(120) },
+  });
+  const buttons = collectButtons(content) as {
+    text: { text: string };
+  }[];
+
+  assert.ok(buttons.length > 0);
+
+  for (const button of buttons) {
+    assert.ok(
+      button.text.text.length <= 75,
+      `button text is ${String(button.text.text.length)} characters`,
+    );
+  }
+});
