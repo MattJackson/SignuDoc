@@ -338,8 +338,8 @@ function ProjectChooser({ offer }: { offer: ProjectOffer }) {
       <p className="text-sm leading-6 text-(--secondary)">
         The APIs, the Picker key, the add-on and (off Cloud Run) the site&apos;s
         service account go in it. None of the APIs needs billing, so a new
-        project needs no billing account. Choose within{" "}
-        {Math.round(offer.waitSeconds / 60)} minutes.
+        project needs no billing account. Choose within {offer.waitSeconds}{" "}
+        seconds.
         {offer.reason ? ` ${offer.reason}` : ""}
       </p>
       <fieldset className="max-h-72 space-y-1 overflow-y-auto">

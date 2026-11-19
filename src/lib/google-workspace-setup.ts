@@ -18,6 +18,7 @@ import {
 } from "./integrations/google/addon/manifest.ts";
 import {
   readGoogleProjectId,
+  readApplicationDefaultLogin,
   readGoogleProjectNumber,
   resolveGoogleCredentials,
   type GoogleCredentialsSource,
@@ -310,7 +311,7 @@ function readHostedDomain(idToken: string | null): string | null {
 // instance, so it goes through the database.
 
 /** How long the run waits for the administrator to choose a project. */
-export const CHOICE_WAIT_MS = 180_000;
+export const CHOICE_WAIT_MS = 60_000;
 const CHOICE_POLL_MS = 1000;
 const WAITING_EVENT_MS = 15_000;
 // Choices nobody collected are removed after this long.
@@ -325,7 +326,7 @@ export async function submitProjectChoice(input: {
   const result = await getDb().query(
     `INSERT INTO public.google_setup_choices (run_id, user_id, choice, created_at)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (run_id) DO NOTHING`,
+     ON CONFLICT (run_id, user_id) DO NOTHING`,
     [
       input.runId,
       input.userId,
@@ -415,6 +416,8 @@ type RunInput = {
   exportDrive: boolean;
   /** How long to wait for the project choice; CHOICE_WAIT_MS by default. */
   choiceWaitMs?: number;
+  /** Reaches Google for the listing and the steps; tests slow it down. */
+  fetchImpl?: typeof fetch;
   /** Waits between polls; tests make it short. */
   sleep?: (ms: number) => Promise<void>;
 };
@@ -427,8 +430,8 @@ type RunInput = {
  */
 export async function runAutomaticSetup(input: RunInput): Promise<void> {
   // The run's time is counted from here, so the code exchange and the
-  // reads before the steps are inside it too. Only the wait for the
-  // administrator's choice is not.
+  // reads before the steps are inside it too, and so is the wait for the
+  // administrator's choice.
   const startedAt = Date.now();
   const env = input.env ?? process.env;
   const emit = (event: SetupEvent) => {
@@ -584,6 +587,9 @@ async function chooseAndRun({
   const sleep =
     input.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // Everything after the sign-in, the wait for the choice included, is
+  // held to the run's time.
+  const deadline = startedAt + SETUP_TIME_BUDGET_MS;
   const stored = await getIntegrationSettings(env);
   const [{ productName }, settings] = await Promise.all([
     getBranding(env),
@@ -593,8 +599,9 @@ async function chooseAndRun({
   const listed = await listSetupProjects({
     accessToken,
     clientProject,
-    deadline: startedAt + SETUP_TIME_BUDGET_MS,
+    deadline,
     env,
+    fetchImpl: input.fetchImpl,
     hostedDomain,
     sleep: input.sleep,
   });
@@ -611,7 +618,12 @@ async function chooseAndRun({
     ] as const
   ).find(([id]) => id && offered.some((item) => item.projectId === id));
   const runId = randomBytes(24).toString("base64url");
-  const spentMs = Date.now() - startedAt;
+  // The wait comes out of the run's own time, so the whole request stays
+  // inside the route's limit however long the choice takes.
+  const waitMs = Math.max(
+    0,
+    Math.min(input.choiceWaitMs ?? CHOICE_WAIT_MS, deadline - Date.now()),
+  );
 
   input.emit({
     newProjectName: workspaceProjectName(productName),
@@ -621,7 +633,7 @@ async function chooseAndRun({
     reason: preselect?.[1] ?? listed.problem,
     runId,
     type: "choose",
-    waitSeconds: Math.round((input.choiceWaitMs ?? CHOICE_WAIT_MS) / 1000),
+    waitSeconds: Math.round(waitMs / 1000),
   });
 
   const choice = await waitForProjectChoice({
@@ -629,7 +641,7 @@ async function chooseAndRun({
     runId,
     sleep,
     userId: input.actor.id,
-    waitMs: input.choiceWaitMs ?? CHOICE_WAIT_MS,
+    waitMs,
   });
   const chosen =
     choice && !choice.create
@@ -664,6 +676,20 @@ async function chooseAndRun({
       };
   const current = target.identity;
   const fixed = current && isFixed(current, env) ? current : null;
+  // An identity set where the site runs that cannot be read (a key that
+  // does not parse, impersonation with no gcloud login mounted) is still
+  // the one to use: the setup reports it rather than make another.
+  const envKey = readEnv(env, "GOOGLE_SERVICE_ACCOUNT_KEY");
+  const envTarget = readEnv(env, "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT");
+  const unreadable =
+    !current && (envKey || envTarget)
+      ? {
+          email: envKey ? null : (envTarget ?? null),
+          problem:
+            target.identityProblem ??
+            "The Google identity set where the site runs cannot be read.",
+        }
+      : null;
   const identityProject = googleProjectId(fixed?.email ?? null);
   const siteUrl = target.siteUrl;
   const addonProblem = addonAddressProblem(siteUrl);
@@ -681,8 +707,7 @@ async function chooseAndRun({
         },
     adminEmail,
     appName: productName,
-    // The steps get the run's time less what was spent before the choice.
-    deadline: Date.now() + SETUP_TIME_BUDGET_MS - spentMs,
+    deadline,
     emit: input.emit,
     env,
     existing: {
@@ -694,12 +719,19 @@ async function chooseAndRun({
       directory: stored["google.directory"] ?? null,
       exportDriveId: stored["drive.exportDriveId"] ?? null,
       pickerApiKey: stored["drive.pickerApiKey"] ?? null,
+      serviceAccountKeyName: stored["google.serviceAccountKeyName"] ?? null,
     },
     exportDrive: input.exportDrive,
+    fetchImpl: input.fetchImpl,
     extraProjects: [clientProject, identityProject].filter(
       (value): value is string => Boolean(value),
     ),
-    identity: { fixed, saved: current && !fixed ? current : null },
+    identity: {
+      fixed,
+      loginAvailable: readApplicationDefaultLogin(env) !== null,
+      saved: current && !fixed ? current : null,
+      unreadable,
+    },
     project,
     runTests: (state) => runChecks(adminEmail, input.actor.email, state, env),
     save: async (update) => {

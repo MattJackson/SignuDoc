@@ -32,12 +32,12 @@ import { isHostedMode } from "@/lib/utils/env";
 // api/admin/google/setup/choose. The token lives only for this request and
 // is revoked at the end.
 
-// runAutomaticSetup waits up to CHOICE_WAIT_MS (180 s) for the project
-// choice, and counts SETUP_TIME_BUDGET_MS (240 s) for everything else, code
-// exchange included; it starts no Google request after that. One request
-// still under way (15 s) and the revoke (15 s) end well before this limit.
-// Cloud Run's request timeout is set to match (examples/google-cloud-run).
-export const maxDuration = 600;
+// runAutomaticSetup holds everything, the code exchange and the wait for
+// the project choice included, to SETUP_TIME_BUDGET_MS (190 s,
+// workspace-setup.ts) and starts no Google request after it. One request
+// still under way (15 s) and the revoke (15 s) end well before this limit,
+// which is Vercel's without fluid compute and Cloud Run's usual timeout.
+export const maxDuration = 300;
 
 const bodySchema = z.object({
   code: z.string().trim().min(1).max(2048),
