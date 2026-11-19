@@ -40,7 +40,7 @@ The following are changes too, and go through the same record:
 
 - environment variables;
 - the Vercel, Neon or Resend plan or region;
-- the seal certificate;
+- the seal certificate and the timestamp server (Settings, Seal & timestamp, or `SEAL_P12_BASE64` and `SEAL_TIMESTAMP_URL`). Changing either does not touch records already sealed: each keeps the certificate and timestamp it was sealed with, and still verifies. A change made in Settings is in the install audit trail as "Settings changed" (area `seal`), without any key or password;
 - a new administrator;
 - turning Part 11 mode off or on.
 

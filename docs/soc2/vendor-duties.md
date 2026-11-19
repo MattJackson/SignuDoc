@@ -40,13 +40,13 @@ What each vendor offers, and which plan includes its report, was checked on 2026
 
 Only if you turn them on. Each is outside Vercel and set up by you.
 
-| Service                                         | When                                    | What to collect                                                                                        |
-| ----------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Your identity provider (Okta, Entra ID, Google) | Single sign-on (`SSO_ISSUER`)           | You already have it in scope. Note that removing someone there removes their access here.              |
-| A SIEM or log service                           | A Vercel log drain                      | Its report, and the retention you set.                                                                 |
-| eID Easy, or a trust service provider (CSC API) | Signatures in the signers' own names    | Their eIDAS qualification (the EU trusted list) and security report, if signed records depend on them. |
-| A certificate authority and timestamp server    | `SEAL_P12_BASE64`, `SEAL_TIMESTAMP_URL` | Their certificate policy and, for a qualified seal, their place on the EU trusted list.                |
-| A second Vercel team for backups                | `BACKUP_BLOB_READ_WRITE_TOKEN`          | Covered by Vercel's report. Record who has access to that team; keep it smaller than the main team.    |
+| Service                                         | When                                                                                                                         | What to collect                                                                                        |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Your identity provider (Okta, Entra ID, Google) | Single sign-on (`SSO_ISSUER`)                                                                                                | You already have it in scope. Note that removing someone there removes their access here.              |
+| A SIEM or log service                           | A Vercel log drain                                                                                                           | Its report, and the retention you set.                                                                 |
+| eID Easy, or a trust service provider (CSC API) | Signatures in the signers' own names                                                                                         | Their eIDAS qualification (the EU trusted list) and security report, if signed records depend on them. |
+| A certificate authority and timestamp server    | Settings, Seal & timestamp (a new install uses DigiCert's free timestamp server), or `SEAL_P12_BASE64`, `SEAL_TIMESTAMP_URL` | Their certificate policy and, for a qualified seal, their place on the EU trusted list.                |
+| A second Vercel team for backups                | `BACKUP_BLOB_READ_WRITE_TOKEN`                                                                                               | Covered by Vercel's report. Record who has access to that team; keep it smaller than the main team.    |
 
 ## The SignuDoc project
 
