@@ -146,6 +146,21 @@ const VALIDATORS: Partial<
     /^[A-Za-z0-9_]{1,64}$/.test(value)
       ? { value }
       : { error: "A customer ID is letters and digits, such as C01ab2cd3" },
+  // The Gmail and Drive add-on's values from Google, as
+  // `gcloud workspace-add-ons get-authorization` shows them.
+  "google.addonServiceAccount": (value) =>
+    /^[a-z0-9][a-z0-9-]*@[a-z0-9-]+(\.[a-z0-9-]+)*\.iam\.gserviceaccount\.com$/.test(
+      value.toLowerCase(),
+    )
+      ? { value: value.toLowerCase() }
+      : {
+          error:
+            "Enter the service account's address, ending in .iam.gserviceaccount.com",
+        },
+  "google.addonClientId": (value) =>
+    /^[0-9A-Za-z_.-]{6,200}$/.test(value)
+      ? { value }
+      : { error: "Enter the OAuth client ID that gcloud showed" },
   "addIn.provider": chooseProvider,
   "directory.provider": chooseProvider,
   "files.provider": chooseProvider,

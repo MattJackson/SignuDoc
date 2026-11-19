@@ -260,3 +260,80 @@ elsewhere can call it more often, with `CRON_SECRET` or
 `RETENTION_JOB_SECRET` as a bearer token like the daily cleanup. The
 Picker's page is the only one whose Content Security Policy lets Google's
 script and frames in.
+
+## The Gmail and Drive add-on
+
+The add-in is its own capability (`WorkspaceAddIn`), chosen with
+`WORKSPACE_ADDIN_PROVIDER` or `WORKSPACE_PROVIDER`. For Google it is a
+Google Workspace add-on with a side panel in Gmail and Drive:
+
+- **In Gmail**, beside an open email: its PDF and Word attachments, each
+  with "Send for signature", and the person's own envelopes with the
+  email's sender, with a "Nudge" button on those waiting on a signer.
+- **In Drive**, for the selected files: "Send for signature" for a PDF, a
+  Google Doc, Sheet or Slides file, or a document Drive can convert, and the
+  person's envelopes made from that file.
+
+Sending makes a draft, the same way as an upload, with where it came from
+noted on the envelope (`source_provider`, `source_kind`, `source_ref`); the
+sender of an email is suggested as its first signer. The card then links to
+the draft on the site, where the person chooses the signers, places the
+fields and sends it.
+
+All requests go to one route, `/api/workspace/add-in/<action>`, which
+answers 404 while no add-in is set up. An Outlook add-in in a Microsoft 365
+package would use the same route and contract.
+
+### How requests are verified
+
+The add-on is an HTTP add-on: Google calls the site directly, so the site
+needs a **public HTTPS address** (`APP_URL`). A local address or plain HTTP
+will not do; Settings says so. Every request is checked before anything is
+read:
+
+1. Google's system ID token, in the `Authorization` header, must be signed
+   by Google (its published keys, cached), issued by Google, not expired,
+   for the URL that was called, and for the add-on's own service account
+   (`GOOGLE_ADDON_SERVICE_ACCOUNT`) with a verified address.
+2. The user ID token must be signed by Google for the add-on's OAuth client
+   (`GOOGLE_ADDON_CLIENT_ID`), with a verified address, from a Google
+   Workspace account (personal Google accounts are turned away).
+3. The account on this site with that address, verified, is the person.
+   Someone with no account, or whose address is not verified yet, gets a
+   card telling them to sign in to the site first; the add-on never makes
+   accounts.
+
+Requests that fail verification are counted per address and refused once
+there are too many; each person's requests and drafts are limited too.
+
+### What is read
+
+Only with the tokens Google sends with each request, as the person: the
+open message and its attachments in Gmail
+(`gmail.addons.current.message.readonly`), and a selected file in Drive
+once the person has given it to the add-on (`drive.file`; the card asks
+Google for that file when needed). Nothing is read with the site's own
+service account, and Google's error bodies are never passed on.
+
+### Deploy it
+
+Settings, "Add-in for Google Workspace", shows everything with this site's
+URLs, and checks the setup:
+
+1. In a Google Cloud project, enable the Google Workspace add-ons, Gmail and
+   Drive APIs:
+   `gcloud services enable gsuiteaddons.googleapis.com gmail.googleapis.com drive.googleapis.com`.
+2. Download the deployment file from Settings (`signudoc-addon.json`). It
+   names one URL per action (`homepage`, `gmail-message`, `drive-items`,
+   `action`), the scopes above, and `SYSTEM_ID_TOKEN` as the authorization
+   header. Create the deployment:
+   `gcloud workspace-add-ons deployments create signudoc --deployment-file=signudoc-addon.json`
+   (later, `deployments replace` after the address changes).
+3. `gcloud workspace-add-ons get-authorization` shows the add-on's service
+   account and OAuth client ID. Save both in Settings, or set
+   `GOOGLE_ADDON_SERVICE_ACCOUNT` and `GOOGLE_ADDON_CLIENT_ID`.
+4. Try it yourself: `gcloud workspace-add-ons deployments install signudoc`.
+5. For the whole domain, publish it as a **private** listing on the Google
+   Workspace Marketplace (Marketplace SDK in the same project, visibility
+   "Private", with the same deployment), then install it for the domain
+   from the Admin console (Apps, Google Workspace Marketplace apps).

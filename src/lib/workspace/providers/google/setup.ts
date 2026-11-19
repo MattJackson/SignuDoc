@@ -5,12 +5,14 @@ import {
 } from "../../directory-settings.ts";
 import type { WorkspaceSettings } from "../../settings.ts";
 import type {
+  WorkspaceAddInSite,
   WorkspaceCheck,
   WorkspaceCheckContext,
   WorkspaceCheckTarget,
   WorkspaceIdentity,
   WorkspaceSetup,
 } from "../../types.ts";
+import { checkGoogleAddon, describeAddonDeployment } from "./addon/setup.ts";
 import {
   GOOGLE_SCOPES,
   googleCredentialsFor,
@@ -260,6 +262,8 @@ export function createGoogleSetup({
   }
 
   return {
+    addInDeployment: (site: WorkspaceAddInSite) =>
+      describeAddonDeployment({ env, settings, site }),
     async check(
       target: WorkspaceCheckTarget,
       context: WorkspaceCheckContext = {},
@@ -278,6 +282,9 @@ export function createGoogleSetup({
             env,
             stored: settings,
           }).check();
+        case "addIn":
+          // The Gmail and Drive add-on (addon/).
+          return checkGoogleAddon({ env, settings });
         default:
           return [];
       }

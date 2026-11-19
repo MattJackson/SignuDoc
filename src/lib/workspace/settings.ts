@@ -56,6 +56,10 @@ export const WORKSPACE_SETTINGS = {
   "google.pickerAppId": { env: "GOOGLE_PICKER_APP_ID" },
   "google.driveLabelId": { env: "GOOGLE_DRIVE_LABEL_ID" },
   "google.driveLabelFields": { env: "GOOGLE_DRIVE_LABEL_FIELDS" },
+  // The Gmail and Drive add-on: its service account and OAuth client, as
+  // Google shows them once it is deployed (providers/google/addon/).
+  "google.addonServiceAccount": { env: "GOOGLE_ADDON_SERVICE_ACCOUNT" },
+  "google.addonClientId": { env: "GOOGLE_ADDON_CLIENT_ID" },
 } as const satisfies Record<string, { env: string }>;
 
 export type WorkspaceSettingKey = keyof typeof WORKSPACE_SETTINGS;

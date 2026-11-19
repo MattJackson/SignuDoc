@@ -98,3 +98,34 @@ test("unknown keys are refused, and what the environment sets is left alone", ()
     { "directory.enabled": "on" },
   );
 });
+
+test("the add-on's values from Google are checked", () => {
+  assert.deepEqual(
+    parseWorkspaceSettingsInput(
+      {
+        settings: {
+          "google.addonClientId": "117000000000000000001",
+          "google.addonServiceAccount":
+            "Service-42@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+        },
+      },
+      {},
+    ),
+    {
+      "google.addonClientId": "117000000000000000001",
+      "google.addonServiceAccount":
+        "service-42@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+    },
+  );
+  assert.deepEqual(
+    Object.keys(
+      fieldErrorsOf({
+        settings: {
+          "google.addonClientId": "has spaces",
+          "google.addonServiceAccount": "someone@gmail.com",
+        },
+      }) ?? {},
+    ).sort(),
+    ["google.addonClientId", "google.addonServiceAccount"],
+  );
+});

@@ -1,5 +1,5 @@
 import type { EnvSource } from "../utils/env.ts";
-import type { WorkspaceSettings } from "./settings.ts";
+import type { WorkspaceSettingKey, WorkspaceSettings } from "./settings.ts";
 
 // What SignuDoc asks of the services an organization works in, with no
 // provider in it. Each capability is its own contract: a directory of
@@ -311,6 +311,40 @@ export interface WorkspaceAddIn {
   handle(action: string, request: Request): Promise<Response>;
 }
 
+/** What the site tells the provider about itself for the add-in. */
+export type WorkspaceAddInSite = {
+  brandColor: string | null;
+  /** The organization's name, when one is set. */
+  name: string | null;
+  /** The site's address, or null when it does not know it. */
+  url: string | null;
+};
+
+/**
+ * How an administrator deploys the add-in: the file and steps for the
+ * provider's own tools, and the values the provider gives back that the
+ * site needs to trust its requests (not secret).
+ */
+export type WorkspaceAddInDeployment = {
+  /** The file to give the provider, or null until the site knows its address. */
+  file: { content: string; name: string } | null;
+  /** Why the provider cannot call the add-in here, or null when it can. */
+  problem: string | null;
+  /** Whether the add-in answers requests: every value below is set. */
+  ready: boolean;
+  /** In order; command is something to run, when there is one. */
+  steps: Array<{ command: string | null; text: string }>;
+  values: Array<{
+    /** The environment variable that sets it, or the setting. */
+    env: string;
+    label: string;
+    /** The workspace setting it is saved as (settings.ts). */
+    setting: WorkspaceSettingKey;
+    source: "env" | "none" | "settings";
+    value: string | null;
+  }>;
+};
+
 // --- Setup and health --------------------------------------------------
 
 /** How the site itself reaches the provider, for the administrator. */
@@ -346,6 +380,8 @@ export type WorkspaceCheckContext = { email?: string };
 
 /** Every provider has this: its identity, and checks for Settings. */
 export interface WorkspaceSetup {
+  /** How to deploy the add-in, for a provider that has one. */
+  addInDeployment?(site: WorkspaceAddInSite): WorkspaceAddInDeployment;
   /** Runs the checks for one target. Never throws; [] when not offered. */
   check(
     target: WorkspaceCheckTarget,

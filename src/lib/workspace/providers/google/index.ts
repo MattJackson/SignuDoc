@@ -1,4 +1,5 @@
 import type { WorkspaceProviderPackage } from "../../types.ts";
+import { createGoogleAddIn } from "./addon/add-on.ts";
 import { googleDirectoryFor } from "./directory.ts";
 import { createGoogleFiles, isGoogleFilesSetUp } from "./drive/drive-files.ts";
 import { createGoogleSetup } from "./setup.ts";
@@ -13,6 +14,8 @@ import { createGoogleSetup } from "./setup.ts";
 // offered by this provider.
 
 export const googleWorkspace: WorkspaceProviderPackage = {
+  // The Gmail and Drive add-on (addon/).
+  addIn: ({ env, settings }) => createGoogleAddIn({ env, settings }),
   // The Admin SDK directory, read-only (directory.ts).
   directory: (context) => googleDirectoryFor(context),
   // Google Drive: start envelopes from Drive, and executed copies in a

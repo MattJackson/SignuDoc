@@ -140,4 +140,13 @@ test("the Google package with nothing configured says what to set", async () => 
       ["files.destination", false],
     ],
   );
+  // The add-on: its values and the site's address; Google's keys are not
+  // read before the values are set.
+  assert.deepEqual(
+    (await setupForGoogle.check("addIn")).map((check) => [check.id, check.ok]),
+    [
+      ["addIn.values", false],
+      ["addIn.address", false],
+    ],
+  );
 });
