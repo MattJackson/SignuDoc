@@ -15,24 +15,50 @@ There are eight parts. Only the first is needed for sign-in. Parts 4 to 6 are se
 7. [Google Drive](#7-google-drive): start envelopes from Drive, and keep executed copies in a Shared Drive
 8. [The Gmail and Drive add-on](#8-the-gmail-and-drive-add-on): send for signature from the side panel
 
+## Where the site runs
+
+Where the site runs and how Workspace is set up are separate. The image is the same everywhere (a laptop with `docker run` or [Docker Compose](../examples/docker-compose/), [Cloud Run](../examples/google-cloud-run/), any other host), and Workspace is set up in the app, the same way, on all of them.
+
+- **The site's Google identity.** The app calls Google as a service account. On Cloud Run (or GKE, Compute Engine) it is the one the site runs as, from the metadata server, with no key. Anywhere else the automatic setup makes `<app>-workspace` in the chosen project and stores a key for it, encrypted like the other secrets (`GOOGLE_SERVICE_ACCOUNT_KEY`, when set, wins). Where the organization forbids keys, see [No service account keys](#no-service-account-keys). Cloud Run only spares the key; everything else is the same.
+- **A public address.** Sign-in, the directory, Drive, the Picker and executed copies work from any address Google can send people back to, `http://localhost:8080` included. Two things need a public HTTPS address: the Gmail and Drive add-on (Google calls the site) and signers from outside the organization (they open links in emails). A Cloudflare Tunnel gives a laptop one ([examples/docker-compose](../examples/docker-compose/README.md)). Without it, the setup skips the add-on and says why.
+
 ## Setting it up: automatic or manual
 
 Onboarding starts by asking what the app should be called (such as BusbarSigner) and for the organization's logo, which can be taken from its own website. The app name is then suggested everywhere Google or Slack asks for one. The **Google Workspace** step (also at `/settings/google-setup`, and **Run automatic setup** in each Google panel in Settings) then offers two ways:
 
-**Automatic.** Google has no API for the consent screen or the OAuth client, so step A is one copy-paste: create the consent screen (**Internal**) and a **Web application** client with this site's origin and all three redirect URIs (sign-in `/api/auth/callback/sso`, Drive `/api/google/drive/callback`, setup `/settings/google-setup`), and paste the client ID and secret. Step B signs in once, through that client, as a Workspace super admin who can also change the Cloud project (an Owner). The server then, showing each step as it goes:
+**Automatic.** Google has no API for the consent screen or the OAuth client, so step A is one copy-paste: create the consent screen (**Internal**) and a **Web application** client with this site's origin and all three redirect URIs (sign-in `/api/auth/callback/sso`, Drive `/api/google/drive/callback`, setup `/settings/google-setup`), and paste the client ID and secret. Step B signs in once, through that client, as a Workspace super admin who can also change Cloud projects (an Owner).
 
-- a. turns on the APIs the app uses (Service Usage `services:batchEnable`): Admin SDK, Drive, Picker, Drive Labels, API Keys, IAM, IAM Credentials, Cloud Resource Manager;
-- b. creates the `<app> Picker` browser key, held to the Picker API and `https://<your site>/*` (API Keys API), and saves it with the project number;
-- c. reads and saves the Workspace customer ID (Admin SDK `customers.get`);
-- d. creates the `<app> directory reader` admin role (Users, Read and Groups, Read) and assigns it to the site's service account (Admin SDK roles and role assignments; the account's unique ID from IAM), and turns directory suggestions on;
-- e. creates the `<app> Executed` Shared Drive, if executed copies are wanted, with the service account as Content manager;
-- f. runs the directory, admin group and Shared Drive tests with the site's own service account.
+The page then lists the Google Cloud projects that account can use (Cloud Resource Manager `projects.search`), with the one the site runs in on Cloud Run, or the one used last time, suggested. Choose one, or **Create "<app> Workspace"**: it is made in your Workspace's organization (`organizations.search` by your domain, then `projects.create`). None of the APIs the app uses needs billing, so a new project needs no billing account. The run waits three minutes for the choice. The server then, showing each step as it goes:
 
-The token is used only during that request, revoked at the end (`https://oauth2.googleapis.com/revoke`) and never stored. Every step keeps what is already in place, so the setup can be run again to fix anything. It stops if the account is not a super admin or cannot change the project. The scopes asked for are `cloud-platform`, `admin.directory.rolemanagement`, `admin.directory.user.readonly`, `admin.directory.customer.readonly` and, with a Shared Drive, `drive`.
+- makes the new project if one was asked for, and saves which project is used;
+- turns on the APIs the app uses (Service Usage `services:batchEnable`): Admin SDK, Drive, Picker, Drive Labels, API Keys, IAM, IAM Credentials, Cloud Resource Manager, Google Workspace Add-ons, Gmail and the Marketplace SDK. It does this in the chosen project, and also in the sign-in client's project (the setup's own calls count against it) and the project of the site's service account;
+- gives the site its identity: on Cloud Run, or with `GOOGLE_SERVICE_ACCOUNT_KEY` or `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` set, it keeps that. Otherwise it makes the `<app>-workspace` service account (IAM `serviceAccounts.create`), makes a key for it (`serviceAccounts.keys.create`) and stores the key encrypted;
+- creates the `<app> Picker` browser key, held to the Picker API and `https://<your site>/*` (API Keys API), and saves it with the project number;
+- reads and saves the Workspace customer ID (Admin SDK `customers.get`);
+- creates the `<app> directory reader` admin role (Users, Read and Groups, Read) and assigns it to the service account (Admin SDK roles and role assignments; the account's unique ID from IAM), and turns directory suggestions on;
+- creates the `<app> Executed` Shared Drive, if executed copies are wanted, with the service account as Content manager;
+- deploys the Gmail and Drive add-on (Google Workspace Add-ons API `deployments.create`, or `replaceDeployment` when it changed), installs it for you (`deployments.install`) and saves the add-on's service account and client ID (`getAuthorization`). Skipped without a public HTTPS address;
+- runs the directory, admin group and Shared Drive tests with the site's own identity.
 
-**Manual.** The same steps a to f, each a project-scoped link, the values to copy, a field to paste into and a test. The parts below describe each in full.
+The token is used only during that request, revoked at the end (`https://oauth2.googleapis.com/revoke`) and never stored, whether the run finishes, fails, or no project is chosen. Every step keeps what is already in place, so the setup can be run again to fix anything. It stops if the account is not a super admin or cannot change the project. The scopes asked for are `cloud-platform` (projects, IAM, Service Usage, API keys and the add-on), `admin.directory.rolemanagement`, `admin.directory.user.readonly`, `admin.directory.customer.readonly` and, with a Shared Drive, `drive`.
 
-Drive's **Open with** (Drive UI integration) and the Marketplace listing have no API either; they stay an optional manual step (sections 7 and 8).
+**Manual.** The same steps, each a project-scoped link, the values to copy, a field to paste into and a test. The parts below describe each in full.
+
+The add-on's rollout to the whole domain needs a private Marketplace listing, which has no API: the last step of both ways is one guided step with links and every value to copy ([Install it for your organization](#install-it-for-your-organization)). Drive's **Open with** menu is an optional extra in Settings, Google Drive; the add-on's Drive side panel covers sending from Drive.
+
+### No service account keys
+
+Many organizations forbid service account keys (the `constraints/iam.disableServiceAccountKeyCreation` organization policy). The automatic setup then says so, makes the service account anyway, gives you **Service Account Token Creator** on it, and sets the site to impersonate it with your own gcloud login. Run the container with that login mounted:
+
+```bash
+gcloud auth application-default login
+docker run ... \
+  -v "$HOME/.config/gcloud/application_default_credentials.json:/home/node/.config/gcloud/application_default_credentials.json:ro" \
+  -e GOOGLE_IMPERSONATE_SERVICE_ACCOUNT=<app>-workspace@<project>.iam.gserviceaccount.com \
+  signudoc
+```
+
+The app reads the login's refresh token, and the IAM Credentials API (`generateAccessToken`, and `signJwt` for domain-wide delegation) gives it the service account's tokens. `GOOGLE_APPLICATION_CREDENTIALS` can point at the file instead of the default path. The setup page and Settings show which identity is in use: "Runs on Google Cloud as …", "Uses the stored key for …", "Impersonates … with your gcloud login", or none and what to do.
 
 ## 1. Google sign-in
 
@@ -84,7 +110,7 @@ With the directory on, the signer and copy-recipient fields (when preparing an e
 The app reads the directory as a Google service account, through the Admin SDK Directory API, read-only:
 
 - **On Google Cloud** (Cloud Run, GKE, Compute Engine) it is the service account the site runs as, with no key stored. Give the site its own service account rather than the default compute one.
-- **Anywhere else**, set `GOOGLE_SERVICE_ACCOUNT_KEY` to a service account key (the JSON file, or the same in base64).
+- **Anywhere else**, the automatic setup makes one and stores its key encrypted, or, where keys are forbidden, the site impersonates it with your gcloud login ([No service account keys](#no-service-account-keys)). By hand, set `GOOGLE_SERVICE_ACCOUNT_KEY` to a service account key (the JSON file, or the same in base64).
 
 Settings shows which service account the site runs as, with a copy button. In the Google Cloud project, enable the **Admin SDK API**.
 
@@ -224,7 +250,7 @@ Part 11 envelopes are never asked: their signers already give their account's em
 Four features, each optional and off until set up, in Settings, Google Workspace, Google Drive (and the Google Drive step of onboarding):
 
 - **Start from Google Drive**: "Choose from Google Drive" on the new-envelope page opens the Google Picker. A PDF, a Word, OpenDocument or RTF document, or a Google Doc, Sheet or Slides file becomes a draft.
-- **Open with**: "Open with" in Drive's own menu, for PDF and Word files and (with importing on) Google Docs.
+- **Open with** (an optional extra): "Open with" in Drive's own menu, for PDF and Word files and (with importing on) Google Docs. The add-on's Drive side panel already sends files from Drive, so this is collapsed in Settings and not part of the setup.
 - **Executed copies in a Shared Drive**: every completed envelope's sealed PDF and audit certificate, put in a Shared Drive by the site's service account.
 - **Labels on executed copies**: a Drive label on each executed copy, with its fields filled from the envelope.
 
@@ -333,10 +359,12 @@ Until both values below are saved, the add-on's URLs answer 404. Requests are li
 
 ### Deploy it
 
-In Settings, Google Workspace add-on (and the onboarding step of the same name):
+The automatic setup deploys it: it creates the HTTP deployment `signudoc` in the chosen project with this site's URLs (or replaces it when the site's address changed), installs it for the administrator who ran the setup, and saves the add-on's service account and OAuth client ID. It needs a public HTTPS address; on `localhost` or plain `http` the step is skipped with the reason.
+
+By hand, in Settings, Google Workspace add-on (and the onboarding step of the same name):
 
 1. **The deployment JSON**, with this site's URLs, to copy or download as `signudoc-addon.json`. It is built from `APP_URL` (or `BETTER_AUTH_URL`). The site's URLs are `https://<your site>/api/google/addon/homepage`, `/gmail-message`, `/drive-items` and `/action`.
-2. **The commands**, in a terminal signed in to the Google Cloud project that will own the add-on (the one the site runs in is a good choice):
+2. **The commands**, in a terminal signed in to the Google Cloud project that will own the add-on (the one the setup uses is a good choice):
 
    ```bash
    gcloud services enable gsuiteaddons.googleapis.com gmail.googleapis.com drive.googleapis.com
@@ -353,10 +381,11 @@ In Settings, Google Workspace add-on (and the onboarding step of the same name):
 
 ### Install it for your organization
 
-To give it to everyone, privately, without publishing it to the public Marketplace:
+To give it to everyone, privately, without publishing it to the public Marketplace. Google has no API for this, so it is one guided step at the end of the setup page, with links that open the right project and a copy button for every value (app name, descriptions, deployment ID, scopes, icon downloads, support, privacy and terms URLs):
 
-1. In the same Google Cloud project, enable the **Google Workspace Marketplace SDK**. Under **App configuration**, set the visibility to **Private**, choose **Google Workspace add-on**, pick **Deploy using an alternate runtime** and enter the deployment ID, `signudoc`. Fill in the store listing and publish. A private app is listed only in your own domain and is not reviewed by Google.
-2. A Workspace administrator opens the Admin console, **Apps**, **Google Workspace Marketplace apps**, finds it under the apps for your domain, and installs it for everyone or for chosen organizational units. With an administrator install, people are not asked to allow it themselves.
+1. **App configuration** of the Google Workspace Marketplace SDK: visibility **Private**, installation **Admin only**, app integration **Google Workspace add-on** with the deployment ID `signudoc`, the add-on's scopes and the developer details.
+2. **Store listing**: the name, descriptions, icons (32, 48, 96 and 128 pixels), a screenshot and the links, then **Publish**. A private app is listed only in your own domain and is not reviewed by Google.
+3. A Workspace administrator opens the listing and chooses **Admin install**, or opens the Admin console, **Apps**, **Google Workspace Marketplace apps**, and installs it for everyone or for chosen organizational units. With an administrator install, people are not asked to allow it themselves.
 
 ### Behind a proxy
 
@@ -364,29 +393,31 @@ The system ID token's audience is the URL Google calls, which is built from this
 
 ## Environment variables
 
-| Variable                                              | Same as                                                  |
-| ----------------------------------------------------- | -------------------------------------------------------- |
-| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`    | The OAuth client (all three; any one set locks the form) |
-| `SSO_NAME`                                            | Button name                                              |
-| `PASSWORD_SIGN_IN`, `PASSWORD_SIGN_IN_ALLOWED_EMAILS` | Password sign-in and break-glass addresses               |
-| `GOOGLE_WORKSPACE_DOMAINS`                            | Workspace domains                                        |
-| `GOOGLE_SERVICE_ACCOUNT_KEY`                          | The service account, off Google Cloud                    |
-| `GOOGLE_WORKSPACE_DIRECTORY`                          | `on` or `off`: suggestions from the directory            |
-| `GOOGLE_WORKSPACE_ADMIN_SUBJECT`                      | Act as administrator (domain-wide delegation only)       |
-| `GOOGLE_WORKSPACE_CUSTOMER_ID`                        | Customer ID                                              |
-| `GOOGLE_ADMIN_GROUP`                                  | Administrator group                                      |
-| `GOOGLE_PICKER_API_KEY`, `GOOGLE_DRIVE_APP_ID`        | Browser API key and project number, for the Picker       |
-| `GOOGLE_DRIVE_EXPORT_DRIVE_ID`                        | Shared Drive for executed copies                         |
-| `GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`                  | Folder layout                                            |
-| `GOOGLE_DRIVE_LABEL_ID`, `GOOGLE_DRIVE_LABEL_FIELDS`  | Label on executed copies, and what fills its fields      |
-| `GOOGLE_DRIVE_LABELS_SUBJECT`                         | Apply labels as (domain-wide delegation only)            |
-| `GOOGLE_ADDON_SERVICE_ACCOUNT`                        | The add-on's service account                             |
-| `GOOGLE_ADDON_CLIENT_ID`                              | The add-on's OAuth client ID                             |
-| `GOOGLE_ADDON_AUDIENCE`                               | Extra URLs accepted as the system ID token's audience    |
-| `DIRECTORY_SYNC`                                      | `on` or `off`: offboarding from the directory            |
-| `DIRECTORY_SYNC_MAX_PER_RUN`                          | Most people offboarded per run, 1 to 500 (default 10)    |
-| `MANAGER_APPROVAL`                                    | `off`, `suggest` or `require`: the sender's manager rule |
-| `GOOGLE_SIGNING`                                      | `off`, `offer` or `require`: employees sign with Google  |
+| Variable                                              | Same as                                                   |
+| ----------------------------------------------------- | --------------------------------------------------------- |
+| `SSO_ISSUER`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`    | The OAuth client (all three; any one set locks the form)  |
+| `SSO_NAME`                                            | Button name                                               |
+| `PASSWORD_SIGN_IN`, `PASSWORD_SIGN_IN_ALLOWED_EMAILS` | Password sign-in and break-glass addresses                |
+| `GOOGLE_WORKSPACE_DOMAINS`                            | Workspace domains                                         |
+| `GOOGLE_SERVICE_ACCOUNT_KEY`                          | The service account's key; wins over the stored one       |
+| `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`                  | Act as this service account with the mounted gcloud login |
+| `GOOGLE_APPLICATION_CREDENTIALS`                      | Where the gcloud login is, if not the default path        |
+| `GOOGLE_WORKSPACE_DIRECTORY`                          | `on` or `off`: suggestions from the directory             |
+| `GOOGLE_WORKSPACE_ADMIN_SUBJECT`                      | Act as administrator (domain-wide delegation only)        |
+| `GOOGLE_WORKSPACE_CUSTOMER_ID`                        | Customer ID                                               |
+| `GOOGLE_ADMIN_GROUP`                                  | Administrator group                                       |
+| `GOOGLE_PICKER_API_KEY`, `GOOGLE_DRIVE_APP_ID`        | Browser API key and project number, for the Picker        |
+| `GOOGLE_DRIVE_EXPORT_DRIVE_ID`                        | Shared Drive for executed copies                          |
+| `GOOGLE_DRIVE_EXPORT_FOLDER_PATTERN`                  | Folder layout                                             |
+| `GOOGLE_DRIVE_LABEL_ID`, `GOOGLE_DRIVE_LABEL_FIELDS`  | Label on executed copies, and what fills its fields       |
+| `GOOGLE_DRIVE_LABELS_SUBJECT`                         | Apply labels as (domain-wide delegation only)             |
+| `GOOGLE_ADDON_SERVICE_ACCOUNT`                        | The add-on's service account                              |
+| `GOOGLE_ADDON_CLIENT_ID`                              | The add-on's OAuth client ID                              |
+| `GOOGLE_ADDON_AUDIENCE`                               | Extra URLs accepted as the system ID token's audience     |
+| `DIRECTORY_SYNC`                                      | `on` or `off`: offboarding from the directory             |
+| `DIRECTORY_SYNC_MAX_PER_RUN`                          | Most people offboarded per run, 1 to 500 (default 10)     |
+| `MANAGER_APPROVAL`                                    | `off`, `suggest` or `require`: the sender's manager rule  |
+| `GOOGLE_SIGNING`                                      | `off`, `offer` or `require`: employees sign with Google   |
 
 ## Troubleshooting
 
@@ -402,3 +433,6 @@ The system ID token's audience is the URL Google calls, which is built from this
 - **"The Google Workspace directory names no manager for you"** when sending: set the user's manager in the Admin console (User information, Manager), or ask your HR sync to. Lookups are cached for a minute.
 - **"You are signed in with a password"** on a signing page: the employee is signed in to this site with a password. Sign out, then choose Continue with Google.
 - **"This account was suspended or removed in your organization's Google Workspace"** at sign-in: the offboarding job blocked the account. Make the account active in Google again and the next run lifts the block.
+- **"Your organization does not allow service account keys"** in the automatic setup: the organization policy forbids keys. Run the container with your gcloud login and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` as the setup shows ([No service account keys](#no-service-account-keys)), or allow keys for the project and run the setup again.
+- **"Impersonates …" is not shown after mounting the login**: the login file is not at `/home/node/.config/gcloud/application_default_credentials.json` (or `GOOGLE_APPLICATION_CREDENTIALS`), or your account no longer has Service Account Token Creator on the service account. A 403 from `generateAccessToken` in the logs means the latter.
+- **The add-on step says the address is not public**: set `APP_URL` to a public `https://` address (a Cloudflare Tunnel works on a laptop) and run the setup again.
