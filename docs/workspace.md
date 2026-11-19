@@ -203,3 +203,60 @@ blocked and how many envelopes were handed over), and **Run now**, which
 runs it at once as the schedule would. In the site audit trail (Settings,
 Security) each block, each lifted block and each hand-over has its own line,
 naming the person, the directory's reason and the envelopes that moved.
+
+## Files: start from Drive, and copies of completed envelopes
+
+Files are their own capability (`WorkspaceFiles`), chosen with
+`WORKSPACE_FILES_PROVIDER` or `WORKSPACE_PROVIDER`. Google Drive offers two
+parts, each off until it is set up:
+
+- **Start an envelope from Drive.** On the new-envelope page, "Start from
+  Google Drive" opens a page with the Google Picker. Each person connects
+  their own Drive once (OAuth, the `drive.file` scope only: the site can
+  read just the files they pick), picks a PDF, a Google Doc, Sheet or
+  Slides file, or a Word, Excel, PowerPoint, OpenDocument or RTF file, and
+  it becomes a draft, made into a PDF by Drive if it is not one. The
+  refresh token is kept per person in `workspace_file_connections`,
+  encrypted with a key derived from `BETTER_AUTH_SECRET`; disconnecting (in
+  Settings or on that page) revokes it at Google.
+- **Copies of completed envelopes.** When an envelope is completed, its
+  signed PDF and its certificate are put in a Shared Drive an administrator
+  chose, in folders laid out by a pattern (by default
+  `{yyyy}/{yyyy-MM-dd} — {title} — {shortId}`). The copy is written to an
+  outbox (`workspace_exports`) in the same transaction as the completion,
+  tried right after it, and tried again by `/api/internal/workspace-export`
+  with a growing wait, up to eight times; Settings lists the copies that
+  failed and can try one again. A retry never makes a second copy, and
+  completion never waits for, or fails because of, the copy. Optionally a
+  Drive label is put on the signed PDF, with envelope values (title, sender,
+  completed date, counterparty and so on) in its fields.
+
+Set it up in Settings, "Shared folder for completed envelopes", or with the
+variables below; the check there tests the Shared Drive, the label and the
+Picker's setup.
+
+1. In the Google Cloud project, enable the **Google Drive API**, the
+   **Google Picker API** and, for labels, the **Drive Labels API**.
+2. For the Picker: create a browser API key restricted to this site's
+   address and the Picker API (`GOOGLE_PICKER_API_KEY`), and note the
+   project number (`GOOGLE_PICKER_APP_ID`).
+3. For each person's connection: an OAuth client of type Web application
+   (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`). When sign-in
+   already uses Google (`SSO_ISSUER=https://accounts.google.com`), its
+   client is used and nothing more is needed. Add
+   `https://<your site>/api/workspace/files/callback` to the client's
+   authorized redirect URIs.
+4. For copies: add the site's service account to the Shared Drive as a
+   **Content manager**, and give its ID (or its address from the browser)
+   as `WORKSPACE_EXPORT_DESTINATION`. `WORKSPACE_EXPORT_FOLDER_PATTERN`
+   changes the folders; the last part is the file's name.
+5. For a label: publish one in the Admin console (Labels), let the service
+   account apply it, and set `GOOGLE_DRIVE_LABEL_ID` and
+   `GOOGLE_DRIVE_LABEL_FIELDS`, a JSON object from field ID to value, such
+   as `{"field1":"title","field2":"counterparty"}`.
+
+The retry job runs once a day on Vercel (`vercel.json`); a scheduler
+elsewhere can call it more often, with `CRON_SECRET` or
+`RETENTION_JOB_SECRET` as a bearer token like the daily cleanup. The
+Picker's page is the only one whose Content Security Policy lets Google's
+script and frames in.

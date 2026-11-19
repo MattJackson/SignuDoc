@@ -137,22 +137,165 @@ export class ExportError extends Error {
   }
 }
 
-/** Files: start an envelope from one, and keep executed copies in one place. */
+/**
+ * The facts about a completed envelope that can go into ExportMetadata,
+ * by key, with their names for the administrator. The provider decides
+ * where each goes (google.driveLabelFields maps Drive label fields to
+ * these keys).
+ */
+export const EXPORT_METADATA_KEYS = [
+  "title",
+  "senderName",
+  "senderEmail",
+  "completedDate",
+  "counterparty",
+  "counterpartyEmail",
+  "envelopeId",
+] as const;
+
+export type ExportMetadataKey = (typeof EXPORT_METADATA_KEYS)[number];
+
+export const EXPORT_METADATA_NAMES: Record<ExportMetadataKey, string> = {
+  completedDate: "Completed date (YYYY-MM-DD)",
+  counterparty: "Counterparty (first outside signer's name)",
+  counterpartyEmail: "Counterparty's email address",
+  envelopeId: "Envelope ID",
+  senderEmail: "Sender's email address",
+  senderName: "Sender's name",
+  title: "Envelope title",
+};
+
+export function isExportMetadataKey(
+  value: unknown,
+): value is ExportMetadataKey {
+  return (
+    typeof value === "string" &&
+    (EXPORT_METADATA_KEYS as readonly string[]).includes(value)
+  );
+}
+
+/** A person's own connection to the provider's files. */
+export type FilesConnection = {
+  /** The provider account that agreed, such as a Google address. */
+  account: string;
+  /** Unix seconds. */
+  connectedAt: number;
+};
+
+/**
+ * What the person's browser needs to show the provider's own file picker,
+ * tagged with the provider so the page loads the right one. The access
+ * token is short-lived and can only reach files the person picks.
+ */
+export type FilesPickerConfig = {
+  accessToken: string;
+  /** The browser API key, restricted to this site and the Picker API. */
+  apiKey: string;
+  /** The Cloud project number. */
+  appId: string;
+  /** The kinds of file offered: those that can be made into a PDF. */
+  mimeTypes: readonly string[];
+  provider: "google";
+};
+
+export type FilesConnectionErrorCode =
+  /** The person said no, or did not grant what is needed. */
+  | "denied"
+  /** The provider could not be reached or answered badly. */
+  | "failed"
+  /** The site is not set up for per-person connections. */
+  | "not_configured"
+  /** The person has no connection (any more). */
+  | "not_connected"
+  /** The person agreed with an account that is not theirs on this site. */
+  | "wrong_account";
+
+/** A per-person connection that cannot be made or used. */
+export class FilesConnectionError extends Error {
+  readonly code: FilesConnectionErrorCode;
+
+  constructor(code: FilesConnectionErrorCode, message: string) {
+    super(message);
+    this.name = "FilesConnectionError";
+    this.code = code;
+  }
+}
+
+/** A file that cannot be made into a PDF: the message is for the person. */
+export class FileImportError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "FileImportError";
+  }
+}
+
+/**
+ * Files: start an envelope from one, and keep executed copies in one place.
+ *
+ * Starting from a file uses each person's own connection, made with the
+ * provider's OAuth flow (authorization code with PKCE). The app keeps the
+ * state, the return path and the redirect address
+ * (/api/workspace/files/callback); the provider builds the address to send
+ * the person to, and turns the code that comes back into a connection it
+ * keeps, encrypted (workspace/file-connections.ts).
+ *
+ * The provider builds this once either part is set up, and null before.
+ * Each part stays off until it is set up on its own: canImport is false
+ * without the picker's setup, and nothing is exported while
+ * files.exportDestination is empty.
+ */
 export interface WorkspaceFiles {
+  /** Whether people can start envelopes from a file. */
+  readonly canImport: boolean;
+  /** The person's connection, or null when they have not connected. */
+  connection(userId: string): Promise<FilesConnection | null>;
+  /** Forgets the person's connection and revokes it. True when there was one. */
+  disconnect(userId: string): Promise<boolean>;
   /**
    * Puts the executed copies into the shared location. Safe to call again
    * after a failure: copies already there are found, not made twice.
    */
   exportExecutedCopies(request: ExportRequest): Promise<ExportResult>;
   /**
+   * Turns the provider's answer into the person's connection, and keeps
+   * it. Throws FilesConnectionError for an answer that cannot be used.
+   */
+  finishConnect(input: {
+    email: string;
+    params: URLSearchParams;
+    redirectUri: string;
+    /** What startConnect returned as secret. */
+    secret: string;
+    userId: string;
+  }): Promise<FilesConnection>;
+  /**
    * Reads a file the person picked, with their own connection to the
-   * provider, converted to PDF.
+   * provider, converted to PDF. Throws FilesConnectionError when the
+   * connection is missing, FileImportError when the file cannot be used.
    */
   importFile(input: {
     fileId: string;
     signal?: AbortSignal;
     userId: string;
   }): Promise<ImportedDocument>;
+  /** The provider's name for its files, for buttons: "Google Drive". */
+  readonly name: string;
+  /**
+   * The destination's id from what an administrator pasted (the id itself,
+   * or its address in the browser), or null when it is neither.
+   */
+  normalizeDestination(value: string): string | null;
+  /** What the picker needs. Throws FilesConnectionError when it cannot. */
+  pickerConfig(userId: string): Promise<FilesPickerConfig>;
+  /**
+   * Where to send the person to connect, and a secret (a PKCE verifier)
+   * for the app to keep until they come back.
+   */
+  startConnect(input: {
+    email: string;
+    redirectUri: string;
+    state: string;
+  }): Promise<{ secret: string; url: string }>;
 }
 
 // --- Add-in ------------------------------------------------------------

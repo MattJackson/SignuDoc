@@ -52,6 +52,9 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   two_factor_enabled: "Two-step sign-in turned on",
   two_factor_requirement_changed: "Two-step sign-in requirement changed",
   two_factor_reset: "Two-step sign-in reset by an administrator",
+  workspace_export_retried: "Copy of a completed envelope tried again",
+  workspace_files_connected: "Workspace files connected",
+  workspace_files_disconnected: "Workspace files disconnected",
 };
 
 const SIGN_IN_FAILURE_REASONS: Record<string, string> = {

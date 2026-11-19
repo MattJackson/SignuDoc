@@ -1,5 +1,6 @@
 import type { WorkspaceProviderPackage } from "../../types.ts";
 import { googleDirectoryFor } from "./directory.ts";
+import { createGoogleFiles, isGoogleFilesSetUp } from "./drive/drive-files.ts";
 import { createGoogleSetup } from "./setup.ts";
 
 // Google Workspace as a workspace provider. Everything Google is in this
@@ -14,6 +15,12 @@ import { createGoogleSetup } from "./setup.ts";
 export const googleWorkspace: WorkspaceProviderPackage = {
   // The Admin SDK directory, read-only (directory.ts).
   directory: (context) => googleDirectoryFor(context),
+  // Google Drive: start envelopes from Drive, and executed copies in a
+  // Shared Drive (drive/).
+  files: ({ env, settings }) =>
+    isGoogleFilesSetUp(settings, env)
+      ? createGoogleFiles({ env, stored: settings })
+      : null,
   id: "google",
   label: "Google Workspace",
   setup: ({ env, settings }) => createGoogleSetup({ env, settings }),

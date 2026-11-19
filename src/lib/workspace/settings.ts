@@ -46,6 +46,16 @@ export const WORKSPACE_SETTINGS = {
   // The organization's email domains, comma-separated: only accounts in
   // them are asked about. Empty: the sign-up rule's domains.
   "directory.domains": { env: "WORKSPACE_DIRECTORY_DOMAINS" },
+  // Files: where executed copies go (a Shared Drive id for Google), and in
+  // which folders (exports.ts).
+  "files.exportDestination": { env: "WORKSPACE_EXPORT_DESTINATION" },
+  "files.exportFolderPattern": { env: "WORKSPACE_EXPORT_FOLDER_PATTERN" },
+  // The Google Picker's browser key and Cloud project number, and the Drive
+  // label put on executed copies with which value goes in each field (JSON).
+  "google.pickerApiKey": { env: "GOOGLE_PICKER_API_KEY" },
+  "google.pickerAppId": { env: "GOOGLE_PICKER_APP_ID" },
+  "google.driveLabelId": { env: "GOOGLE_DRIVE_LABEL_ID" },
+  "google.driveLabelFields": { env: "GOOGLE_DRIVE_LABEL_FIELDS" },
 } as const satisfies Record<string, { env: string }>;
 
 export type WorkspaceSettingKey = keyof typeof WORKSPACE_SETTINGS;

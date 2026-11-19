@@ -133,5 +133,11 @@ test("the Google package with nothing configured says what to set", async () => 
   assert.equal((await setupForGoogle.check("identity"))[0]?.ok, false);
   // With no identity the directory cannot be read either.
   assert.equal((await setupForGoogle.check("directory"))[0]?.ok, false);
-  assert.deepEqual(await setupForGoogle.check("files"), []);
+  assert.deepEqual(
+    (await setupForGoogle.check("files")).map((check) => [check.id, check.ok]),
+    [
+      ["files.picker", false],
+      ["files.destination", false],
+    ],
+  );
 });

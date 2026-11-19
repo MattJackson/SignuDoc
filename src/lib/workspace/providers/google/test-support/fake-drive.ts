@@ -1071,6 +1071,8 @@ function handleDrives(context: FakeRequest, rest: string[]) {
     id: string;
     name: string;
   }) => ({
+    // The service account manages every fake shared drive.
+    capabilities: { canAddChildren: true },
     createdTime: drive.createdTime,
     id: drive.id,
     kind: "drive#drive",

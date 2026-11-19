@@ -23,6 +23,7 @@ import {
   needsCustomerId,
   readGoogleDirectoryConfig,
 } from "./directory.ts";
+import { createGoogleFiles } from "./drive/drive-files.ts";
 
 // The site's Google identity and the checks Settings runs for Google
 // (WorkspaceSetup in ../../types.ts). The site acts as a Google service
@@ -270,6 +271,13 @@ export function createGoogleSetup({
           return [await checkDirectory(context)];
         case "adminGroup":
           return [await checkAdminGroup(context)];
+        case "files":
+          // The Picker, the Shared Drive and the label (drive/).
+          return createGoogleFiles({
+            credentials: credentialsFor,
+            env,
+            stored: settings,
+          }).check();
         default:
           return [];
       }
