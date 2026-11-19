@@ -12,7 +12,7 @@
 #   every other setting of the service is kept.
 #
 # It signs in to Google Cloud through Workload Identity Federation, so no
-# key is stored. deploy/google-cloud/setup.sh with GITHUB_REPOSITORY set
+# key is stored. examples/google-cloud-run/setup.sh with GITHUB_REPOSITORY set
 # makes the pool, the provider and the deploy service account. Then set
 # these repository variables (Settings, Secrets and variables, Actions,
 # Variables). None of them is a secret.
@@ -34,7 +34,7 @@
 # the variables above name others. The backup bucket is set only when
 # BACKUP_BUCKET is.
 #
-# See docs/google-cloud-run.md.
+# See examples/google-cloud-run/README.md.
 
 name: Deploy to Cloud Run
 

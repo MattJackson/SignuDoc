@@ -4,7 +4,7 @@
 // in between, so it checks what a restore checks: the target is migrated
 // first, must have no accounts yet, and gets everything in one transaction
 // or nothing. Files are not copied; both databases point at the same store.
-// See docs/google-cloud-run.md, "Switching to Postgres later".
+// See examples/google-cloud-run/README.md, "Switching to Postgres later".
 //
 //   npm run transfer-database -- --from sqlite:signudoc.db --to postgres://...
 //

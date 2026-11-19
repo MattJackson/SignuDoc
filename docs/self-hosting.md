@@ -3,7 +3,8 @@
 Everything about running your own SignuDoc: deploying it, setting it up, what it costs, keeping it up to date, and the settings you can change. For working on the code, see [Development](development.md).
 
 - [Deploy to Vercel](#deploy-to-vercel)
-- [Deploy on Google Cloud Run](google-cloud-run.md)
+- [Deploy on Google Cloud Run](../examples/google-cloud-run/README.md)
+- [Run with Docker Compose](../examples/docker-compose/README.md)
 - [Set the site up](#set-the-site-up)
 - [Your responsibilities](#your-responsibilities)
 - [Signed PDFs and the seal](#signed-pdfs-and-the-seal)
@@ -397,7 +398,7 @@ It is opt-in for now because it has not yet been proven against a live Vercel de
 
 ## Self-hosting somewhere else
 
-On Google Cloud, [Deploy on Google Cloud Run](google-cloud-run.md) sets up everything with one script. The [`Dockerfile`](../Dockerfile) it uses builds an image that runs on any other container platform too.
+[`examples/docker-compose`](../examples/docker-compose/README.md) runs the image on a laptop or any Docker host. On Google Cloud, [Deploy on Google Cloud Run](../examples/google-cloud-run/README.md) sets up everything with one script. The [`Dockerfile`](../Dockerfile) it uses builds an image that runs on any other container platform too.
 
 SignuDoc is a regular Next.js app and runs anywhere Node.js 24 and Postgres do:
 

@@ -2,7 +2,7 @@
 
 SignuDoc runs on Google Cloud as one Docker image on [Cloud Run](https://cloud.google.com/run), with a private [Cloud Storage](https://cloud.google.com/storage) bucket for the documents, [Secret Manager](https://cloud.google.com/secret-manager) for its secrets and [Cloud Scheduler](https://cloud.google.com/scheduler) for the scheduled jobs. Nothing about it needs Vercel, and the Vercel deployment keeps working exactly as before.
 
-The database is one of two, chosen with `DB_BACKEND` (see [the design](design/database-backends.md)):
+The database is one of two, chosen with `DB_BACKEND` (see [the design](../../docs/design/database-backends.md)):
 
 - **SQLite (the default).** One Cloud Run instance with the database as a file on it, copied to a Cloud Storage bucket within about a second of every change by [Litestream](https://litestream.io). There is no database server, so an install nobody is using costs nothing: the instance scales to zero and the next request starts it again from the copy. Right for a rarely used install.
 - **Postgres.** [Cloud SQL for PostgreSQL](https://cloud.google.com/sql/docs/postgres), with any number of instances. Right for steady traffic, or more than one instance. About $13 to $30 a month whether it is used or not.
@@ -26,13 +26,13 @@ The setup script only provisions the infrastructure and the few settings the app
 
 ## What you get
 
-[`deploy/google-cloud/setup.sh`](../deploy/google-cloud/setup.sh) creates, in one region of your project:
+[`examples/google-cloud-run/setup.sh`](setup.sh) creates, in one region of your project:
 
 | What                         | Name (with the defaults)                                                               | Notes                                                                                                                                                                                                                                                                                              |
 | ---------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Artifact Registry repository | `signudoc`                                                                             | Holds the images.                                                                                                                                                                                                                                                                                  |
 | Runtime service account      | `signudoc-run@<project>.iam.gserviceaccount.com`                                       | The app runs as this. It can read its own secrets and read and write its own buckets (and, on Postgres, connect to Cloud SQL), nothing more.                                                                                                                                                       |
-| SQLite replica bucket        | `<project>-signudoc-db`                                                                | SQLite only. Litestream's copy of the database. Object versioning, noncurrent versions deleted after 7 days, and 7-day soft delete.                                                                                                                                                                                                           |
+| SQLite replica bucket        | `<project>-signudoc-db`                                                                | SQLite only. Litestream's copy of the database. Object versioning, noncurrent versions deleted after 7 days, and 7-day soft delete.                                                                                                                                                                |
 | Cloud SQL for PostgreSQL 17  | `signudoc-db`, database and user `signudoc`                                            | Postgres only. Enterprise edition, encrypted connections only, deletion protection, daily automated backups kept 14 days and point-in-time recovery over 7 days.                                                                                                                                   |
 | Cloud Storage bucket         | `<project>-signudoc-files`                                                             | The documents. Uniform access, public access prevention, 7-day soft delete. The app uses it with `STORAGE_DRIVER=gcs` and `GCS_BUCKET`.                                                                                                                                                            |
 | Secrets                      | `signudoc-better-auth-secret`, `signudoc-setup-token`, `signudoc-retention-job-secret` | Generated the first time, never printed, and never replaced on a later run. Postgres adds `signudoc-database-url`.                                                                                                                                                                                 |
@@ -40,7 +40,7 @@ The setup script only provisions the infrastructure and the few settings the app
 | Cloud Run job                | `signudoc-migrate`                                                                     | Postgres only: `node db/migrate.mjs` from the same image, run before every deploy. On SQLite the container migrates the database when it starts.                                                                                                                                                   |
 | Cloud Scheduler jobs         | `signudoc-retention`, `-directory-sync`, `-drive-export`, `-notifications`             | `POST /api/internal/...` with the job secret as a bearer token: the cleanup daily at 09:00 UTC, the directory sync daily at 07:00, Drive export and notifications daily at 07:45 UTC by default (`FREQUENT_SCHEDULE='*/15 * * * *'` restores 15-minute retries, at the cost described under Cost). |
 
-And, when you ask for them: a backup bucket in a second region and its daily job (`BACKUP_REGION`), a domain mapping (`DOMAIN`), secrets for a Resend key and a single sign-on client secret (`RESEND_API_KEY`, `SSO_CLIENT_SECRET`), and Workload Identity Federation for the GitHub deploy workflow (`GITHUB_REPOSITORY`).
+And, when you ask for them: a backup bucket in a second region and its daily job (`BACKUP_REGION`), a domain mapping (`DOMAIN`), a secret for a Resend key (`RESEND_API_KEY`), and Workload Identity Federation for the GitHub deploy workflow (`GITHUB_REPOSITORY`).
 
 ## Before you start
 
@@ -55,30 +55,30 @@ From the root of your copy:
 
 ```bash
 PROJECT_ID=my-project REGION=us-central1 DOMAIN=sign.example.com \
-  BACKUP_REGION=us-east1 ./deploy/google-cloud/setup.sh
+  BACKUP_REGION=us-east1 ./examples/google-cloud-run/setup.sh
 ```
 
 It prints each step and each command as it goes. With SQLite it takes a few minutes, most of it the image build; with `DB_BACKEND=postgres` about 15, most of it Cloud SQL creating the instance. It is safe to run again: whatever already exists is left alone, and the Cloud Run settings it manages are brought up to date. Settings you add to the service yourself are kept.
 
-| Setting                               | Default                       | What it does                                                                                                                                                                                                              |
-| ------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROJECT_ID`                          | required                      | Your Google Cloud project.                                                                                                                                                                                                |
-| `REGION`                              | `us-central1`                 | Where everything lives. For domain mappings, pick a [region that supports them](https://cloud.google.com/run/docs/mapping-custom-domains).                                                                                |
-| `DB_BACKEND`                          | `sqlite`                      | `sqlite` or `postgres`.                                                                                                                                                                                                   |
-| `DOMAIN`                              | none                          | The site's own address. Without it, the site uses its `run.app` URL.                                                                                                                                                      |
-| `SERVICE`                             | `signudoc`                    | The Cloud Run service; the other names are made from it.                                                                                                                                                                  |
-| `DB_BUCKET`                           | `<project>-<service>-db`      | SQLite: the replica bucket.                                                                                                                                                                                               |
-| `DB_TIER`                             | `db-g1-small`                 | Postgres: the Cloud SQL machine. `db-f1-micro` costs less; `db-custom-1-3840` is a dedicated core with an SLA.                                                                                                            |
-| `MIN_INSTANCES` / `MAX_INSTANCES`     | `0` / `4`                     | `MIN_INSTANCES=1` keeps an instance warm so nobody waits for a cold start. On SQLite `MAX_INSTANCES` is always 1. On Postgres each instance holds up to 10 connections, so with `db-f1-micro` keep it at 2.               |
-| `BUCKET`                              | `<project>-<service>-files`   | The documents bucket. Bucket names are global, so change it if that one is taken.                                                                                                                                         |
-| `BACKUP_REGION`                       | none                          | Turns on the [backup bucket](#backups), in this region.                                                                                                                                                                   |
-| `BACKUP_BUCKET`                       | `<project>-<service>-backups` | Its name.                                                                                                                                                                                                                 |
-| `FREQUENT_SCHEDULE`                   | `45 7 * * *`                  | Retries for the Drive export and notification jobs, which already run right after each request. Each run starts an instance if none is up, so every 15 minutes keeps one up all day; see [What it costs](#what-it-costs). |
-| `GITHUB_REPOSITORY`                   | none                          | `owner/name` of your copy, to [deploy from GitHub Actions](#from-github-actions).                                                                                                                                         |
-| `RESEND_API_KEY`, `SSO_CLIENT_SECRET` | none                          | Optional. Stored as secrets and handed to the app. Both can be set up in the app instead.                                                                                                                                 |
-| `EXTRA_ENV_VARS`                      | none                          | More app settings, as `KEY=value,KEY=value`, for example `SSO_ISSUER=https://accounts.google.com,SSO_CLIENT_ID=...`. Every setting is listed in [`.env.example`](../.env.example).                                        |
-| `IMAGE`                               | none                          | Deploy this image (by digest) instead of building one.                                                                                                                                                                    |
-| `USE_LOCAL_DOCKER`                    | none                          | `1` builds with your own Docker instead of Cloud Build.                                                                                                                                                                   |
+| Setting                           | Default                       | What it does                                                                                                                                                                                                              |
+| --------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROJECT_ID`                      | required                      | Your Google Cloud project.                                                                                                                                                                                                |
+| `REGION`                          | `us-central1`                 | Where everything lives. For domain mappings, pick a [region that supports them](https://cloud.google.com/run/docs/mapping-custom-domains).                                                                                |
+| `DB_BACKEND`                      | `sqlite`                      | `sqlite` or `postgres`.                                                                                                                                                                                                   |
+| `DOMAIN`                          | none                          | The site's own address. Without it, the site uses its `run.app` URL.                                                                                                                                                      |
+| `SERVICE`                         | `signudoc`                    | The Cloud Run service; the other names are made from it.                                                                                                                                                                  |
+| `DB_BUCKET`                       | `<project>-<service>-db`      | SQLite: the replica bucket.                                                                                                                                                                                               |
+| `DB_TIER`                         | `db-g1-small`                 | Postgres: the Cloud SQL machine. `db-f1-micro` costs less; `db-custom-1-3840` is a dedicated core with an SLA.                                                                                                            |
+| `MIN_INSTANCES` / `MAX_INSTANCES` | `0` / `4`                     | `MIN_INSTANCES=1` keeps an instance warm so nobody waits for a cold start. On SQLite `MAX_INSTANCES` is always 1. On Postgres each instance holds up to 10 connections, so with `db-f1-micro` keep it at 2.               |
+| `BUCKET`                          | `<project>-<service>-files`   | The documents bucket. Bucket names are global, so change it if that one is taken.                                                                                                                                         |
+| `BACKUP_REGION`                   | none                          | Turns on the [backup bucket](#backups), in this region.                                                                                                                                                                   |
+| `BACKUP_BUCKET`                   | `<project>-<service>-backups` | Its name.                                                                                                                                                                                                                 |
+| `FREQUENT_SCHEDULE`               | `45 7 * * *`                  | Retries for the Drive export and notification jobs, which already run right after each request. Each run starts an instance if none is up, so every 15 minutes keeps one up all day; see [What it costs](#what-it-costs). |
+| `GITHUB_REPOSITORY`               | none                          | `owner/name` of your copy, to [deploy from GitHub Actions](#from-github-actions).                                                                                                                                         |
+| `RESEND_API_KEY`                  | none                          | Optional. Stored as a secret and handed to the app. It can be set up in the app instead.                                                                                                                                  |
+| `EXTRA_ENV_VARS`                  | none                          | More app settings, as `KEY=value,KEY=value`, for example `AUDIT_LOG=off`. Every setting is listed in [`.env.example`](../../.env.example).                                                                                |
+| `IMAGE`                           | none                          | Deploy this image (by digest) instead of building one.                                                                                                                                                                    |
+| `USE_LOCAL_DOCKER`                | none                          | `1` builds with your own Docker instead of Cloud Build.                                                                                                                                                                   |
 
 The service is made public with Cloud Run's [`--no-invoker-iam-check`](https://cloud.google.com/run/docs/securing/managing-access#invoker_check), not an `allUsers` IAM binding, so an organization policy that restricts sharing to your own domain does not stop it. Signers outside your organization have to be able to open it.
 
@@ -91,6 +91,8 @@ gcloud secrets versions access latest --secret=signudoc-setup-token --project=my
 ```
 
 Open `https://sign.example.com/setup` (or the `run.app` address if you have no domain yet), give the token, and follow the onboarding: name your organization, create the administrator account, then set up email, sign-in and backups from Settings. The token is what stops whoever finds the address first from taking the install.
+
+Google Workspace sign-in, the Gmail add-on and Drive are set up in the app, not in the script: see [Google Workspace](../../docs/google-workspace.md).
 
 ## Your own domain
 
@@ -111,10 +113,10 @@ Each deploy builds an image and switches the service to it by digest. On Postgre
 ### From your machine
 
 ```bash
-PROJECT_ID=my-project REGION=us-central1 ./deploy/google-cloud/deploy.sh
+PROJECT_ID=my-project REGION=us-central1 ./examples/google-cloud-run/deploy.sh
 ```
 
-[`deploy.sh`](../deploy/google-cloud/deploy.sh) builds the current checkout with Cloud Build, tags it with the commit, then runs (the first two only on Postgres):
+[`deploy.sh`](deploy.sh) builds the current checkout with Cloud Build, tags it with the commit, then runs (the first two only on Postgres):
 
 ```bash
 gcloud run jobs update signudoc-migrate --image=<image@sha256:...>
@@ -124,11 +126,11 @@ gcloud run services update signudoc --image=<image@sha256:...>
 
 It tells the backends apart by whether the `signudoc-migrate` job exists; set `DB_BACKEND` to say so yourself.
 
-To take a new SignuDoc release, update your copy first (see [Keep your install up to date](self-hosting.md#keep-your-install-up-to-date)), then deploy. To roll back, deploy the earlier digest with `IMAGE=...`. On Postgres you can also send traffic back to an earlier revision in the Cloud Run console; on SQLite, deploy the earlier image again instead (see [One instance](#one-instance-even-during-a-deploy)). Migrations are not rolled back, so check the release notes before going back past one that changed the database.
+To take a new SignuDoc release, update your copy first (see [Keep your install up to date](../../docs/self-hosting.md#keep-your-install-up-to-date)), then deploy. To roll back, deploy the earlier digest with `IMAGE=...`. On Postgres you can also send traffic back to an earlier revision in the Cloud Run console; on SQLite, deploy the earlier image again instead (see [One instance](#one-instance-even-during-a-deploy)). Migrations are not rolled back, so check the release notes before going back past one that changed the database.
 
 ### From GitHub Actions
 
-[`.github/workflows/deploy-cloud-run.yml`](../.github/workflows/deploy-cloud-run.yml) does the same from GitHub. It only runs when you start it from the Actions tab, and signs in to Google Cloud through [Workload Identity Federation](https://github.com/google-github-actions/auth#workload-identity-federation-through-a-service-account), so no key is stored anywhere. On SQLite it also sets the service's database, storage and backup settings, secrets and one-instance limits, so a service that was set up by hand is brought in line.
+[`.github/workflows/deploy-cloud-run.yml`](../../.github/workflows/deploy-cloud-run.yml) does the same from GitHub. It only runs when you start it from the Actions tab, and signs in to Google Cloud through [Workload Identity Federation](https://github.com/google-github-actions/auth#workload-identity-federation-through-a-service-account), so no key is stored anywhere. On SQLite it also sets the service's database, storage and backup settings, secrets and one-instance limits, so a service that was set up by hand is brought in line.
 
 1. Run the setup script with `GITHUB_REPOSITORY=your-org/signudoc`. It creates a workload identity pool and provider that only accept that repository, and a `signudoc-deploy` service account that can push images, update the service and the migrate job, and act as the runtime service account.
 2. In your copy on GitHub, under Settings, Secrets and variables, Actions, **Variables**, add:
@@ -146,7 +148,7 @@ None of these values is a secret. The project number is shown by `gcloud project
 
 ## The SQLite database
 
-The image starts through [`db/sqlite/start.mjs`](../db/sqlite/start.mjs) when `DATABASE_URL` is `sqlite:/data/signudoc.db` and `LITESTREAM_REPLICA_URL` is `gs://<project>-signudoc-db/db`:
+The image starts through [`db/sqlite/start.mjs`](../../db/sqlite/start.mjs) when `DATABASE_URL` is `sqlite:/data/signudoc.db` and `LITESTREAM_REPLICA_URL` is `gs://<project>-signudoc-db/db`:
 
 1. It takes the database's lease (below).
 2. `litestream restore` brings the database back from the bucket. On the very first start the bucket is empty and the database starts empty.
@@ -197,7 +199,7 @@ The new revision starts from the restored copy. Anything written to the old revi
 
 ## Logs and alerts
 
-On Cloud Run, the app's structured log lines (security events and the audit copies described in [Send the audit trail to your SIEM](self-hosting.md#send-the-audit-trail-to-your-siem)) carry a `severity` field, so [Cloud Logging](https://cloud.google.com/logging/docs/structured-logging) files them at the right level. Elsewhere the lines are unchanged. In the Logs Explorer:
+On Cloud Run, the app's structured log lines (security events and the audit copies described in [Send the audit trail to your SIEM](../../docs/self-hosting.md#send-the-audit-trail-to-your-siem)) carry a `severity` field, so [Cloud Logging](https://cloud.google.com/logging/docs/structured-logging) files them at the right level. Elsewhere the lines are unchanged. In the Logs Explorer:
 
 ```text
 resource.type="cloud_run_revision"
@@ -224,11 +226,11 @@ To send the audit lines to a SIEM, create a [log sink](https://cloud.google.com/
 - **The database, on SQLite.** The replica bucket is a continuous backup: [point-in-time restore](#point-in-time-restore) to any moment of the last 7 days, with object versioning (noncurrent versions deleted after 7 days) and soft delete on the bucket itself.
 - **The database, on Postgres.** Cloud SQL takes a backup every day and keeps 14, and point-in-time recovery lets you restore to any second of the last 7 days. Restore into a new instance from the Cloud SQL console (Backups), or with `gcloud sql instances clone signudoc-db signudoc-db-restored --point-in-time=<timestamp>`, then point the `signudoc-database-url` secret at it.
 - **The documents.** The bucket keeps deleted files for 7 days (soft delete), so a mistaken deletion can be undone with `gcloud storage restore`.
-- **A copy elsewhere.** With `BACKUP_REGION` set, the script also creates a second bucket in that region with object versioning (noncurrent versions deleted after 30 days), gives the runtime service account access to it, sets `BACKUP_GCS_BUCKET`, and schedules `POST /api/internal/backup` once a day at 08:00 UTC with the job secret. Pick a region other than `REGION`, so one region's outage does not take both copies. This is SignuDoc's own backup, the same on both databases: every table as one file, read in one snapshot, and the documents. [Backup and restore](backup-and-restore.md) covers what it contains and how to restore it.
+- **A copy elsewhere.** With `BACKUP_REGION` set, the script also creates a second bucket in that region with object versioning (noncurrent versions deleted after 30 days), gives the runtime service account access to it, sets `BACKUP_GCS_BUCKET`, and schedules `POST /api/internal/backup` once a day at 08:00 UTC with the job secret. Pick a region other than `REGION`, so one region's outage does not take both copies. This is SignuDoc's own backup, the same on both databases: every table as one file, read in one snapshot, and the documents. [Backup and restore](../../docs/backup-and-restore.md) covers what it contains and how to restore it.
 
 ## Switching to Postgres later
 
-[`scripts/transfer-database.ts`](../scripts/transfer-database.ts) copies every row from one database into another, empty one, of either kind. It is SignuDoc's own backup and restore with nothing in between, so it checks what a restore checks: the target is migrated first, must have no accounts yet, and gets everything in one transaction or nothing. The documents stay where they are, in the same bucket. With [Litestream](https://litestream.io/install/) and the [Cloud SQL Auth Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) installed, and `gcloud auth application-default login`:
+[`scripts/transfer-database.ts`](../../scripts/transfer-database.ts) copies every row from one database into another, empty one, of either kind. It is SignuDoc's own backup and restore with nothing in between, so it checks what a restore checks: the target is migrated first, must have no accounts yet, and gets everything in one transaction or nothing. The documents stay where they are, in the same bucket. With [Litestream](https://litestream.io/install/) and the [Cloud SQL Auth Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) installed, and `gcloud auth application-default login`:
 
 1. Close the site to the outside, so nothing changes while it is copied (this also holds back the scheduled jobs), and wait a minute for the last changes to reach the bucket:
 
@@ -248,7 +250,7 @@ To send the audit lines to a SIEM, create a [log sink](https://cloud.google.com/
    gcloud run services update signudoc --region=us-central1 \
      --remove-env-vars=DATABASE_URL,LITESTREAM_REPLICA_URL
    DB_BACKEND=postgres PROJECT_ID=my-project REGION=us-central1 DOMAIN=sign.example.com \
-     ./deploy/google-cloud/setup.sh
+     ./examples/google-cloud-run/setup.sh
    ```
 
 4. Copy the rows across, through the proxy. The password is the one in the `signudoc-database-url` secret:
@@ -305,7 +307,7 @@ Email is extra and billed by your email provider, such as Resend.
 
 ## Running the image elsewhere
 
-The [`Dockerfile`](../Dockerfile) builds a Next.js standalone server that runs as a non-root user and listens on `$PORT` (8080 by default). With a Postgres `DATABASE_URL` it starts the server as before, and the same image runs the migrations:
+The [`Dockerfile`](../../Dockerfile) builds a Next.js standalone server that runs as a non-root user and listens on `$PORT` (8080 by default). With a Postgres `DATABASE_URL` it starts the server as before, and the same image runs the migrations:
 
 ```bash
 docker run --env-file .env -p 8080:8080 <image>            # the app
@@ -314,4 +316,4 @@ docker run --env-file .env <image> node db/migrate.mjs     # the migrations
 
 With `DATABASE_URL=sqlite:/data/signudoc.db` it migrates the database itself at start. Keep `/data` on a volume, and either back it up yourself or set `LITESTREAM_REPLICA_URL` (any [Litestream replica URL](https://litestream.io/reference/config/#replica-settings), for example `s3://` or `file:///backup/signudoc`). Run only one container on one database file.
 
-`docker compose --profile app up --build` runs it locally against the Compose database, with files on a volume and email written to `/data/outbox`; see [`docker-compose.yml`](../docker-compose.yml). Anywhere else, the settings in [Self-hosting somewhere else](self-hosting.md#self-hosting-somewhere-else) apply.
+[`examples/docker-compose`](../docker-compose/README.md) runs the image with SQLite and a daily job runner on a laptop or any Docker host. `docker compose --profile app up --build` runs it locally against the Compose database, with files on a volume and email written to `/data/outbox`; see [`docker-compose.yml`](../../docker-compose.yml). Anywhere else, the settings in [Self-hosting somewhere else](../../docs/self-hosting.md#self-hosting-somewhere-else) apply.

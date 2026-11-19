@@ -137,7 +137,7 @@ jobs:
       DATABASE_URL: postgres://signudoc:signudoc@127.0.0.1:5432/signudoc_docker
     steps:
       - uses: actions/checkout@v6
-      # The image Cloud Run runs (docs/google-cloud-run.md). Built, never
+      # The image Cloud Run runs (examples/google-cloud-run/README.md). Built, never
       # pushed.
       - run: docker build -t signudoc:ci .
       # The migrations run from the image, as the Cloud Run migrate job does.

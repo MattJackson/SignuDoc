@@ -75,7 +75,7 @@ function runScript(
 }
 
 test("MISC-12: deploy.sh stops when it cannot tell whether the migrate job exists", () => {
-  const { calls, status } = runScript("deploy/google-cloud/deploy.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/deploy.sh", {
     STUB_FAIL: "jobs list",
   });
 
@@ -84,7 +84,10 @@ test("MISC-12: deploy.sh stops when it cannot tell whether the migrate job exist
 });
 
 test("MISC-12: deploy.sh picks sqlite when no migrate job is listed", () => {
-  const { calls, status } = runScript("deploy/google-cloud/deploy.sh", {});
+  const { calls, status } = runScript(
+    "examples/google-cloud-run/deploy.sh",
+    {},
+  );
 
   assert.equal(status, 0);
   assert.doesNotMatch(calls, /jobs execute/);
@@ -92,7 +95,7 @@ test("MISC-12: deploy.sh picks sqlite when no migrate job is listed", () => {
 });
 
 test("MISC-12: deploy.sh picks postgres when the migrate job is listed", () => {
-  const { calls, status } = runScript("deploy/google-cloud/deploy.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/deploy.sh", {
     STUB_JOBS: "signudoc-migrate",
   });
 
@@ -101,7 +104,7 @@ test("MISC-12: deploy.sh picks postgres when the migrate job is listed", () => {
 });
 
 test("MISC-13: setup.sh does not write a new secret when it cannot read the versions", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     STUB_FAIL: "secrets versions list",
   });
 
@@ -113,7 +116,7 @@ test("MISC-13: setup.sh does not write a new secret when it cannot read the vers
 });
 
 test("MISC-13: setup.sh generates a secret once when it has no version", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {});
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {});
   const added = calls
     .split("\n")
     .filter((line) =>
@@ -162,14 +165,14 @@ test("MISC-16: the sync workflow does not read a failed pr or issue list as empt
 });
 
 test("MISC-10: the docs give the same retry schedule as setup.sh", () => {
-  const docs = read("docs/google-cloud-run.md");
+  const docs = read("examples/google-cloud-run/README.md");
 
   assert.doesNotMatch(docs, /notifications every 15 minutes/);
   assert.doesNotMatch(docs, /wake it every 15 minutes by default/);
 });
 
 test("setup.sh deletes noncurrent versions in the replica and backup buckets", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     BACKUP_REGION: "europe-west1",
     DB_BACKEND: "sqlite",
   });
@@ -207,7 +210,7 @@ function bindingCalls(calls: string) {
 }
 
 test("setup.sh retries a binding while the new service account is not there yet", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     SA_RETRY_SLEEP: "0",
     STUB_NOTYET: RUNTIME_BINDING,
     STUB_NOTYET_TIMES: "3",
@@ -219,7 +222,7 @@ test("setup.sh retries a binding while the new service account is not there yet"
 });
 
 test("setup.sh gives up when the service account never appears", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     SA_RETRY_SLEEP: "0",
     STUB_NOTYET: RUNTIME_BINDING,
     STUB_NOTYET_TIMES: "1000",
@@ -231,7 +234,7 @@ test("setup.sh gives up when the service account never appears", () => {
 });
 
 test("setup.sh does not retry a binding that fails for any other reason", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     SA_RETRY_SLEEP: "0",
     STUB_FAIL: RUNTIME_BINDING,
   });
@@ -241,7 +244,7 @@ test("setup.sh does not retry a binding that fails for any other reason", () => 
 });
 
 test("setup.sh retries the deploy service account's bindings too", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     GITHUB_REPOSITORY: "acme/signudoc",
     SA_RETRY_SLEEP: "0",
     STUB_NOTYET: "add-iam-policy-binding signudoc-deploy@test-project",
@@ -253,7 +256,7 @@ test("setup.sh retries the deploy service account's bindings too", () => {
 });
 
 test("setup.sh also retries the NOT_FOUND form of the error", () => {
-  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+  const { calls, status } = runScript("examples/google-cloud-run/setup.sh", {
     SA_RETRY_SLEEP: "0",
     STUB_NOTYET: RUNTIME_BINDING,
     STUB_NOTYET_MESSAGE: "ERROR: (gcloud) NOT_FOUND: Unknown service account",

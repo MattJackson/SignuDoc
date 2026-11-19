@@ -4,7 +4,7 @@
 # SQLite the container runs them itself when it starts), then points the
 # service at it by digest. Every other setting of the service is kept.
 #
-#   PROJECT_ID=my-project REGION=us-central1 ./deploy/google-cloud/deploy.sh
+#   PROJECT_ID=my-project REGION=us-central1 ./examples/google-cloud-run/deploy.sh
 #
 # IMAGE=<repo/name@sha256:...> deploys an image that already exists instead
 # of building one. USE_LOCAL_DOCKER=1 builds with this machine's Docker
@@ -14,7 +14,7 @@
 # migrate job exists.
 set -euo pipefail
 
-# shellcheck source=deploy/google-cloud/common.sh
+# shellcheck source=examples/google-cloud-run/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 if [[ -z "${DB_BACKEND:-}" ]]; then

@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# SignuDoc as one container, for Google Cloud Run or any other host that
-# runs Docker images. See docs/google-cloud-run.md.
+# SignuDoc as one generic container image for any host that runs Docker:
+# docker run, Compose, Cloud Run, Kubernetes. Everything is configured with
+# environment variables and in the app. Examples: examples/docker-compose/
+# and examples/google-cloud-run/.
 #
 #   docker build -t signudoc .
 #   docker run -p 8080:8080 --env-file .env signudoc               the app
@@ -68,7 +70,7 @@ COPY --from=builder /app/public ./public
 # has them.
 COPY --from=builder /app/src/assets/fonts ./src/assets/fonts
 COPY --from=builder /app/node_modules/harfbuzzjs/dist/harfbuzz-subset.wasm ./node_modules/harfbuzzjs/dist/harfbuzz-subset.wasm
-# For `node db/migrate.mjs`, run as a Cloud Run job from this same image.
+# For `node db/migrate.mjs`, run as a separate job from this same image.
 COPY --from=builder /app/db/migrate.mjs /app/db/database-url.mjs ./db/
 COPY --from=builder /app/db/migrations ./db/migrations
 # The SQLite backend: its schema, migrations and start script.

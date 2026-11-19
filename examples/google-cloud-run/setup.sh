@@ -2,10 +2,10 @@
 # Sets up SignuDoc on Google Cloud Run: everything the app needs to start,
 # then builds the image and deploys it. Safe to run again: whatever exists
 # already is left as it is, or brought up to date. See
-# docs/google-cloud-run.md.
+# examples/google-cloud-run/README.md.
 #
 #   PROJECT_ID=my-project REGION=us-central1 DOMAIN=sign.example.com \
-#     ./deploy/google-cloud/setup.sh
+#     ./examples/google-cloud-run/setup.sh
 #
 # Settings (environment variables):
 #   PROJECT_ID          required. The Google Cloud project.
@@ -32,9 +32,8 @@
 #   GITHUB_REPOSITORY   optional, owner/name. Lets that repository's
 #                       deploy-cloud-run.yml workflow deploy, through Workload
 #                       Identity Federation (no key).
-#   RESEND_API_KEY, SSO_CLIENT_SECRET
-#                       optional. Stored as secrets and given to the app.
-#                       Both can instead be set up in the app after sign-in.
+#   RESEND_API_KEY      optional. Stored as a secret and given to the app. It
+#                       can instead be set up in the app after sign-in.
 #   EXTRA_ENV_VARS      optional, KEY=value,KEY=value. More app settings.
 #   FREQUENT_SCHEDULE   45 7 * * *. Retries for the Drive export and notification
 #                       jobs, which already run right after each request. Each
@@ -46,7 +45,7 @@
 #   USE_LOCAL_DOCKER=1  build with this machine's Docker, not Cloud Build.
 set -euo pipefail
 
-# shellcheck source=deploy/google-cloud/common.sh
+# shellcheck source=examples/google-cloud-run/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 DB_BACKEND="${DB_BACKEND:-sqlite}"
@@ -229,7 +228,7 @@ put_generated_secret "$(secret_name retention-job-secret)"
 SECRETS+="BETTER_AUTH_SECRET=$(secret_name better-auth-secret):latest"
 SECRETS+=",SETUP_TOKEN=$(secret_name setup-token):latest"
 SECRETS+=",RETENTION_JOB_SECRET=$(secret_name retention-job-secret):latest"
-for optional in RESEND_API_KEY SSO_CLIENT_SECRET; do
+for optional in RESEND_API_KEY; do
   name="$(secret_name "$(tr 'A-Z_' 'a-z-' <<<"${optional}")")"
   if [[ -n "${!optional:-}" ]] || exists secrets describe "${name}"; then
     put_secret "${name}" "${!optional:-}"
@@ -289,7 +288,7 @@ if [[ "${DB_BACKEND}" == postgres ]]; then
     --command=node --args=db/migrate.mjs --max-retries=0 --task-timeout=600s
   run_migrations "${IMAGE}"
   # --cpu-throttling and the removed variable undo a SQLite setup, for a
-  # service that is moving to Postgres (docs/google-cloud-run.md).
+  # service that is moving to Postgres (examples/google-cloud-run/README.md).
   BACKEND_FLAGS=(--add-cloudsql-instances="${SQL_CONNECTION}" --cpu-throttling
     --remove-env-vars=LITESTREAM_REPLICA_URL
     --min-instances="${MIN_INSTANCES:-0}" --max-instances="${MAX_INSTANCES:-4}")
