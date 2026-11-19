@@ -17,6 +17,9 @@ export const SIGNUDOC_URL = "https://github.com/NYLLON-SOFTWARE/SignuDoc";
 /** Where the install's logo is served. Public: it is shown to signers. */
 export const BRAND_LOGO_PATH = "/api/brand/logo";
 
+/** The longest app name an install can have. */
+export const MAX_PRODUCT_NAME_LENGTH = 60;
+
 /** The largest logo an install can upload. */
 export const MAX_LOGO_BYTES = 512 * 1024;
 
@@ -46,7 +49,11 @@ export type Branding = {
   /** The organization's name, when one has been set. */
   organizationName: string | null;
   privacyUrl: string | null;
-  /** The name shown in the header, in page titles and in emails. */
+  /**
+   * The name shown in the header, in page titles and in emails, and
+   * suggested wherever the app is named in Google or Slack: the app name
+   * chosen in onboarding, else the organization's name.
+   */
   productName: string;
   /** False when new accounts are not being accepted at all. */
   signupAvailable: boolean;
@@ -94,7 +101,8 @@ export function buildBranding(settings: ResolvedSettings): Branding {
         : buildBrandLogoPath(settings.logoVersion),
     organizationName,
     privacyUrl: settings.privacyUrl,
-    productName: organizationName ?? SIGNUDOC_NAME,
+    productName:
+      settings.productName?.trim() || organizationName || SIGNUDOC_NAME,
     signupAvailable,
     supportAddress: settings.supportAddress,
     termsUrl: settings.termsUrl,

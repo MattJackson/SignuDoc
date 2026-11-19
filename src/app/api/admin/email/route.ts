@@ -8,20 +8,37 @@ import {
   recheckEmailDomain,
 } from "@/lib/email-status";
 import { sendTestEmail } from "@/lib/email-test";
+import {
+  getResendKeyState,
+  ResendKeyError,
+  saveResendApiKey,
+} from "@/lib/resend-key";
 import { recordAdminActivity } from "@/lib/services/admin-activity";
 import { logRouteError } from "@/lib/security/logging";
 import {
   applyRateLimit,
   buildRateLimitKey,
 } from "@/lib/security/route-controls";
-import { getClientIpAddress, getRequestPathname } from "@/lib/security/request";
+import {
+  getClientIpAddress,
+  getRequestPathname,
+  getRequestUserAgent,
+} from "@/lib/security/request";
 
-// Email setup for the Organization tab in Settings: whether email works,
-// and the steps an administrator can take from the app when it does not.
+// Email setup for Settings and onboarding: whether email works, the steps
+// an administrator can take from the app when it does not, and the Resend
+// API key for installs where RESEND_API_KEY is not set.
 
-const actionSchema = z.object({
-  action: z.enum(["add_domain", "recheck", "send_test"]),
-});
+const actionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("add_domain") }),
+  z.object({ action: z.literal("recheck") }),
+  z.object({ action: z.literal("send_test") }),
+  z.object({ action: z.literal("remove_key") }),
+  z.object({
+    action: z.literal("save_key"),
+    apiKey: z.string().trim().min(1).max(300),
+  }),
+]);
 
 function failure(request: Request, error: unknown, userId: string) {
   logRouteError(error, {
@@ -46,7 +63,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    return NextResponse.json({ status: await getEmailStatus() });
+    return NextResponse.json({
+      key: await getResendKeyState(),
+      status: await getEmailStatus(),
+    });
   } catch (error) {
     return failure(request, error, sessionResult.user.id);
   }
@@ -80,6 +100,40 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (
+      parsed.data.action === "save_key" ||
+      parsed.data.action === "remove_key"
+    ) {
+      let access: string | null = null;
+
+      try {
+        ({ access } = await saveResendApiKey(
+          parsed.data.action === "save_key" ? parsed.data.apiKey : null,
+          {
+            email: session.user.email,
+            id: session.user.id,
+            ipAddress: getClientIpAddress(request.headers),
+            userAgent: getRequestUserAgent(request.headers),
+          },
+        ));
+      } catch (error) {
+        if (error instanceof ResendKeyError) {
+          return NextResponse.json(
+            { error: error.message },
+            { status: error.statusCode },
+          );
+        }
+
+        throw error;
+      }
+
+      return NextResponse.json({
+        access,
+        key: await getResendKeyState(),
+        status: await getEmailStatus(),
+      });
+    }
+
     if (parsed.data.action === "send_test") {
       const result = await sendTestEmail({
         name: session.user.name,
@@ -87,7 +141,11 @@ export async function POST(request: Request) {
       });
 
       return NextResponse.json(
-        { status: await getEmailStatus(), test: result },
+        {
+          key: await getResendKeyState(),
+          status: await getEmailStatus(),
+          test: result,
+        },
         { status: result.sent ? 200 : 502 },
       );
     }
@@ -106,7 +164,7 @@ export async function POST(request: Request) {
           })
         : await recheckEmailDomain();
 
-    return NextResponse.json({ status });
+    return NextResponse.json({ key: await getResendKeyState(), status });
   } catch (error) {
     return failure(request, error, session.user.id);
   }
