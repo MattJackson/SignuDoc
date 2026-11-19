@@ -9,10 +9,15 @@ import {
 } from "./schemas/auth.ts";
 import {
   type DbExecutor,
+  type DbPool,
   getDb,
   queryMany,
   queryOne,
+  withTransaction,
 } from "./db/connection.ts";
+import { collectBreakGlassAddresses } from "./directory-sync.ts";
+import { readIntegrationSettings } from "./integration-settings.ts";
+import { ROLE_CHANGE_LOCK_ID } from "./people.ts";
 import {
   ACCOUNT_CLOSURE_EXPORT_WINDOW_DAYS,
   scheduleAccountClosure,
@@ -20,8 +25,8 @@ import {
 import { resolvePublicSupportAddress } from "./public-contact.ts";
 import { createEmailService } from "./services/email.ts";
 import { recordSystemAuditEvent } from "./services/system-audit.ts";
-import { getBranding } from "./settings.ts";
-import { type EnvSource } from "./utils/env.ts";
+import { getBranding, isMissingSchemaError } from "./settings.ts";
+import { isHostedMode, type EnvSource } from "./utils/env.ts";
 
 type SenderAccountRow = {
   email: string;
@@ -217,6 +222,91 @@ async function formatEnvelopeCounts(
   );
 }
 
+export const LAST_ADMIN_CLOSURE_MESSAGE =
+  "You are the only administrator. Make someone else an administrator first, then close your account.";
+export const BREAK_GLASS_CLOSURE_MESSAGE =
+  "This is the break-glass account that set up this site, so it can't be closed. It is the way in if Google sign-in is unavailable.";
+
+/**
+ * Why this account may not be closed, or null when it may: the last
+ * administrator would leave the site with nobody to run it, and the
+ * break-glass account (kept for password sign-in when Google is down) or
+ * the account first-run setup made is the way back in.
+ */
+export async function accountClosureBlock(
+  user: { email: string; id: string },
+  database: DbExecutor = getDb(),
+  env: EnvSource = process.env,
+): Promise<string | null> {
+  // The hosted service has no install to keep running: anyone may leave.
+  if (isHostedMode(env)) {
+    return null;
+  }
+
+  const row = await queryOne<{ has_other_admin: boolean; role: string }>(
+    database,
+    `
+      SELECT
+        role,
+        EXISTS (
+          SELECT 1
+          FROM "user" AS other
+          WHERE other.role = 'admin'
+            AND other.id <> $1
+            AND other.directory_blocked_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM account_closure_requests
+              WHERE account_closure_requests.user_id = other.id
+            )
+        ) AS has_other_admin
+      FROM "user"
+      WHERE id = $1
+    `,
+    [user.id],
+  );
+
+  if (row?.role === "admin" && !row.has_other_admin) {
+    return LAST_ADMIN_CLOSURE_MESSAGE;
+  }
+
+  const breakGlass = collectBreakGlassAddresses(
+    env,
+    await readIntegrationSettings(database, env),
+  );
+
+  if (
+    breakGlass.has(user.email.trim().toLowerCase()) ||
+    (await readInstallerUserId(database)) === user.id
+  ) {
+    return BREAK_GLASS_CLOSURE_MESSAGE;
+  }
+
+  return null;
+}
+
+async function readInstallerUserId(
+  database: DbExecutor,
+): Promise<string | null> {
+  try {
+    const row = await queryOne<{ installer_user_id: string | null }>(
+      database,
+      `SELECT installer_user_id FROM app_settings WHERE id`,
+    );
+
+    return row?.installer_user_id ?? null;
+  } catch (error) {
+    if (isMissingSchemaError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function isPool(database: DbExecutor): database is DbPool {
+  return "connect" in database && "totalCount" in database;
+}
 
 function formatRetentionDeadline(timestamp: number): string {
   return new Date(timestamp * 1000).toISOString().replace(".000Z", " UTC");
@@ -235,7 +325,22 @@ export async function requestAccountClosure(
     throw new AccountMutationError("Account not found.", 404);
   }
 
-  const closureSchedule = await scheduleAccountClosure(userId, database);
+  // Under the lock role changes take, so two administrators closing their
+  // accounts at once cannot both count the other as the one who stays.
+  const guardAndSchedule = async (tx: DbExecutor) => {
+    await tx.query("SELECT pg_advisory_xact_lock($1)", [ROLE_CHANGE_LOCK_ID]);
+
+    const blocked = await accountClosureBlock(account, tx, env);
+
+    if (blocked) {
+      throw new AccountMutationError(blocked, 409);
+    }
+
+    return scheduleAccountClosure(userId, tx);
+  };
+  const closureSchedule = isPool(database)
+    ? await withTransaction(guardAndSchedule, database)
+    : await guardAndSchedule(database);
 
   if (!closureSchedule.alreadyQueued) {
     await recordSystemAuditEvent(
