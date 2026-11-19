@@ -254,7 +254,8 @@ function LiveLoginShell({
 
       if (
         errorCode === "SIGN_IN_LOCKED" ||
-        errorCode === "PASSWORD_SIGN_IN_OFF"
+        errorCode === "PASSWORD_SIGN_IN_OFF" ||
+        errorCode === "DIRECTORY_BLOCKED"
       ) {
         setBannerMessage(
           result.error.message ??

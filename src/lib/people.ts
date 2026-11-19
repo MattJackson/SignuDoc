@@ -16,7 +16,7 @@ import { recordSystemAuditEvent } from "./services/system-audit.ts";
 // account is not on its way to being closed.
 
 /** Serializes role changes, so two removals cannot both leave "one more". */
-const ROLE_CHANGE_LOCK_ID = 746108324;
+export const ROLE_CHANGE_LOCK_ID = 746108324;
 const MAX_LISTED_PEOPLE = 500;
 const MAX_SEARCH_LENGTH = 100;
 
@@ -170,8 +170,9 @@ export async function listPeople(
 
 /**
  * The administrator who keeps the organization's records: the one who has
- * been here longest and whose own account is not on its way to being
- * closed. `exceptUserId` is the account that is giving the records up.
+ * been here longest, whose own account is not on its way to being closed,
+ * and whom the directory has not blocked (workspace/offboarding.ts).
+ * `exceptUserId` is the account that is giving the records up.
  * Returns null when there is no such administrator.
  */
 export async function findRecordKeeper(
@@ -185,6 +186,7 @@ export async function findRecordKeeper(
       FROM "user" u
       WHERE u.id <> $1
         AND u.role = 'admin'
+        AND u.directory_blocked_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
         )

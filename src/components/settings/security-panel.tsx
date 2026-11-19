@@ -23,10 +23,13 @@ type AuditResponse = {
 const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   account_closure_requested: "Account closure requested",
   account_deleted: "Account deleted",
+  directory_sign_in_blocked: "Sign-in blocked by the directory",
+  directory_sign_in_unblocked: "Sign-in allowed again by the directory",
   email_domain_changed: "Email domain changed",
   envelope_deleted: "Finished envelope deleted",
   envelope_deletion_cancelled: "Envelope deletion cancelled",
   envelope_deletion_scheduled: "Envelope deletion scheduled",
+  envelopes_handed_over: "Envelopes handed over",
   envelope_file_downloaded: "Another member's file downloaded",
   identity_verification_revoked: "Identity confirmation taken back",
   identity_verified: "Identity confirmed",
@@ -134,8 +137,36 @@ function describeEvent(event: SystemAuditEvent): string {
       ]
         .filter(Boolean)
         .join(", ");
+    case "directory_sign_in_blocked":
+      return [target, describeDirectoryReason(metadata.reason)]
+        .filter(Boolean)
+        .join(": ");
+    case "directory_sign_in_unblocked":
+      return [
+        target,
+        metadata.why === "break_glass"
+          ? "break-glass address"
+          : "active in the directory again",
+      ]
+        .filter(Boolean)
+        .join(": ");
+    case "envelopes_handed_over":
+      return `${typeof metadata.count === "number" ? String(metadata.count) : "Some"} from ${typeof metadata.fromEmail === "string" ? metadata.fromEmail : "an account"} to ${typeof metadata.toEmail === "string" ? metadata.toEmail : "another account"}${metadata.handedTo === "manager" ? " (their manager)" : metadata.handedTo === "administrator" ? " (an administrator)" : ""}`;
     default:
       return target ?? "";
+  }
+}
+
+function describeDirectoryReason(reason: unknown): string | null {
+  switch (reason) {
+    case "directory_archived":
+      return "archived in the directory";
+    case "directory_deleted":
+      return "no longer in the directory";
+    case "directory_suspended":
+      return "suspended in the directory";
+    default:
+      return null;
   }
 }
 

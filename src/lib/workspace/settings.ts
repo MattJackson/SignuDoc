@@ -39,6 +39,13 @@ export const WORKSPACE_SETTINGS = {
   // A Workspace administrator to read the directory as, with domain-wide
   // delegation. Empty: the service account reads it with its own role.
   "google.adminSubject": { env: "GOOGLE_WORKSPACE_ADMIN_SUBJECT" },
+  // "on" turns offboarding on: people the directory says have left are
+  // blocked and their open work handed over (offboarding.ts). Needs the
+  // directory to be on.
+  "directory.offboarding": { env: "WORKSPACE_OFFBOARDING" },
+  // The organization's email domains, comma-separated: only accounts in
+  // them are asked about. Empty: the sign-up rule's domains.
+  "directory.domains": { env: "WORKSPACE_DIRECTORY_DOMAINS" },
 } as const satisfies Record<string, { env: string }>;
 
 export type WorkspaceSettingKey = keyof typeof WORKSPACE_SETTINGS;

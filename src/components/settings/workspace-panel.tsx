@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
+import { OffboardingSection } from "@/components/settings/workspace-offboarding-section";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import type {
   WorkspaceAdminView,
@@ -157,8 +158,9 @@ export function WorkspacePanel() {
           </h2>
           <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
             Connect your organization&apos;s workspace to suggest colleagues as
-            signers and copy recipients, and to take administrators from a
-            group. Nothing here is on until you choose a provider.
+            signers and copy recipients, to take administrators from a group,
+            and to offboard people who leave. Nothing here is on until you
+            choose a provider.
           </p>
         </div>
 
@@ -201,6 +203,17 @@ export function WorkspacePanel() {
                 onChange={(value) => change("directory.adminGroup", value)}
                 providerSaved={providerSaved}
                 value={values["directory.adminGroup"]}
+                view={view}
+              />
+            ) : null}
+
+            {providerId ? (
+              <OffboardingSection
+                disabled={isSaving}
+                error={errors["directory.domains"]}
+                onChange={change}
+                providerSaved={providerSaved}
+                values={values}
                 view={view}
               />
             ) : null}
