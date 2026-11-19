@@ -50,7 +50,7 @@ services:
       - |
         while true; do
           sleep 86400
-          for job in retention drive-export notifications directory-sync; do
+          for job in retention drive-export notifications directory-sync backup; do
             if curl --silent --show-error --fail-with-body --max-time 600 \
               -X POST -H "Authorization: Bearer $${RETENTION_JOB_SECRET}" \
               "http://app:8080/api/internal/$${job}" > /dev/null; then

@@ -34,7 +34,7 @@ The volume name has the project prefix when Compose adds one: check `docker volu
 
 ## The daily jobs
 
-The `scheduler` service POSTs `/api/internal/retention`, `/drive-export`, `/notifications` and `/directory-sync` once a day, with `Authorization: Bearer` and `RETENTION_JOB_SECRET`. See the results with `docker compose logs scheduler`.
+The `scheduler` service POSTs `/api/internal/retention`, `/drive-export`, `/notifications`, `/directory-sync` and `/backup` once a day, with `Authorization: Bearer` and `RETENTION_JOB_SECRET`. See the results with `docker compose logs scheduler`. The backup job does nothing until a destination is chosen in Settings, Backups.
 
 ## What needs a public HTTPS address
 
