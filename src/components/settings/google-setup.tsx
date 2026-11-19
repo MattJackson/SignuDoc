@@ -191,7 +191,7 @@ function useSetupRun(callback: GoogleSetupCallback | null | undefined) {
             : {
                 ...current,
                 refused: {
-                  hint: INTERRUPTED_HINT,
+                  hint: current.refused?.hint ?? INTERRUPTED_HINT,
                   message: current.refused?.message ?? INTERRUPTED_MESSAGE,
                 },
                 running: false,

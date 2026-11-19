@@ -23,8 +23,10 @@ import {
 } from "./integrations/google/drive-oauth.ts";
 import { readAdminGroup } from "./google-admin-group.ts";
 import {
+  CHECK_TIME_MS,
   runWorkspaceSetup,
   SETUP_CALLBACK_PATH,
+  SETUP_TIME_BUDGET_MS,
   type SetupEvent,
   type SetupTestResult,
 } from "./integrations/google/workspace-setup.ts";
@@ -104,10 +106,30 @@ export async function describeSetupTarget(
 async function runChecks(
   adminEmail: string,
   signedInEmail: string,
-  exportDriveId: string | null,
+  state: { deadline: number; exportDriveId: string | null },
   env: EnvSource,
 ): Promise<SetupTestResult[]> {
+  const { exportDriveId } = state;
   const results: SetupTestResult[] = [];
+  // A check is started only with the time it may need, so the run ends by
+  // its deadline; one that is not started says so.
+  const outOfTime = (name: string) => {
+    if (Date.now() + CHECK_TIME_MS < state.deadline) {
+      return false;
+    }
+
+    results.push({
+      message: "not run, the setup ran out of time.",
+      name,
+      ok: false,
+    });
+    return true;
+  };
+
+  if (outOfTime("Directory")) {
+    return results;
+  }
+
   const directory = await testDirectoryAccess(adminEmail, env);
 
   results.push(
@@ -122,7 +144,10 @@ async function runChecks(
       : { message: directory.message, name: "Directory", ok: false },
   );
 
-  if (readAdminGroup(env, await getIntegrationSettings(env)).group) {
+  if (
+    readAdminGroup(env, await getIntegrationSettings(env)).group &&
+    !outOfTime("Administrator group")
+  ) {
     const group = await testGroupLookup(signedInEmail, null, env);
 
     results.push(
@@ -136,7 +161,7 @@ async function runChecks(
     );
   }
 
-  if (exportDriveId) {
+  if (exportDriveId && !outOfTime("Shared Drive")) {
     const drive = await testSharedDrive(exportDriveId, env);
 
     results.push(
@@ -224,6 +249,9 @@ type RunInput = {
  * run.
  */
 export async function runAutomaticSetup(input: RunInput): Promise<void> {
+  // The run's time is counted from here, so the code exchange and the
+  // reads before the steps are inside it too.
+  const deadline = Date.now() + SETUP_TIME_BUDGET_MS;
   const env = input.env ?? process.env;
   const emit = (event: SetupEvent) => {
     try {
@@ -263,7 +291,7 @@ export async function runAutomaticSetup(input: RunInput): Promise<void> {
   }
 
   try {
-    await runWithGrant({ ...input, emit }, env, {
+    await runWithGrant({ ...input, emit }, env, deadline, {
       client: target.client,
       projectId: target.projectId,
       projectNumber: target.projectNumber,
@@ -279,6 +307,7 @@ export async function runAutomaticSetup(input: RunInput): Promise<void> {
 async function runWithGrant(
   input: RunInput,
   env: EnvSource,
+  deadline: number,
   target: {
     client: DriveOAuthClient;
     projectId: string;
@@ -339,6 +368,7 @@ async function runWithGrant(
         accessToken: token.accessToken,
         adminEmail: claims.email,
         appName: productName,
+        deadline,
         emit: input.emit,
         env,
         existing: {
@@ -351,8 +381,8 @@ async function runWithGrant(
         exportDrive: input.exportDrive,
         projectId: target.projectId,
         projectNumber: target.projectNumber,
-        runTests: ({ exportDriveId }) =>
-          runChecks(claims.email, input.actor.email, exportDriveId, env),
+        runTests: (state) =>
+          runChecks(claims.email, input.actor.email, state, env),
         save: async (update) => {
           await saveIntegrationSettings(update, input.actor, {
             area: "google_workspace",

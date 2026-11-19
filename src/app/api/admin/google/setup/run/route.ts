@@ -30,8 +30,10 @@ import { isHostedMode } from "@/lib/utils/env";
 // step as it starts and ends, so the page shows each one live. The token
 // lives only for this request and is revoked at the end.
 
-// The run keeps to SETUP_TIME_BUDGET_MS (workspace-setup.ts), so the token
-// is revoked before this limit.
+// runAutomaticSetup counts SETUP_TIME_BUDGET_MS (240 s, workspace-setup.ts)
+// from its start, code exchange included, and starts no Google request
+// after it; one request still under way (15 s) and the revoke (15 s) end
+// well before this limit.
 export const maxDuration = 300;
 
 const bodySchema = z.object({

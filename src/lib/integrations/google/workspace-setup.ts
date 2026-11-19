@@ -210,8 +210,17 @@ export type WorkspaceSetupInput = {
   fetchImpl?: typeof fetch;
   projectId: string;
   projectNumber: string | null;
-  /** The checks of step f, run with the site's own service account. */
+  /**
+   * When the run has to be over (ms since the epoch), counted from when
+   * the caller started; SETUP_TIME_BUDGET_MS from now when not given.
+   */
+  deadline?: number;
+  /**
+   * The checks of step f, run with the site's own service account. Each
+   * check starts only with CHECK_TIME_MS left before the deadline.
+   */
   runTests: (state: {
+    deadline: number;
     exportDriveId: string | null;
   }) => Promise<SetupTestResult[]>;
   save: (update: IntegrationSettingsUpdate) => Promise<void>;
@@ -271,10 +280,19 @@ const OPERATION_POLLS = 30;
 const OPERATION_WAIT_MS = 2000;
 
 /**
- * How long a run may take. The run route is allowed 300 seconds; one more
- * request (at most GOOGLE_REQUEST_TIMEOUT_MS) and the revoke fit after it.
+ * How long a run may take, counted from when the route starts it (the code
+ * exchange included). The route is allowed 300 seconds: a request already
+ * under way at the deadline (at most GOOGLE_REQUEST_TIMEOUT_MS) and the
+ * revoke fit after it.
  */
 export const SETUP_TIME_BUDGET_MS = 240_000;
+
+/**
+ * The time one check of step f needs: a service account token and one
+ * call, each at most GOOGLE_REQUEST_TIMEOUT_MS. A check starts only with
+ * this much left, so step f ends by the deadline.
+ */
+export const CHECK_TIME_MS = 2 * GOOGLE_REQUEST_TIMEOUT_MS;
 
 const RUN_AGAIN_HINT =
   "Run the setup again in a few minutes; what is done already is kept.";
@@ -516,7 +534,7 @@ export async function runWorkspaceSetup(
   input: WorkspaceSetupInput,
 ): Promise<boolean> {
   const state: RunState = {
-    deadline: Date.now() + SETUP_TIME_BUDGET_MS,
+    deadline: input.deadline ?? Date.now() + SETUP_TIME_BUDGET_MS,
     outOfTime: false,
     started: new Set(),
   };
@@ -565,10 +583,12 @@ async function runSteps(
   async function step(
     id: SetupStepId,
     run: () => Promise<{ detail: string; skipped?: boolean }>,
+    /** How much time has to be left for the step to be started. */
+    needsMs = 0,
   ): Promise<boolean> {
     const title = SETUP_STEP_TITLES[id];
 
-    if (state.outOfTime || Date.now() >= state.deadline) {
+    if (state.outOfTime || Date.now() + needsMs >= state.deadline) {
       state.outOfTime = true;
       ok = false;
       return false;
@@ -1131,23 +1151,30 @@ async function runSteps(
   });
 
   // f. The site's own checks.
-  await step("tests", async () => {
-    const results = await input.runTests({ exportDriveId });
-    const failed = results.filter((result) => !result.ok);
+  await step(
+    "tests",
+    async () => {
+      const results = await input.runTests({
+        deadline: state.deadline,
+        exportDriveId,
+      });
+      const failed = results.filter((result) => !result.ok);
 
-    if (failed.length > 0) {
-      throw new StepFailure(
-        failed.map((result) => `${result.name}: ${result.message}`).join(" "),
-        "Google can take a few minutes to apply a new role or Shared Drive member. Run the tests again from Settings in a little while.",
-      );
-    }
+      if (failed.length > 0) {
+        throw new StepFailure(
+          failed.map((result) => `${result.name}: ${result.message}`).join(" "),
+          "Google can take a few minutes to apply a new role or Shared Drive member. Run the tests again from Settings in a little while.",
+        );
+      }
 
-    return {
-      detail: results
-        .map((result) => `${result.name}: ${result.message}`)
-        .join(" "),
-    };
-  });
+      return {
+        detail: results
+          .map((result) => `${result.name}: ${result.message}`)
+          .join(" "),
+      };
+    },
+    CHECK_TIME_MS,
+  );
 
   return ok;
 }
