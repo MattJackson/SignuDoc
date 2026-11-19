@@ -1,3 +1,4 @@
+import { OWN_GOOGLE_CUSTOMER } from "../../google-customer.ts";
 import { readEnv, type EnvSource } from "../../utils/env.ts";
 import {
   getGoogleCredentials,
@@ -78,7 +79,7 @@ export function readDirectoryConfig(
     adminSubject,
     customer:
       readEnv(env, "GOOGLE_WORKSPACE_CUSTOMER_ID") ??
-      (stored?.["google.customerId"]?.trim() || "my_customer"),
+      (stored?.["google.customerId"]?.trim() || OWN_GOOGLE_CUSTOMER),
     enabled: (envChoice ?? storedChoice) === "on",
     enabledSource: envChoice ? "env" : storedChoice ? "settings" : "default",
     mode: adminSubject ? "delegation" : "admin-role",

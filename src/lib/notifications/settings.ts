@@ -42,7 +42,7 @@ import type {
   SlackMessageContent,
 } from "./slack/client.ts";
 import { buildSlackMessage } from "./slack/layout.ts";
-import { buildSlackManifest, SLACK_BOT_SCOPES } from "./slack/manifest.ts";
+import { buildSlackManifest } from "./slack/manifest.ts";
 import {
   buildSampleMessage,
   buildSlackPreviews,
@@ -189,7 +189,6 @@ export type NotificationsAdminView = {
     manifest: string;
     /** A sample of each kind of message, as Slack would show it. */
     previews: SlackPreview[];
-    scopes: string[];
     source: "env" | "settings" | null;
   };
   teams: { id: string; name: string }[];
@@ -261,7 +260,6 @@ export async function getNotificationsAdminView(
         appUrl: url ?? "https://sign.example.com",
         brand: { logoUrl: brand.logoUrl, name: brand.name },
       }),
-      scopes: [...SLACK_BOT_SCOPES],
       source: slack.source,
     },
     teams,

@@ -184,3 +184,86 @@ test("the hosted service lets anyone close their account", async () => {
     );
   });
 });
+
+test("an administrator the directory has blocked does not count as the one who stays", async () => {
+  await inRolledBackTransaction(async (client) => {
+    const admin = await createUser(client, "admin");
+    const blocked = await createUser(client, "admin");
+
+    await client.query(
+      `update public."user" set directory_blocked_at = 1 where id = $1`,
+      [blocked.id],
+    );
+
+    assert.equal(
+      await accountClosureBlock(admin, client, env),
+      LAST_ADMIN_CLOSURE_MESSAGE,
+    );
+  });
+});
+
+test("through the pool, an administrator closes once another can sign in, and the last one cannot", async () => {
+  const previous = await database.query<{ id: string }>(
+    `select id from public."user" where role = 'admin'`,
+  );
+  const created: string[] = [];
+
+  try {
+    await database.query(
+      `update public."user" set role = 'user' where role = 'admin'`,
+    );
+    await database.query(`delete from public.integration_settings`);
+
+    const first = await createPooledAdmin(created);
+    const second = await createPooledAdmin(created);
+
+    const result = await requestAccountClosure(first.id, confirmation, {
+      database,
+      env,
+    });
+
+    assert.equal(result.alreadyQueued, false);
+
+    const { rows } = await database.query(
+      `select 1 from account_closure_requests where user_id = $1`,
+      [first.id],
+    );
+
+    assert.equal(rows.length, 1);
+    await assert.rejects(
+      requestAccountClosure(second.id, confirmation, { database, env }),
+      refusedWith(LAST_ADMIN_CLOSURE_MESSAGE),
+    );
+  } finally {
+    await database.query(
+      `delete from account_closure_requests where user_id = any($1::text[])`,
+      [created],
+    );
+    await database.query(
+      `delete from public."user" where id = any($1::text[])`,
+      [created],
+    );
+    await database.query(
+      `update public."user" set role = 'admin' where id = any($1::text[])`,
+      [previous.rows.map((row) => row.id)],
+    );
+  }
+});
+
+async function createPooledAdmin(
+  created: string[],
+): Promise<{ email: string; id: string }> {
+  const id = randomUUID();
+  const email = `${id}@example.test`;
+
+  await database.query(
+    `
+      insert into public."user" (id, name, email, role, "emailVerified")
+      values ($1, $2, $3, 'admin', true)
+    `,
+    [id, `Person ${id.slice(0, 4)}`, email],
+  );
+  created.push(id);
+
+  return { email, id };
+}

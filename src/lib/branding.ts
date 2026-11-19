@@ -17,6 +17,9 @@ export const SIGNUDOC_URL = "https://github.com/NYLLON-SOFTWARE/SignuDoc";
 /** Where the install's logo is served. Public: it is shown to signers. */
 export const BRAND_LOGO_PATH = "/api/brand/logo";
 
+/** The longest app name an install can have. */
+export const MAX_PRODUCT_NAME_LENGTH = 60;
+
 /** The largest logo an install can upload. */
 export const MAX_LOGO_BYTES = 512 * 1024;
 

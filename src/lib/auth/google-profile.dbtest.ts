@@ -96,3 +96,61 @@ test("an address with no account changes nothing", async () => {
     false,
   );
 });
+
+test("a name-only claim keeps the stored picture, and a picture-only claim keeps the name", async () => {
+  const person = await createUser("Old Name");
+  const picture = "https://lh3.googleusercontent.com/a/kept=s96-c";
+
+  await syncGoogleProfile(person.email, { picture }, database);
+  await syncGoogleProfile(person.email, { name: "New Name" }, database);
+  assert.deepEqual(await read(person.id), { image: picture, name: "New Name" });
+
+  await syncGoogleProfile(
+    person.email,
+    { name: "x".repeat(300), picture: 42 },
+    database,
+  );
+  assert.deepEqual(await read(person.id), {
+    image: picture,
+    name: "x".repeat(200),
+  });
+
+  await syncGoogleProfile(person.email, { name: "   " }, database);
+  assert.deepEqual(await read(person.id), {
+    image: picture,
+    name: "x".repeat(200),
+  });
+});
+
+test("a sign-in that brings nothing new does not write the account", async () => {
+  const person = await createUser("Same Name");
+  const picture = "https://lh3.googleusercontent.com/a/same=s96-c";
+  const touched = async () => {
+    const { rows } = await database.query<{ updated: string }>(
+      `select "updatedAt"::text as updated from public."user" where id = $1`,
+      [person.id],
+    );
+
+    return rows[0]?.updated;
+  };
+
+  await syncGoogleProfile(
+    person.email,
+    { name: "Same Name", picture },
+    database,
+    new Date("2030-01-01T00:00:00Z"),
+  );
+
+  const written = await touched();
+
+  assert.equal(
+    await syncGoogleProfile(
+      person.email,
+      { name: "Same Name", picture },
+      database,
+      new Date("2031-01-01T00:00:00Z"),
+    ),
+    true,
+  );
+  assert.equal(await touched(), written);
+});

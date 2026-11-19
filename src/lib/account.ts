@@ -253,6 +253,7 @@ export async function accountClosureBlock(
           FROM "user" AS other
           WHERE other.role = 'admin'
             AND other.id <> $1
+            AND other.directory_blocked_at IS NULL
             AND NOT EXISTS (
               SELECT 1
               FROM account_closure_requests

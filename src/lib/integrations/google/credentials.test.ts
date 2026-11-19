@@ -7,6 +7,9 @@ import {
   GOOGLE_SCOPES,
   GoogleCredentialsError,
   parseServiceAccountKey,
+  readGoogleProjectId,
+  readGoogleProjectNumber,
+  resetGoogleProjectNumberCache,
 } from "./credentials.ts";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
@@ -234,4 +237,76 @@ test("a token request with no answer is given up on, and the next call asks agai
   await assert.rejects(within(credentials.getAccessToken(request)), timedOut);
   await assert.rejects(within(credentials.getAccessToken(request)), timedOut);
   assert.equal(requests, 2);
+});
+
+function countingFetch(answer: () => Response | Promise<Response>) {
+  const state = { calls: 0 };
+  const fetchImpl = (() => {
+    state.calls += 1;
+
+    return Promise.resolve().then(answer);
+  }) as unknown as typeof fetch;
+
+  return { fetchImpl, state };
+}
+
+test("the project ID from the metadata server is read once and kept", async () => {
+  resetGoogleProjectNumberCache();
+
+  const { fetchImpl, state } = countingFetch(
+    () => new Response("my-project-123"),
+  );
+  const env = { K_SERVICE: "signudoc" };
+
+  assert.equal(await readGoogleProjectId({ env, fetchImpl }), "my-project-123");
+  assert.equal(await readGoogleProjectId({ env, fetchImpl }), "my-project-123");
+  assert.equal(state.calls, 1);
+  resetGoogleProjectNumberCache();
+});
+
+test("a metadata lookup that failed is not repeated at once", async () => {
+  resetGoogleProjectNumberCache();
+
+  const env = { K_SERVICE: "signudoc" };
+  const failing = countingFetch(() => {
+    throw new Error("the metadata server hung");
+  });
+
+  assert.equal(
+    await readGoogleProjectId({ env, fetchImpl: failing.fetchImpl }),
+    null,
+  );
+  assert.equal(
+    await readGoogleProjectId({ env, fetchImpl: failing.fetchImpl }),
+    null,
+  );
+  assert.equal(failing.state.calls, 1);
+
+  const refused = countingFetch(() => new Response("no", { status: 500 }));
+
+  assert.equal(
+    await readGoogleProjectNumber({ env, fetchImpl: refused.fetchImpl }),
+    null,
+  );
+  assert.equal(
+    await readGoogleProjectNumber({ env, fetchImpl: refused.fetchImpl }),
+    null,
+  );
+  assert.equal(refused.state.calls, 1);
+  resetGoogleProjectNumberCache();
+});
+
+test("GOOGLE_CLOUD_PROJECT is used without asking the metadata server", async () => {
+  resetGoogleProjectNumberCache();
+
+  const { fetchImpl, state } = countingFetch(() => new Response("other-id-1"));
+
+  assert.equal(
+    await readGoogleProjectId({
+      env: { GOOGLE_CLOUD_PROJECT: "from-env-1" },
+      fetchImpl,
+    }),
+    "from-env-1",
+  );
+  assert.equal(state.calls, 0);
 });

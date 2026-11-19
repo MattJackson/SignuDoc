@@ -20,6 +20,7 @@ import {
 } from "@/components/settings/integration-kit";
 import { saveFailureMessage } from "@/components/settings/google-save-notice";
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
+import { OWN_GOOGLE_CUSTOMER } from "@/lib/google-customer";
 import {
   apiLibraryUrl,
   consoleUrl,
@@ -645,7 +646,7 @@ export function GoogleDirectorySection({
       ? ""
       : (directory.adminSubject ?? ""),
     customerId:
-      directory.customerFromEnv || directory.customer === "my_customer"
+      directory.customerFromEnv || directory.customer === OWN_GOOGLE_CUSTOMER
         ? ""
         : directory.customer,
   });

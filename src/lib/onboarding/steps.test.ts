@@ -553,3 +553,16 @@ test("the Google Workspace step wants sign-in, the customer ID and the Picker", 
     "done",
   );
 });
+
+test("with domain-wide delegation the Google Workspace step does not ask for the customer ID", async () => {
+  const stored = {
+    "drive.appId": "123456789012",
+    "drive.pickerApiKey": "AIzaKey",
+    "google.adminSubject": "admin@example.com",
+    "sso.clientId": "client.apps.googleusercontent.com",
+    "sso.clientSecret": "secret",
+    "sso.issuer": "https://accounts.google.com",
+  };
+
+  assert.equal(await check("google-workspace", context({ stored })), "done");
+});

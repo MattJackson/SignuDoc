@@ -89,11 +89,18 @@ const PROJECT_NUMBER_URL =
 const PROJECT_NUMBER_TIMEOUT_MS = 2000;
 
 let cachedProjectNumber: string | null = null;
+let cachedProjectId: string | null = null;
+// A failed lookup is not tried again for this long, so a metadata server
+// that hangs costs one wait, not one per request.
+const FAILED_LOOKUP_MS = 30_000;
+let projectNumberFailedAt = Number.NEGATIVE_INFINITY;
+let projectIdFailedAt = Number.NEGATIVE_INFINITY;
 
 /**
  * The number of the Google Cloud project the app runs in, from the metadata
  * server, to prefill setup forms. Null when not on Google Cloud or when it
- * cannot be read; it never throws. A found number is kept for later calls.
+ * cannot be read; it never throws. A found number is kept for later calls,
+ * and a failure is remembered for a short while.
  */
 export async function readGoogleProjectNumber({
   env = process.env,
@@ -103,7 +110,10 @@ export async function readGoogleProjectNumber({
     return cachedProjectNumber;
   }
 
-  if (!isOnGoogleCloud(env)) {
+  if (
+    !isOnGoogleCloud(env) ||
+    Date.now() - projectNumberFailedAt < FAILED_LOOKUP_MS
+  ) {
     return null;
   }
 
@@ -112,14 +122,11 @@ export async function readGoogleProjectNumber({
       headers: { "Metadata-Flavor": "Google" },
       signal: AbortSignal.timeout(PROJECT_NUMBER_TIMEOUT_MS),
     });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const number = (await response.text()).trim();
+    const number = response.ok ? (await response.text()).trim() : "";
 
     if (!/^\d{6,20}$/.test(number)) {
+      projectNumberFailedAt = Date.now();
+
       return null;
     }
 
@@ -127,6 +134,8 @@ export async function readGoogleProjectNumber({
 
     return number;
   } catch {
+    projectNumberFailedAt = Date.now();
+
     return null;
   }
 }
@@ -137,6 +146,7 @@ const PROJECT_ID_URL =
 /**
  * The ID of the Google Cloud project the app runs in, from the metadata
  * server, or GOOGLE_CLOUD_PROJECT. Null when neither is there; never throws.
+ * Kept like the project number.
  */
 export async function readGoogleProjectId({
   env = process.env,
@@ -148,7 +158,14 @@ export async function readGoogleProjectId({
     return fromEnv;
   }
 
-  if (!isOnGoogleCloud(env)) {
+  if (cachedProjectId) {
+    return cachedProjectId;
+  }
+
+  if (
+    !isOnGoogleCloud(env) ||
+    Date.now() - projectIdFailedAt < FAILED_LOOKUP_MS
+  ) {
     return null;
   }
 
@@ -159,15 +176,28 @@ export async function readGoogleProjectId({
     });
     const id = response.ok ? (await response.text()).trim() : "";
 
-    return /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(id) ? id : null;
+    if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(id)) {
+      projectIdFailedAt = Date.now();
+
+      return null;
+    }
+
+    cachedProjectId = id;
+
+    return id;
   } catch {
+    projectIdFailedAt = Date.now();
+
     return null;
   }
 }
 
-/** Forgets the cached project number, for tests. */
+/** Forgets the cached project number and ID, for tests. */
 export function resetGoogleProjectNumberCache() {
   cachedProjectNumber = null;
+  cachedProjectId = null;
+  projectNumberFailedAt = Number.NEGATIVE_INFINITY;
+  projectIdFailedAt = Number.NEGATIVE_INFINITY;
 }
 
 /** True when the app runs somewhere with a Google metadata server. */

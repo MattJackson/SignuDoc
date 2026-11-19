@@ -26,6 +26,14 @@ if [ -n "\${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then
   echo "stub failure" >&2
   exit 1
 fi
+if [ -n "\${STUB_NOTYET:-}" ] && [[ "$*" == *"$STUB_NOTYET"* ]]; then
+  seen=$(cat "$STUB_LOG.count" 2>/dev/null || echo 0)
+  echo $((seen + 1)) > "$STUB_LOG.count"
+  if [ "$seen" -lt "\${STUB_NOTYET_TIMES:-2}" ]; then
+    echo "\${STUB_NOTYET_MESSAGE:-ERROR: (gcloud) INVALID_ARGUMENT: Service account signudoc-run does not exist.}" >&2
+    exit 1
+  fi
+fi
 if [[ "$*" == *"jobs list"* ]]; then printf '%s' "\${STUB_JOBS:-}"; fi
 if [[ "$*" == *"versions add"* ]]; then cat > /dev/null; fi
 for arg in "$@"; do
@@ -187,4 +195,71 @@ test("setup.sh deletes noncurrent versions in the replica and backup buckets", (
       ],
     });
   }
+});
+
+const RUNTIME_BINDING =
+  "add-iam-policy-binding signudoc-run@test-project.iam.gserviceaccount.com";
+
+function bindingCalls(calls: string) {
+  return calls
+    .split("\n")
+    .filter((line) => line.includes(`${RUNTIME_BINDING} --member=`)).length;
+}
+
+test("setup.sh retries a binding while the new service account is not there yet", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    SA_RETRY_SLEEP: "0",
+    STUB_NOTYET: RUNTIME_BINDING,
+    STUB_NOTYET_TIMES: "3",
+  });
+
+  assert.equal(status, 0);
+  // Three refusals, then the binding that took.
+  assert.ok(bindingCalls(calls) >= 4, calls);
+});
+
+test("setup.sh gives up when the service account never appears", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    SA_RETRY_SLEEP: "0",
+    STUB_NOTYET: RUNTIME_BINDING,
+    STUB_NOTYET_TIMES: "1000",
+  });
+
+  assert.notEqual(status, 0);
+  assert.equal(bindingCalls(calls), 18);
+  assert.doesNotMatch(calls, /run deploy/);
+});
+
+test("setup.sh does not retry a binding that fails for any other reason", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    SA_RETRY_SLEEP: "0",
+    STUB_FAIL: RUNTIME_BINDING,
+  });
+
+  assert.notEqual(status, 0);
+  assert.equal(bindingCalls(calls), 1);
+});
+
+test("setup.sh retries the deploy service account's bindings too", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    GITHUB_REPOSITORY: "acme/signudoc",
+    SA_RETRY_SLEEP: "0",
+    STUB_NOTYET: "add-iam-policy-binding signudoc-deploy@test-project",
+    STUB_NOTYET_TIMES: "2",
+  });
+
+  assert.equal(status, 0);
+  assert.match(calls, /run deploy signudoc /);
+});
+
+test("setup.sh also retries the NOT_FOUND form of the error", () => {
+  const { calls, status } = runScript("deploy/google-cloud/setup.sh", {
+    SA_RETRY_SLEEP: "0",
+    STUB_NOTYET: RUNTIME_BINDING,
+    STUB_NOTYET_MESSAGE: "ERROR: (gcloud) NOT_FOUND: Unknown service account",
+    STUB_NOTYET_TIMES: "2",
+  });
+
+  assert.equal(status, 0);
+  assert.ok(bindingCalls(calls) >= 3, calls);
 });

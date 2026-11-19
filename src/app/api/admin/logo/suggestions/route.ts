@@ -22,7 +22,8 @@ import { getSettings } from "@/lib/settings";
 // "Use the logo from your website": GET lists the logos the organization's
 // own website points at, with previews; POST stores the one chosen.
 // Administrators only, and never for the hosted service. The fetching rules
-// are in lib/logo-fetch.ts.
+// are in lib/logo-fetch.ts, and what is offered and stored in
+// lib/logo-suggestions.ts.
 
 export const maxDuration = 30;
 

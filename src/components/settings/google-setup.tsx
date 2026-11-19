@@ -26,6 +26,7 @@ import { useGoogleWorkspace } from "@/components/settings/google-workspace-panel
 import { FieldShell, ShellButton } from "@/components/shared/form-shell";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { needsCustomerId, OWN_GOOGLE_CUSTOMER } from "@/lib/google-customer";
 import { apiLibraryUrl, consoleUrl, originOf } from "@/lib/google-console";
 import type { GoogleDriveView } from "@/lib/google-drive";
 import type { GoogleWorkspaceView } from "@/lib/google-workspace";
@@ -917,7 +918,7 @@ function ManualSetup({
       </CheckItem>
 
       <CheckItem
-        ok={workspace.directory.customer !== "my_customer" ? true : null}
+        ok={needsCustomerId(workspace.directory) ? null : true}
         title="c. Paste the Workspace customer ID"
       >
         <p>
@@ -938,7 +939,7 @@ function ManualSetup({
             onSave={(value) => saved(saveWorkspace({ customerId: value }))}
             placeholder="C01ab2cd3"
             value={
-              workspace.directory.customer === "my_customer"
+              workspace.directory.customer === OWN_GOOGLE_CUSTOMER
                 ? ""
                 : workspace.directory.customer
             }

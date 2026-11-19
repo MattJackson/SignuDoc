@@ -103,7 +103,7 @@ put_secret() {
     printf '%s' "${value}" | gc secrets versions add "${name}" --data-file=- >/dev/null
   fi
 
-  gc secrets add-iam-policy-binding "${name}" --member="serviceAccount:${RUNTIME_SA}" \
+  gc_sa secrets add-iam-policy-binding "${name}" --member="serviceAccount:${RUNTIME_SA}" \
     --role=roles/secretmanager.secretAccessor >/dev/null
 }
 
@@ -129,7 +129,7 @@ private_bucket() {
   exists storage buckets describe "gs://${bucket}" ||
     cmd storage buckets create "gs://${bucket}" --location="${location}" \
       --uniform-bucket-level-access --public-access-prevention --soft-delete-duration=7d
-  cmd storage buckets add-iam-policy-binding "gs://${bucket}" \
+  cmd_sa storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${RUNTIME_SA}" --role=roles/storage.objectAdmin >/dev/null
 }
 
@@ -162,7 +162,7 @@ exists iam service-accounts describe "${RUNTIME_SA}" ||
   cmd iam service-accounts create "${RUNTIME_SA_NAME}" --display-name="SignuDoc on Cloud Run"
 # Signing as itself, for signed URLs and Google Workspace domain-wide
 # delegation (src/lib/integrations/google/credentials.ts).
-cmd iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
+cmd_sa iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
   --member="serviceAccount:${RUNTIME_SA}" --role=roles/iam.serviceAccountTokenCreator >/dev/null
 
 SECRETS=""
@@ -171,7 +171,7 @@ ENV_VARS="APP_URL=${APP_URL},STORAGE_DRIVER=gcs,GCS_BUCKET=${BUCKET}"
 if [[ "${DB_BACKEND}" == postgres ]]; then
   # Connecting to Cloud SQL is the only project-wide role. Everything else
   # is granted on the one bucket or secret it is for.
-  cmd projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
+  cmd_sa projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
     --member="serviceAccount:${RUNTIME_SA}" --role=roles/cloudsql.client >/dev/null
 
   step "Cloud SQL for PostgreSQL 17: ${DB_INSTANCE}"
@@ -253,13 +253,13 @@ if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
       --attribute-condition="assertion.repository == '${GITHUB_REPOSITORY}'"
   exists iam service-accounts describe "${DEPLOY_SA}" ||
     cmd iam service-accounts create "${SERVICE}-deploy" --display-name="SignuDoc deploys from GitHub"
-  cmd iam service-accounts add-iam-policy-binding "${DEPLOY_SA}" --role=roles/iam.workloadIdentityUser \
+  cmd_sa iam service-accounts add-iam-policy-binding "${DEPLOY_SA}" --role=roles/iam.workloadIdentityUser \
     --member="principalSet://iam.googleapis.com/${POOL}/attribute.repository/${GITHUB_REPOSITORY}" >/dev/null
-  cmd projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
+  cmd_sa projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
     --member="serviceAccount:${DEPLOY_SA}" --role=roles/run.developer >/dev/null
-  cmd iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
+  cmd_sa iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
     --member="serviceAccount:${DEPLOY_SA}" --role=roles/iam.serviceAccountUser >/dev/null
-  cmd artifacts repositories add-iam-policy-binding "${REPOSITORY}" --location="${REGION}" \
+  cmd_sa artifacts repositories add-iam-policy-binding "${REPOSITORY}" --location="${REGION}" \
     --member="serviceAccount:${DEPLOY_SA}" --role=roles/artifactregistry.writer >/dev/null
 fi
 
@@ -267,13 +267,13 @@ if [[ -z "${IMAGE:-}" && "${USE_LOCAL_DOCKER:-}" != "1" ]]; then
   step "Letting Cloud Build push to ${REPOSITORY}"
   BUILD_SA="$(gc builds get-default-service-account --format='value(serviceAccountEmail)')"
   BUILD_SA="${BUILD_SA##*/}"
-  cmd artifacts repositories add-iam-policy-binding "${REPOSITORY}" --location="${REGION}" \
+  cmd_sa artifacts repositories add-iam-policy-binding "${REPOSITORY}" --location="${REGION}" \
     --member="serviceAccount:${BUILD_SA}" --role=roles/artifactregistry.writer >/dev/null
-  cmd projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
+  cmd_sa projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
     --member="serviceAccount:${BUILD_SA}" --role=roles/logging.logWriter >/dev/null
   exists storage buckets describe "gs://${PROJECT_ID}_cloudbuild" ||
     cmd storage buckets create "gs://${PROJECT_ID}_cloudbuild" --location=US --uniform-bucket-level-access
-  cmd storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
+  cmd_sa storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
     --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer >/dev/null
 fi
 

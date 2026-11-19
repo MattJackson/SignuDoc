@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+import { GOOGLE_PICTURE_HOSTS } from "@/lib/auth/google-profile";
 import { withClientIpHeader } from "@/lib/security/request";
 import { supportsDirectUploads } from "@/lib/services/storage/driver";
 
@@ -88,7 +89,7 @@ function buildContentSecurityPolicy(pathname: string) {
         "data:",
         "blob:",
         // People's Google profile photos, in the account menu.
-        "https://lh3.googleusercontent.com",
+        ...GOOGLE_PICTURE_HOSTS.map((host) => `https://${host}`),
         preview && "https://vercel.live https://vercel.com",
       ],
     ],
