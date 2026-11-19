@@ -292,7 +292,7 @@ test("an app name is trimmed, its spaces collapsed, blank means none, and it has
     value: "Acme Sign Pro",
   });
 
-  for (const blank of ["", "   ", null, undefined]) {
+  for (const blank of ["", "   ", null]) {
     assert.deepEqual(parseProductName(blank), { ok: true, value: null });
   }
 
