@@ -17,6 +17,7 @@ import {
   type ReplaceSignersResponse,
 } from "@/lib/schemas/signer";
 import { SIGNATURE_MEANING_DETAILS } from "@/lib/signature-meanings";
+import { moveListedSigner, removeListedSigner } from "@/lib/signing-steps";
 import {
   DEFAULT_MAX_SIGNERS_PER_ENVELOPE,
   MAX_COPY_RECIPIENTS_PER_ENVELOPE,
@@ -314,21 +315,7 @@ function reorderSigners(
     (signer) => signer.localId === signerLocalId,
   );
 
-  if (signerIndex === -1) {
-    return signers;
-  }
-
-  const targetIndex =
-    direction === "earlier" ? signerIndex - 1 : signerIndex + 1;
-
-  if (targetIndex < 0 || targetIndex >= signers.length) {
-    return signers;
-  }
-
-  const nextSigners = [...signers];
-  const [movedSigner] = nextSigners.splice(signerIndex, 1);
-  nextSigners.splice(targetIndex, 0, movedSigner);
-  return nextSigners;
+  return moveListedSigner(signers, signerIndex, direction);
 }
 
 function buildSignerRequest(
@@ -1167,7 +1154,12 @@ export function SignersShell({
     setSigners((currentSigners) =>
       currentSigners.length === 1
         ? currentSigners
-        : currentSigners.filter((signer) => signer.localId !== signerLocalId),
+        : removeListedSigner(
+            currentSigners,
+            currentSigners.findIndex(
+              (signer) => signer.localId === signerLocalId,
+            ),
+          ),
     );
   }
 
@@ -1443,7 +1435,10 @@ export function SignersShell({
           </div>
 
           <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
-            <ShellButton href="/envelopes/new" variant="secondary">
+            {/* The document is part of the draft and is not uploaded again,
+                so Back goes to this draft's own page, where it can be
+                continued or deleted, not to a blank upload form. */}
+            <ShellButton href={`/envelopes/${envelopeId}`} variant="secondary">
               ← Back
             </ShellButton>
             <ShellButton

@@ -40,10 +40,22 @@ export type Rewritten = {
   /** For "advisory": whether it is the try form, and the result's name. */
   advisory?: { column: string; isTry: boolean };
   /**
-   * A data-modifying WITH: this statement runs first, and its rows go to
-   * `sql` as JSON in parameter `rowsParameter`.
+   * A data-modifying WITH: each of these runs first, in order, and the rows
+   * of each go to the statements after it as JSON in parameter
+   * `rowsParameter` (none when its part has no RETURNING). Each statement
+   * binds its first `parameterCount` parameters.
    */
-  preStep?: { rowsParameter: number; sql: string };
+  preSteps?: PreStep[];
+  /** With preSteps: how many parameters `sql` binds. */
+  parameterCount?: number;
+  /** For "begin": REPEATABLE READ or SERIALIZABLE, one snapshot throughout. */
+  snapshot?: boolean;
+};
+
+export type PreStep = {
+  parameterCount: number;
+  rowsParameter: number | null;
+  sql: string;
 };
 
 /** Column types by table, for row_to_json and type hints. */
@@ -683,7 +695,10 @@ function rewriteArrays(tokens: Token[], sql: string): Token[] {
   return out;
 }
 
-/** Index of the first `word` outside parentheses and CASE…END. */
+/**
+ * Index of the first `word` outside parentheses. The FROM of
+ * `IS [NOT] DISTINCT FROM` is not a clause.
+ */
 function topLevelIndex(tokens: Token[], word: string, from = 0): number {
   let depth = 0;
 
@@ -697,7 +712,11 @@ function topLevelIndex(tokens: Token[], word: string, from = 0): number {
       (token.text === ")" || token.text === "]")
     ) {
       depth -= 1;
-    } else if (depth === 0 && upper(token) === word) {
+    } else if (
+      depth === 0 &&
+      upper(token) === word &&
+      !(word === "FROM" && isWord(tokens[i - 1], "DISTINCT"))
+    ) {
       return i;
     }
   }
@@ -980,6 +999,28 @@ function rewriteSpecialForms(tokens: Token[], sql: string): Token[] {
         );
       }
 
+      // AS name(column): the one column takes its own name.
+      let column = alias;
+      let end = aliasAt;
+
+      if (out[aliasAt + 1]?.text === "(") {
+        const listClose = closingParen(out, aliasAt + 1);
+        const names = out.slice(aliasAt + 2, listClose);
+
+        if (
+          names.length !== 1 ||
+          (names[0]!.type !== "ident" && names[0]!.type !== "qident")
+        ) {
+          throw new UnsupportedSqlError(
+            `${word.toLowerCase()}(…) AS name(several columns)`,
+            sql,
+          );
+        }
+
+        column = names[0]!;
+        end = listClose;
+      }
+
       let subquery: Token[];
 
       if (word === "UNNEST") {
@@ -992,7 +1033,7 @@ function rewriteSpecialForms(tokens: Token[], sql: string): Token[] {
           ident("SELECT"),
           ident("value"),
           ident("AS"),
-          alias,
+          column,
           ident("FROM"),
           ident("json_each"),
           punct("("),
@@ -1041,7 +1082,7 @@ function rewriteSpecialForms(tokens: Token[], sql: string): Token[] {
           ident("SELECT"),
           ident("v"),
           ident("AS"),
-          alias,
+          column,
           ident("FROM"),
           ident("_series"),
           punct(")"),
@@ -1050,7 +1091,7 @@ function rewriteSpecialForms(tokens: Token[], sql: string): Token[] {
 
       const replacement = [...subquery, ident("AS"), alias];
 
-      out.splice(i, aliasAt - i + 1, ...replacement);
+      out.splice(i, end - i + 1, ...replacement);
       i += replacement.length - 1;
     }
   }
@@ -1341,10 +1382,68 @@ const AFTER_TABLE = new Set([
   "LIMIT",
 ]);
 
+/** The WITH list of a statement: each part, and where the statement starts. */
+function withParts(tokens: Token[]): {
+  parts: { at: number; close: number; name: Token; open: number }[];
+  start: number;
+} {
+  const parts: { at: number; close: number; name: Token; open: number }[] = [];
+
+  if (!isWord(tokens[0], "WITH")) {
+    return { parts, start: 0 };
+  }
+
+  let at = isWord(tokens[1], "RECURSIVE") ? 2 : 1;
+
+  for (;;) {
+    const name = tokens[at];
+    let open = at + 1;
+
+    if (tokens[open]?.text === "(") {
+      open = closingParen(tokens, open) + 1;
+    }
+
+    if (!name || !isWord(tokens[open], "AS")) {
+      return { parts, start: at };
+    }
+
+    open += 1;
+
+    if (
+      isWord(tokens[open], "NOT") &&
+      isWord(tokens[open + 1], "MATERIALIZED")
+    ) {
+      open += 2;
+    } else if (isWord(tokens[open], "MATERIALIZED")) {
+      open += 1;
+    }
+
+    if (tokens[open]?.text !== "(") {
+      return { parts, start: at };
+    }
+
+    const close = closingParen(tokens, open);
+
+    parts.push({ at, close, name, open });
+    at = close + 1;
+
+    if (tokens[at]?.text !== ",") {
+      return { parts, start: at };
+    }
+
+    at += 1;
+  }
+}
+
+/** Index of the statement's own verb, after any WITH list. */
+function statementStart(tokens: Token[]): number {
+  return withParts(tokens).start;
+}
+
 /** UPDATE t x / DELETE FROM t x: SQLite wants `AS x`. */
 function addTargetAs(tokens: Token[]): Token[] {
   // After a WITH, the statement starts at its first top-level verb.
-  if (isWord(tokens[0], "INSERT")) {
+  if (isWord(tokens[statementStart(tokens)], "INSERT")) {
     // ON CONFLICT … DO UPDATE SET is not an UPDATE statement.
     return tokens;
   }
@@ -1440,7 +1539,7 @@ function fromAliases(from: Token[]): Set<string> {
  * FROM, joined by the conditions of the WHERE that mention them.
  */
 function rewriteUpdateFromReturning(tokens: Token[]): Token[] {
-  if (isWord(tokens[0], "INSERT")) {
+  if (isWord(tokens[statementStart(tokens)], "INSERT")) {
     return tokens;
   }
 
@@ -1569,11 +1668,13 @@ function splitOnTopLevelAnd(tokens: Token[]): Token[][] {
 
 /** `INSERT … SELECT … ON CONFLICT` needs a WHERE in SQLite's grammar. */
 function addUpsertWhere(tokens: Token[]): Token[] {
-  if (!isWord(tokens[0], "INSERT")) {
+  const start = statementStart(tokens);
+
+  if (!isWord(tokens[start], "INSERT")) {
     return tokens;
   }
 
-  const select = topLevelIndex(tokens, "SELECT");
+  const select = topLevelIndex(tokens, "SELECT", start);
   const conflict = topLevelSequence(tokens, ["ON", "CONFLICT"]);
 
   if (select === -1 || conflict === -1 || conflict < select) {
@@ -2121,6 +2222,311 @@ function computeHints(
   return hints;
 }
 
+/**
+ * `a UNION ALL (SELECT … ORDER BY … LIMIT n)`: SQLite takes no parentheses
+ * around a part of a compound SELECT, so a part in them becomes
+ * `SELECT * FROM (…)`, which keeps its own ORDER BY and LIMIT.
+ */
+function rewriteParenthesizedCompounds(tokens: Token[]): Token[] {
+  const out = [...tokens];
+  const isCompound = (token: Token | undefined) =>
+    isWord(token, "UNION", "INTERSECT", "EXCEPT");
+
+  for (let i = 0; i < out.length; i += 1) {
+    if (
+      out[i]!.text !== "(" ||
+      out[i]!.type !== "punct" ||
+      !isWord(out[i + 1], "SELECT", "WITH")
+    ) {
+      continue;
+    }
+
+    const close = closingParen(out, i);
+    let before = i - 1;
+
+    if (isWord(out[before], "ALL", "DISTINCT")) {
+      before -= 1;
+    }
+
+    if (!isCompound(out[before]) && !isCompound(out[close + 1])) {
+      continue;
+    }
+
+    // `(SELECT …) UNION …` only where a statement or subquery starts.
+    if (!isCompound(out[before]) && !(i === 0 || out[i - 1]!.text === "(")) {
+      continue;
+    }
+
+    const replacement = [
+      ident("SELECT"),
+      op("*"),
+      ident("FROM"),
+      ...out.slice(i, close + 1),
+    ];
+
+    out.splice(i, close - i + 1, ...replacement);
+  }
+
+  return out;
+}
+
+/**
+ * `SELECT x::text`: Postgres names the column x (or, for `count(*)::int`,
+ * count), SQLite after the cast's rewrite `CAST(x AS TEXT)`. So such an
+ * item is given its Postgres name, in the select list and in RETURNING.
+ */
+function nameCastColumns(tokens: Token[]): Token[] {
+  const ranges: { end: number; start: number }[] = [];
+  const select = topLevelIndex(tokens, "SELECT");
+  const returning = topLevelIndex(tokens, "RETURNING");
+
+  if (select !== -1) {
+    let end = tokens.length;
+
+    for (const word of CLAUSE_ENDS) {
+      const index = topLevelIndex(tokens, word, select + 1);
+
+      if (index !== -1) {
+        end = Math.min(end, index);
+      }
+    }
+
+    let start = select + 1;
+
+    if (isWord(tokens[start], "DISTINCT", "ALL")) {
+      start += 1;
+    }
+
+    ranges.push({ end, start });
+  }
+
+  if (returning !== -1) {
+    ranges.push({ end: tokens.length, start: returning + 1 });
+  }
+
+  const insertions: { at: number; name: string }[] = [];
+
+  for (const range of ranges) {
+    let depth = 0;
+    let itemStart = range.start;
+
+    for (let i = range.start; i <= range.end; i += 1) {
+      const token = tokens[i];
+
+      if (i < range.end && token!.type === "punct") {
+        if (token!.text === "(" || token!.text === "[") depth += 1;
+        if (token!.text === ")" || token!.text === "]") depth -= 1;
+      }
+
+      if (i === range.end || (depth === 0 && token!.text === ",")) {
+        const name = castItemName(tokens.slice(itemStart, i));
+
+        if (name) {
+          insertions.push({ at: i, name });
+        }
+
+        itemStart = i + 1;
+      }
+    }
+  }
+
+  const out = [...tokens];
+
+  for (const { at, name } of insertions.sort((a, b) => b.at - a.at)) {
+    out.splice(at, 0, ident("AS"), {
+      text: `"${name.replace(/"/g, '""')}"`,
+      type: "qident",
+    });
+  }
+
+  return out;
+}
+
+/** The name Postgres gives `ref::type…` or `f(…)::type…`, else null. */
+function castItemName(item: Token[]): string | null {
+  let cast = -1;
+  let depth = 0;
+
+  for (let i = 0; i < item.length; i += 1) {
+    const token = item[i]!;
+
+    if (token.type === "punct" && (token.text === "(" || token.text === "[")) {
+      depth += 1;
+    } else if (
+      token.type === "punct" &&
+      (token.text === ")" || token.text === "]")
+    ) {
+      depth -= 1;
+    } else if (depth === 0 && token.text === "::") {
+      cast = i;
+      break;
+    }
+  }
+
+  if (cast <= 0) {
+    return null;
+  }
+
+  const head = item.slice(0, cast);
+  let name: string | null = null;
+  let callEnd = -1;
+
+  if (
+    (head[0]!.type === "ident" || head[0]!.type === "qident") &&
+    head[1]?.text === "("
+  ) {
+    callEnd = closingParen(head, 1);
+
+    // count(*) FILTER (WHERE …), sum(x) OVER (…)
+    if (
+      isWord(head[callEnd + 1], "FILTER", "OVER") &&
+      head[callEnd + 2]?.text === "("
+    ) {
+      callEnd = closingParen(head, callEnd + 2);
+    }
+  }
+
+  if (
+    head.every((token, index) =>
+      index % 2 === 0
+        ? token.type === "ident" || token.type === "qident"
+        : token.text === ".",
+    ) &&
+    head.length % 2 === 1
+  ) {
+    name = isWord(head.at(-1), "NULL", "TRUE", "FALSE")
+      ? null
+      : unquote(head.at(-1)!.text);
+  } else if (
+    callEnd === head.length - 1 &&
+    !NOT_FUNCTION_NAMES.has(upper(head[0])) &&
+    !isWord(head[0], "CAST", "ARRAY", "ROW")
+  ) {
+    name =
+      head[0]!.type === "ident"
+        ? head[0]!.text.toLowerCase()
+        : unquote(head[0]!.text);
+  }
+
+  if (!name) {
+    return null;
+  }
+
+  // Only casts after it, to the end of the item.
+  let at = cast;
+
+  while (at < item.length && item[at]!.text === "::") {
+    at = castTypeEnd(item, at + 1).end + 1;
+  }
+
+  return at === item.length ? name : null;
+}
+
+/**
+ * RETURNING * and RETURNING alias.*: the target table's columns, by name,
+ * so that a data-modifying WITH knows what its part returns.
+ */
+function expandReturningStar(
+  tokens: Token[],
+  schema: SchemaInfo | null,
+): Token[] {
+  const returning = topLevelIndex(tokens, "RETURNING");
+
+  if (returning === -1) {
+    return tokens;
+  }
+
+  const items = splitTopLevel(tokens.slice(returning + 1));
+  const isStar = (item: Token[]) =>
+    (item.length === 1 && item[0]!.text === "*") ||
+    (item.length === 3 && item[1]!.text === "." && item[2]!.text === "*");
+
+  if (!items.some(isStar)) {
+    return tokens;
+  }
+
+  const start = statementStart(tokens);
+  const verb = upper(tokens[start]);
+  let tableAt = start + 1;
+
+  if (verb === "INSERT" || verb === "DELETE") {
+    tableAt += 1;
+  }
+
+  if (
+    upper(tokens[tableAt]) === "PUBLIC" &&
+    tokens[tableAt + 1]?.text === "."
+  ) {
+    tableAt += 2;
+  }
+
+  const table = tokens[tableAt];
+  const columns =
+    table && schema ? schema.tableColumns(unquote(table.text)) : null;
+  const aliasAt = isWord(tokens[tableAt + 1], "AS") ? tableAt + 2 : tableAt + 1;
+  const alias = tokens[aliasAt];
+  const targetNames = new Set([
+    table ? unquote(table.text) : "",
+    ...(alias &&
+    (alias.type === "ident" || alias.type === "qident") &&
+    !AFTER_TABLE.has(upper(alias))
+      ? [unquote(alias.text)]
+      : []),
+  ]);
+
+  // Left to SQLite, which has RETURNING * too; only a WITH needs the names.
+  if (
+    !columns ||
+    items.some(
+      (item) =>
+        isStar(item) &&
+        item.length === 3 &&
+        !targetNames.has(unquote(item[0]!.text)),
+    )
+  ) {
+    return tokens;
+  }
+
+  const expanded: Token[] = [];
+
+  items.forEach((item, index) => {
+    if (index > 0) {
+      expanded.push(punct(","));
+    }
+
+    if (!isStar(item)) {
+      expanded.push(...item);
+      return;
+    }
+
+    columns.forEach((column, at) => {
+      if (at > 0) {
+        expanded.push(punct(","));
+      }
+
+      if (item.length === 3) {
+        expanded.push(item[0]!, punct("."));
+      }
+
+      expanded.push({
+        text: `"${column.name.replace(/"/g, '""')}"`,
+        type: "qident",
+      });
+    });
+  });
+
+  return [...tokens.slice(0, returning + 1), ...expanded];
+}
+
+function highestParameter(tokens: Token[]): number {
+  return Math.max(
+    0,
+    ...tokens
+      .filter((token) => token.type === "param")
+      .map((token) => Number(token.text.slice(1))),
+  );
+}
+
 // --------------------------------------------------------------- entry point
 
 const ADVISORY =
@@ -2209,13 +2615,31 @@ export function rewriteSql(
     original = [ident("DELETE"), ident("FROM"), ...rest];
   }
 
+  // LOCK TABLE t IN … MODE: the write lock, which on SQLite is the one lock
+  // there is, holds every table against every other writer already. Taken
+  // as a write is, at once, and held to the end of the transaction.
+  if (isWord(original[0], "LOCK")) {
+    return { hints: new Map(), kind: "write", sql: "SELECT 1 WHERE 0" };
+  }
+
   const kind = classify(original);
 
   if (kind === "begin" || kind === "commit" || kind === "rollback") {
-    return { hints: new Map(), kind, sql: kind.toUpperCase() };
+    return {
+      hints: new Map(),
+      kind,
+      ...(kind === "begin" &&
+      original.some((token) => isWord(token, "REPEATABLE", "SERIALIZABLE"))
+        ? { snapshot: true }
+        : {}),
+      sql: kind.toUpperCase(),
+    };
   }
 
   rejectUnsupported(original, sql);
+  original = nameCastColumns(original);
+  original = expandReturningStar(original, schema);
+  original = rewriteParenthesizedCompounds(original);
 
   const dataModifyingCte = splitDataModifyingCte(original, sql, schema);
 
@@ -2250,138 +2674,132 @@ export function rewriteSql(
 }
 
 /**
- * `WITH name AS (DELETE … RETURNING a, b) SELECT … FROM name`: SQLite has
- * no data-modifying CTEs, so the DML runs first (`preStep`) and the SELECT
- * then reads its rows from a JSON parameter appended after the statement's
- * own parameters. The pool runs both in one transaction.
+ * `WITH a AS (UPDATE … RETURNING x), b AS (INSERT … SELECT … FROM a)
+ * SELECT … FROM a`: SQLite has no data-modifying CTEs, so each part that
+ * modifies data runs first, in order, as a statement of its own
+ * (`preSteps`), with the parts before it in its WITH. The rows it returns
+ * go to the statements after it as JSON, in a parameter appended after the
+ * statement's own, read by a part of the same name. The pool runs them all
+ * in one transaction.
+ *
+ * Unlike Postgres, where every part sees the database as it was before the
+ * statement, a later step sees what an earlier one changed.
  */
 function splitDataModifyingCte(
   tokens: Token[],
   sql: string,
   schema: SchemaInfo | null,
 ): Rewritten | null {
-  if (!isWord(tokens[0], "WITH")) {
+  const { parts, start } = withParts(tokens);
+  const isModifying = ({ open }: { open: number }) =>
+    isWord(tokens[open + 1], "INSERT", "UPDATE", "DELETE");
+
+  if (!parts.some(isModifying)) {
     return null;
   }
 
-  // name AS ( body ) [, …]
-  const ctes: { name: Token; open: number; close: number }[] = [];
-  let at = 1;
-
-  if (isWord(tokens[at], "RECURSIVE")) {
-    at += 1;
+  if (isWord(tokens[1], "RECURSIVE")) {
+    throw new UnsupportedSqlError("a WITH RECURSIVE that modifies data", sql);
   }
 
-  for (;;) {
-    const name = tokens[at];
-    let open = at + 1;
+  let nextParameter = highestParameter(tokens) + 1;
+  const preSteps: PreStep[] = [];
+  // The WITH list the statements after each step see.
+  const list: Token[][] = [];
+  const withList = (): Token[] =>
+    list.length === 0
+      ? []
+      : [
+          ident("WITH"),
+          ...list.flatMap((part, index) =>
+            index > 0 ? [punct(","), ...part] : part,
+          ),
+        ];
 
-    if (tokens[open]?.text === "(") {
-      open = closingParen(tokens, open) + 1;
+  for (const part of parts) {
+    if (!isModifying(part)) {
+      list.push(tokens.slice(part.at, part.close + 1));
+      continue;
     }
 
-    if (
-      !name ||
-      !isWord(tokens[open], "AS") ||
-      tokens[open + 1]?.text !== "("
-    ) {
-      return null;
+    const body = expandReturningStar(
+      nameCastColumns(tokens.slice(part.open + 1, part.close)),
+      schema,
+    );
+    const returning = topLevelIndex(body, "RETURNING");
+    const step = [...withList(), ...body];
+    const rewritten = rewriteSql(render(step), schema);
+
+    if (rewritten.preSteps) {
+      throw new UnsupportedSqlError("a data-modifying WITH inside one", sql);
     }
 
-    const close = closingParen(tokens, open + 1);
-
-    ctes.push({ close, name, open: open + 1 });
-    at = close + 1;
-
-    if (tokens[at]?.text !== ",") {
-      break;
+    if (returning === -1) {
+      // Nothing can read it: it only has to run.
+      preSteps.push({
+        parameterCount: highestParameter(step),
+        rowsParameter: null,
+        sql: rewritten.sql,
+      });
+      continue;
     }
 
-    at += 1;
-  }
-
-  const modifying = ctes.filter(({ open }) =>
-    isWord(tokens[open + 1], "INSERT", "UPDATE", "DELETE"),
-  );
-
-  if (modifying.length === 0) {
-    return null;
-  }
-
-  if (modifying.length > 1 || ctes.length > 1) {
-    throw new UnsupportedSqlError(
-      "a WITH that modifies data in more than one part",
-      sql,
+    const columns = splitTopLevel(body.slice(returning + 1)).map(
+      (item) => selectItems([ident("SELECT"), ...item])[0]?.name ?? null,
     );
-  }
 
-  const [{ close, name, open }] = modifying;
-  const body = tokens.slice(open + 1, close);
-  const returning = topLevelIndex(body, "RETURNING");
+    if (columns.some((column) => column === null)) {
+      throw new UnsupportedSqlError(
+        "a RETURNING item without a name in a WITH",
+        sql,
+      );
+    }
 
-  if (returning === -1) {
-    throw new UnsupportedSqlError(
-      "a data-modifying WITH without RETURNING",
-      sql,
-    );
-  }
+    const rowsParameter = nextParameter;
 
-  const columns = splitTopLevel(body.slice(returning + 1)).map(
-    (item) => selectItems([ident("SELECT"), ...item])[0]?.name ?? null,
-  );
-
-  if (columns.some((column) => column === null)) {
-    throw new UnsupportedSqlError(
-      "a RETURNING item without a name in a WITH",
-      sql,
-    );
-  }
-
-  const highest = Math.max(
-    0,
-    ...tokens
-      .filter((token) => token.type === "param")
-      .map((token) => Number(token.text.slice(1))),
-  );
-  const rowsParameter = highest + 1;
-  const preStep = rewriteSql(render(body), schema);
-  const replacement: Token[] = [
-    ident("WITH"),
-    name,
-    punct("("),
-    ...columns.flatMap((column, index) => [
-      ...(index > 0 ? [punct(",")] : []),
-      { text: `"${column!.replace(/"/g, '""')}"`, type: "qident" as const },
-    ]),
-    punct(")"),
-    ident("AS"),
-    punct("("),
-    ident("SELECT"),
-    ...columns.flatMap((_, index) => [
-      ...(index > 0 ? [punct(",")] : []),
-      ident("json_extract"),
+    nextParameter += 1;
+    preSteps.push({
+      parameterCount: highestParameter(step),
+      rowsParameter,
+      sql: rewritten.sql,
+    });
+    list.push([
+      part.name,
       punct("("),
-      ident("value"),
-      punct(","),
-      { text: `'$[${String(index)}]'`, type: "string" as const },
+      ...columns.flatMap((column, index) => [
+        ...(index > 0 ? [punct(",")] : []),
+        { text: `"${column!.replace(/"/g, '""')}"`, type: "qident" as const },
+      ]),
       punct(")"),
-    ]),
-    ident("FROM"),
-    ident("json_each"),
-    punct("("),
-    { text: `$${String(rowsParameter)}`, type: "param" },
-    punct(")"),
-    punct(")"),
-  ];
-  const main = rewriteSql(
-    render([...replacement, ...tokens.slice(close + 1)]),
-    schema,
-  );
+      ident("AS"),
+      punct("("),
+      ident("SELECT"),
+      ...columns.flatMap((_, index) => [
+        ...(index > 0 ? [punct(",")] : []),
+        ident("json_extract"),
+        punct("("),
+        ident("value"),
+        punct(","),
+        { text: `'$[${String(index)}]'`, type: "string" as const },
+        punct(")"),
+      ]),
+      ident("FROM"),
+      ident("json_each"),
+      punct("("),
+      { text: `$${String(rowsParameter)}`, type: "param" },
+      punct(")"),
+      punct(")"),
+    ]);
+  }
+
+  const mainTokens = [...withList(), ...tokens.slice(start)];
+  const main = rewriteSql(render(mainTokens), schema);
 
   return {
     hints: main.hints,
     kind: "write",
-    preStep: { rowsParameter, sql: preStep.sql },
+    parameterCount: highestParameter(mainTokens),
+    preSteps,
     sql: main.sql,
   };
 }

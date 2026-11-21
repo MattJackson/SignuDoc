@@ -3,6 +3,7 @@
 import {
   BellIcon,
   Building2Icon,
+  CodeIcon,
   DatabaseBackupIcon,
   ListChecksIcon,
   PlugIcon,
@@ -118,6 +119,15 @@ export function SettingsNav({
             icon: PlugIcon,
             label: "Integrations",
           },
+          ...(hosted
+            ? []
+            : [
+                {
+                  href: "/settings/developers",
+                  icon: CodeIcon,
+                  label: "API and webhooks",
+                },
+              ]),
         ],
         label: "Integrations",
       },

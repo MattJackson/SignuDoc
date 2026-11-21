@@ -329,6 +329,7 @@ schedule "${SERVICE}-retention" /api/internal/retention "0 9 * * *"
 [[ -n "${BACKUP_REGION:-}" ]] && schedule "${SERVICE}-backup" /api/internal/backup "0 8 * * *"
 schedule "${SERVICE}-drive-export" /api/internal/drive-export "${FREQUENT_SCHEDULE}"
 schedule "${SERVICE}-notifications" /api/internal/notifications "${FREQUENT_SCHEDULE}"
+schedule "${SERVICE}-webhooks" /api/internal/webhooks "${FREQUENT_SCHEDULE}"
 schedule "${SERVICE}-directory-sync" /api/internal/directory-sync "0 7 * * *"
 
 if [[ -n "${DOMAIN:-}" ]]; then

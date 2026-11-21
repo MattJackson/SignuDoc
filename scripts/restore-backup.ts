@@ -145,7 +145,7 @@ async function main() {
     try {
       console.log(`Restoring ${backupPath}…`);
 
-      const { rows } = await restoreDatabase({
+      const { revoked, rows } = await restoreDatabase({
         backupPath,
         database,
         store: backupStore,
@@ -154,6 +154,16 @@ async function main() {
       for (const [table, count] of Object.entries(rows)) {
         console.log(`  ${table}: ${String(count)} rows`);
       }
+
+      console.log(
+        [
+          "Ended what the backup had of sign-ins and links, so none of them works again:",
+          `  ${String(revoked.sessions)} sessions (everyone signs in again)`,
+          `  ${String(revoked.verifications)} one-time codes and reset links`,
+          `  ${String(revoked.signingLinks)} signing links (senders send a reminder for a new one)`,
+          `  ${String(revoked.providerSessions)} signatures under way at a signing provider`,
+        ].join("\n"),
+      );
     } finally {
       await database.end();
     }

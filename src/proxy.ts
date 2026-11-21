@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { GOOGLE_PICTURE_HOSTS } from "@/lib/auth/google-profile";
 import { withClientIpHeader } from "@/lib/security/request";
+import { frameAncestorsFor } from "@/lib/embed-origin";
 import { supportsDirectUploads } from "@/lib/services/storage/driver";
 
 const DEFAULT_PERMISSIONS_POLICY = [
@@ -66,20 +67,21 @@ const GOOGLE_PICKER_CONNECT_SOURCES =
 function usesGooglePicker(pathname: string) {
   return !(
     pathname.startsWith("/sign/") ||
+    pathname.startsWith("/embed/") ||
     pathname.startsWith("/download/") ||
     pathname.startsWith("/api/") ||
     pathname.startsWith("/verify")
   );
 }
 
-function buildContentSecurityPolicy(pathname: string) {
+function buildContentSecurityPolicy(pathname: string, frameAncestors: string) {
   const preview = isVercelPreview();
   const botProtection = process.env.NEXT_PUBLIC_BOTID === "1";
   const picker = usesGooglePicker(pathname);
   const directives: Array<[name: string, sources: Array<string | false>]> = [
     ["default-src", ["'self'"]],
     ["base-uri", ["'self'"]],
-    ["frame-ancestors", ["'none'"]],
+    ["frame-ancestors", [frameAncestors]],
     ["form-action", ["'self'"]],
     ["object-src", ["'none'"]],
     [
@@ -149,15 +151,26 @@ function buildContentSecurityPolicy(pathname: string) {
     .join("; ");
 }
 
-function applySecurityHeaders(response: NextResponse, pathname: string) {
+function applySecurityHeaders(
+  response: NextResponse,
+  pathname: string,
+  searchParams: URLSearchParams,
+) {
+  // Only an embedded signing page may be framed, and only by the site its
+  // link names (see src/lib/embed-origin.ts). Everything else, never.
+  const frameAncestors = frameAncestorsFor(pathname, searchParams);
+
   response.headers.set(
     "Content-Security-Policy",
-    buildContentSecurityPolicy(pathname),
+    buildContentSecurityPolicy(pathname, frameAncestors),
   );
   response.headers.set("Permissions-Policy", DEFAULT_PERMISSIONS_POLICY);
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
+
+  if (frameAncestors === "'none'") {
+    response.headers.set("X-Frame-Options", "DENY");
+  }
 
   if (isProductionEnvironment()) {
     response.headers.set(
@@ -168,6 +181,7 @@ function applySecurityHeaders(response: NextResponse, pathname: string) {
 
   if (
     !pathname.startsWith("/sign/") &&
+    !pathname.startsWith("/embed/sign/") &&
     !pathname.startsWith("/api/signing/") &&
     !pathname.startsWith("/api/download/") &&
     !pathname.startsWith("/download/")
@@ -202,7 +216,7 @@ export function proxy(request: NextRequest) {
     request: { headers: withClientIpHeader(request.headers) },
   });
 
-  return applySecurityHeaders(response, pathname);
+  return applySecurityHeaders(response, pathname, request.nextUrl.searchParams);
 }
 
 export const config = {

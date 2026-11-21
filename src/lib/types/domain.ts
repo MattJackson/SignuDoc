@@ -14,6 +14,9 @@ export const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024;
 export const MAX_CONVERT_SOURCE_BYTES = 50 * 1024 * 1024;
 /** What a person is told when a file passes either limit. */
 export const FILE_TOO_LARGE_TO_CONVERT_MESSAGE = `This file is too large: PDFs can be up to ${String(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024))} MB, and other documents up to ${String(MAX_CONVERT_SOURCE_BYTES / (1024 * 1024))} MB before conversion.`;
+// A PDF can pack a great many pages into a small file. Each page is a row
+// and is drawn again when the envelope is finished, so there is a limit.
+export const MAX_PDF_PAGES = 1000;
 /**
  * The largest request body the app reads in full: a PDF at the upload limit
  * plus room for the rest of the multipart form (the title and the part

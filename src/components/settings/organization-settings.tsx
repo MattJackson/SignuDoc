@@ -10,6 +10,26 @@ import { Part11Panel } from "@/components/settings/part11-panel";
 import { PeoplePanel } from "@/components/settings/people-panel";
 import { SecurityPanel } from "@/components/settings/security-panel";
 import { SignerDataPanel } from "@/components/settings/signer-data-panel";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  CUSTOM_DISCLOSURE_LEGAL_NOTE,
+  CUSTOM_DISCLOSURE_NOTICE,
+  tidyDisclosureText,
+} from "@/lib/consent-disclosure-notice";
 import type {
   OrganizationSettingsField,
   OrganizationSettingsView,
@@ -108,6 +128,11 @@ export function OrganizationSettings({
   // Bumped after a save, so the email panel looks again: a new sender
   // address means a different domain to check.
   const [emailRevision, setEmailRevision] = useState(0);
+  // The disclosure as last saved, to tell whether a save changes it.
+  const [savedConsentDisclosure, setSavedConsentDisclosure] = useState(
+    initialSettings.consentDisclosure,
+  );
+  const [isDisclosureNoticeOpen, setIsDisclosureNoticeOpen] = useState(false);
 
   function handleChange(field: OrganizationSettingsField) {
     return (event: ChangeEvent<HTMLInputElement>) => {
@@ -117,6 +142,15 @@ export function OrganizationSettings({
       setErrors((currentErrors) => ({ ...currentErrors, [field]: undefined }));
       setFeedback(null);
     };
+  }
+
+  function setConsentDisclosure(consentDisclosure: string) {
+    setValues((currentValues) => ({ ...currentValues, consentDisclosure }));
+    setErrors((currentErrors) => ({
+      ...currentErrors,
+      consentDisclosure: undefined,
+    }));
+    setFeedback(null);
   }
 
   function handleBrandColorChange(brandColor: string) {
@@ -135,13 +169,39 @@ export function OrganizationSettings({
     setFeedback(null);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  /**
+   * Whether saving puts the administrator's own words in place of what
+   * signers read now, which needs them to agree to the notice first. Going
+   * back to the standard text, or saving the same words again, does not.
+   */
+  function savingChangesToOwnDisclosure(): boolean {
+    const next = tidyDisclosureText(values.consentDisclosure);
+
+    return (
+      !values.hosted &&
+      next.length > 0 &&
+      next !== tidyDisclosureText(values.defaultConsentDisclosure) &&
+      next !== tidyDisclosureText(savedConsentDisclosure)
+    );
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (isSaving) {
       return;
     }
 
+    if (savingChangesToOwnDisclosure()) {
+      setIsDisclosureNoticeOpen(true);
+      return;
+    }
+
+    void saveSettings(false);
+  }
+
+  async function saveSettings(disclosureNoticeAgreed: boolean) {
+    setIsDisclosureNoticeOpen(false);
     setErrors({});
     setFeedback(null);
     setIsSaving(true);
@@ -151,6 +211,8 @@ export function OrganizationSettings({
         body: JSON.stringify({
           allowedEmailDomains: values.allowedEmailDomains,
           brandColor: values.brandColor,
+          consentDisclosure: values.consentDisclosure,
+          consentDisclosureAcknowledged: disclosureNoticeAgreed,
           organizationName: values.organizationName,
           privacyUrl: values.privacyUrl,
           ...(values.hosted ? {} : { productName: values.productName }),
@@ -177,6 +239,7 @@ export function OrganizationSettings({
       }
 
       setValues(payload.settings);
+      setSavedConsentDisclosure(payload.settings.consentDisclosure);
       setEmailRevision((revision) => revision + 1);
       setFeedback({ message: "Organization settings saved.", tone: "success" });
       // The header and the accent color come from the layout around this
@@ -265,8 +328,9 @@ export function OrganizationSettings({
                 Who can create an account
               </legend>
               <p className="clear-both max-w-2xl text-sm leading-6 text-(--secondary)">
-                This is about people who send documents. People who are sent a
-                document to sign never need an account.
+                {values.part11Mode
+                  ? "Part 11 mode is on, so this covers signers too. A Part 11 envelope goes only to someone with an account here whose identity an administrator has confirmed under People, so choose a rule that lets the people you send to create one."
+                  : "This is about people who send documents. People who are sent a document to sign don't need an account."}
               </p>
               <div className="space-y-3">
                 {signupModeOptions.map((option) => (
@@ -398,6 +462,90 @@ export function OrganizationSettings({
               </div>
             ) : null}
 
+            {!values.hosted ? (
+              <div className="space-y-5 border-t border-(--border) pt-8">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
+                    What signers agree to before signing
+                  </h3>
+                  <p className="max-w-2xl text-sm leading-6 text-(--secondary)">
+                    Optional. Signers read this and tick a box to agree to use
+                    electronic records and signatures before they sign. Leave it
+                    empty to use the standard text, or press &ldquo;Start from
+                    the standard text&rdquo; to edit it. The words each signer
+                    saw are kept with their record.
+                  </p>
+                </div>
+                <Field className="gap-2 text-sm">
+                  <FieldLabel
+                    className="text-[0.8125rem] font-semibold text-(--secondary)"
+                    htmlFor="consent-disclosure"
+                  >
+                    Disclosure text
+                  </FieldLabel>
+                  <Textarea
+                    aria-describedby="consent-disclosure-description"
+                    aria-invalid={errors.consentDisclosure ? true : undefined}
+                    className={
+                      errors.consentDisclosure
+                        ? "min-h-48 border-(--danger)"
+                        : "min-h-48"
+                    }
+                    disabled={isSaving}
+                    id="consent-disclosure"
+                    maxLength={6000}
+                    name="consent-disclosure"
+                    onChange={(event) =>
+                      setConsentDisclosure(event.target.value)
+                    }
+                    placeholder="Standard text"
+                    value={values.consentDisclosure}
+                  />
+                  {errors.consentDisclosure ? (
+                    <FieldError
+                      className="text-xs font-semibold text-(--danger)"
+                      id="consent-disclosure-description"
+                    >
+                      {errors.consentDisclosure}
+                    </FieldError>
+                  ) : (
+                    <FieldDescription
+                      className="text-xs leading-5 text-(--tertiary)"
+                      id="consent-disclosure-description"
+                    >
+                      Separate paragraphs with a blank line. Start a line with
+                      ## and a space to make a heading. Write {"{sender}"} where
+                      the sender&apos;s name goes and {"{contact}"} where the
+                      address to write to goes.
+                    </FieldDescription>
+                  )}
+                  <p className="text-xs leading-5 text-(--secondary)">
+                    {CUSTOM_DISCLOSURE_LEGAL_NOTE}
+                  </p>
+                </Field>
+                <div className="flex flex-wrap gap-3">
+                  <ShellButton
+                    disabled={isSaving}
+                    onClick={() =>
+                      setConsentDisclosure(values.defaultConsentDisclosure)
+                    }
+                    variant="secondary"
+                  >
+                    Start from the standard text
+                  </ShellButton>
+                  {values.consentDisclosure.length > 0 ? (
+                    <ShellButton
+                      disabled={isSaving}
+                      onClick={() => setConsentDisclosure("")}
+                      variant="ghost"
+                    >
+                      Use the standard text
+                    </ShellButton>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
             <div className="space-y-5 border-t border-(--border) pt-8">
               <div className="space-y-2">
                 <h3 className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
@@ -434,6 +582,51 @@ export function OrganizationSettings({
               {isSaving ? "Saving..." : "Save organization settings"}
             </ShellButton>
           </form>
+        ) : null}
+
+        {isDisclosureNoticeOpen ? (
+          <Dialog
+            open
+            onOpenChange={(open) => {
+              if (!open) {
+                setIsDisclosureNoticeOpen(false);
+              }
+            }}
+          >
+            <DialogContent
+              className="max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto sm:p-8"
+              showCloseButton={false}
+            >
+              <DialogHeader className="space-y-3">
+                <DialogTitle>{CUSTOM_DISCLOSURE_NOTICE.title}</DialogTitle>
+                <DialogDescription asChild>
+                  <div className="space-y-3 text-sm leading-6 text-(--secondary)">
+                    {CUSTOM_DISCLOSURE_NOTICE.paragraphs.map((paragraph) => (
+                      <p key={paragraph.text}>
+                        {paragraph.lead ? (
+                          <strong className="font-bold text-(--fg)">
+                            {paragraph.lead}{" "}
+                          </strong>
+                        ) : null}
+                        {paragraph.text}
+                      </p>
+                    ))}
+                  </div>
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-3 sm:justify-end">
+                <ShellButton
+                  onClick={() => setIsDisclosureNoticeOpen(false)}
+                  variant="secondary"
+                >
+                  Cancel
+                </ShellButton>
+                <ShellButton onClick={() => void saveSettings(true)}>
+                  {CUSTOM_DISCLOSURE_NOTICE.agree}
+                </ShellButton>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         ) : null}
 
         {/* Settings shows email under Integrations, on its own page. */}

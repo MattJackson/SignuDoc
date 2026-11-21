@@ -98,8 +98,8 @@ test("every SQL statement in the app runs on SQLite", () => {
 
       // Preparing checks the syntax, every table, column and function, and
       // that each ON CONFLICT target is a unique index.
-      if (rewritten.preStep) {
-        database.prepare(rewritten.preStep.sql);
+      for (const step of rewritten.preSteps ?? []) {
+        database.prepare(step.sql);
       }
 
       database.prepare(rewritten.sql);
@@ -162,7 +162,7 @@ test("casts keep their Postgres meaning", () => {
   );
   assert.equal(
     sqlite("SELECT id::text FROM envelopes"),
-    "SELECT CAST(id AS TEXT) FROM envelopes",
+    `SELECT CAST(id AS TEXT) AS "id" FROM envelopes`,
   );
   assert.equal(sqlite("SELECT '{}'::jsonb, $1::text[]"), "SELECT '{}', ?1");
   assert.equal(
@@ -173,7 +173,7 @@ test("casts keep their Postgres meaning", () => {
   );
   assert.equal(
     sqlite("SELECT x::text::int FROM t"),
-    "SELECT pg_int(CAST(x AS TEXT)) FROM t",
+    `SELECT pg_int(CAST(x AS TEXT)) AS "x" FROM t`,
   );
   assert.equal(sqlite("SELECT 'a::b'"), "SELECT 'a::b'");
   assert.throws(() => sqlite("SELECT 'x'::regclass"), UnsupportedSqlError);
@@ -297,15 +297,152 @@ test("a data-modifying WITH runs as two statements", () => {
     schema,
   );
 
-  assert.equal(
-    rewritten.preStep?.sql,
-    "DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2 RETURNING user_id",
-  );
-  assert.equal(rewritten.preStep?.rowsParameter, 3);
+  assert.deepEqual(rewritten.preSteps, [
+    {
+      parameterCount: 2,
+      rowsParameter: 3,
+      sql: "DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2 RETURNING user_id",
+    },
+  ]);
   assert.match(
     rewritten.sql,
     /WITH removed\("user_id"\) AS\(SELECT json_extract\(value, '\$\[0\]'\) FROM json_each\(\?3\)\)/,
   );
+});
+
+test("a WITH that modifies data in several parts runs as a statement per part", () => {
+  const rewritten = rewriteSql(
+    `WITH due AS (
+       SELECT d.id FROM webhook_deliveries d WHERE d.status = 'pending'
+       ORDER BY d.id LIMIT $2 FOR UPDATE OF d SKIP LOCKED
+     ),
+     claimed AS (
+       UPDATE webhook_deliveries d SET attempts = d.attempts + 1, updated_at = $1
+       FROM due WHERE d.id = due.id
+       RETURNING d.*
+     ),
+     noted AS (
+       UPDATE webhook_endpoints SET updated_at = $1
+       WHERE id IN (SELECT endpoint_id FROM claimed)
+     )
+     SELECT c.id, c.payload FROM claimed c ORDER BY c.id`,
+    schema,
+  );
+  const [claim, note] = rewritten.preSteps ?? [];
+
+  assert.equal(rewritten.preSteps?.length, 2);
+  assert.match(
+    claim!.sql,
+    /^WITH due AS\(SELECT d\.id FROM webhook_deliveries d/,
+  );
+  assert.doesNotMatch(claim!.sql, /FOR UPDATE|SKIP LOCKED/);
+  assert.match(
+    claim!.sql,
+    /UPDATE webhook_deliveries AS d SET .* RETURNING webhook_deliveries\."id", webhook_deliveries\."endpoint_id"/,
+  );
+  assert.equal(claim!.parameterCount, 2);
+  assert.equal(claim!.rowsParameter, 3);
+  // The next part reads the rows of the one before it.
+  assert.match(note!.sql, /claimed\("id", "endpoint_id".*json_each\(\?3\)/);
+  assert.equal(note!.rowsParameter, null);
+  assert.equal(note!.parameterCount, 3);
+  assert.match(rewritten.sql, /json_each\(\?3\)\) SELECT c\.id, c\.payload/);
+  assert.equal(rewritten.parameterCount, 3);
+
+  for (const step of rewritten.preSteps ?? []) {
+    database.prepare(step.sql);
+  }
+
+  database.prepare(rewritten.sql);
+});
+
+test("an upsert after a data-modifying WITH gets the WHERE SQLite's grammar needs", () => {
+  const rewritten = rewriteSql(
+    `WITH claim AS (UPDATE teams SET updated_at = 1 WHERE id = $1 RETURNING id)
+     INSERT INTO team_members (team_id, user_id, added_at)
+     SELECT claim.id, $2, 1 FROM claim
+     ON CONFLICT (team_id, user_id) DO UPDATE SET added_at = EXCLUDED.added_at`,
+    schema,
+  );
+
+  assert.match(
+    rewritten.sql,
+    /SELECT claim\.id, \?2, 1 FROM claim WHERE true ON CONFLICT\(team_id, user_id\) DO UPDATE SET added_at = EXCLUDED\.added_at$/,
+  );
+  database.prepare(rewritten.sql);
+});
+
+test("RETURNING * names the target's columns", () => {
+  assert.match(
+    sqlite("DELETE FROM team_members WHERE team_id = $1 RETURNING *"),
+    /RETURNING "team_id", "user_id", "added_at"$/,
+  );
+});
+
+test("unnest(…) AS t(column) names its one column", () => {
+  assert.equal(
+    sqlite(
+      "SELECT s.n FROM teams CROSS JOIN unnest($1::int[]) AS s(n) WHERE true",
+    ),
+    "SELECT s.n FROM teams CROSS JOIN(SELECT value AS n FROM json_each(?1)) AS s WHERE true",
+  );
+});
+
+test("a parenthesized part of a UNION keeps its ORDER BY and LIMIT", () => {
+  const rewritten = sqlite(
+    `WITH listed AS (
+       SELECT id, 0 AS g FROM api_keys WHERE revoked_at IS NULL
+       UNION ALL
+       (SELECT id, 1 AS g FROM api_keys WHERE revoked_at IS NOT NULL ORDER BY revoked_at DESC LIMIT $1)
+     )
+     SELECT id FROM listed ORDER BY g`,
+  );
+
+  assert.match(
+    rewritten,
+    /UNION ALL SELECT \* FROM\(SELECT id, 1 AS g FROM api_keys WHERE revoked_at IS NOT NULL ORDER BY revoked_at DESC LIMIT \?1\)/,
+  );
+  database.prepare(rewritten);
+});
+
+test("LOCK TABLE takes the write lock, as any write does", () => {
+  const rewritten = rewriteSql(
+    "LOCK TABLE webhook_endpoints IN SHARE ROW EXCLUSIVE MODE",
+  );
+
+  assert.equal(rewritten.kind, "write");
+  database.prepare(rewritten.sql);
+});
+
+test("a cast column keeps the name Postgres gives it", () => {
+  assert.equal(
+    sqlite("SELECT last_used_at::text, count(*)::int FROM api_keys"),
+    `SELECT CAST(last_used_at AS TEXT) AS "last_used_at", pg_int(count(*)) AS "count" FROM api_keys`,
+  );
+  assert.equal(
+    sqlite("SELECT last_used_at::text AS t FROM api_keys"),
+    "SELECT CAST(last_used_at AS TEXT) AS t FROM api_keys",
+  );
+});
+
+test("IS NOT DISTINCT FROM does not end the select list", () => {
+  assert.deepEqual(
+    Object.fromEntries(
+      rewriteSql(
+        `SELECT CASE WHEN u.a IS NOT DISTINCT FROM u.b THEN 1 END AS x, EXISTS (SELECT 1) AS closing FROM "user" u`,
+        schema,
+      ).hints,
+    ),
+    { closing: "bool" },
+  );
+});
+
+test("REPEATABLE READ asks for one snapshot", () => {
+  assert.equal(
+    rewriteSql("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").snapshot,
+    true,
+  );
+  assert.equal(rewriteSql("BEGIN").snapshot, undefined);
 });
 
 test("advisory locks are recognized, with their key expression", () => {

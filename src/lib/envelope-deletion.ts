@@ -583,21 +583,29 @@ export async function cancelEnvelopeDeletion(
               envelopeId: envelope.id,
               ownerEmail: owner.email,
               ownerName: owner.name,
+              requestedAt: schedule.requestedAt,
               title: envelope.title,
             }
           : null,
     };
   }, database);
+  const { notify } = cancelled;
 
-  // A failure here is tried again by the daily run.
-  if (cancelled.notify) {
+  // A failure here is tried again by the daily run. As there, the request
+  // stays locked while the email goes out, so a deletion scheduled again
+  // meanwhile waits and its own notice comes after.
+  if (notify) {
     try {
-      await sendCancellationNotice(
-        cancelled.notify,
-        now,
-        database,
-        emailService ?? createEmailService(),
-      );
+      await withTransaction(async (tx) => {
+        if (await lockOwedNotice(notify, tx)) {
+          await sendCancellationNotice(
+            notify,
+            now,
+            tx,
+            emailService ?? createEmailService(),
+          );
+        }
+      }, database);
     } catch (error) {
       console.error(
         `Telling the sender about the cancelled deletion of envelope ${envelopeId} failed:`,
@@ -729,7 +737,7 @@ const CANCELLED_GIVE_UP_SECONDS = 30 * DAY_IN_SECONDS;
  * email comes after.
  */
 async function lockOwedNotice(
-  row: PendingNoticeRow,
+  row: Pick<PendingNoticeRow, "cancelledAt" | "envelopeId" | "requestedAt">,
   tx: DbExecutor,
 ): Promise<boolean> {
   const result =
@@ -919,6 +927,19 @@ export async function runScheduledEnvelopeDeletions({
         })
       ) {
         summary.deleted += 1;
+
+        // A file that could not be deleted stays queued for the next
+        // cleanup, and this run is reported as failed for it, as the
+        // retention sweep does.
+        const filesLeft = await queryOne(
+          database,
+          `SELECT 1 FROM pending_file_deletions WHERE envelope_id = $1 LIMIT 1`,
+          [envelopeId],
+        );
+
+        if (filesLeft) {
+          summary.failures.push(envelopeId);
+        }
       }
     } catch (error) {
       summary.failures.push(envelopeId);

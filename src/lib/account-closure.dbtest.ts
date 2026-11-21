@@ -12,6 +12,7 @@ import {
   requestAccountClosure,
 } from "./account.ts";
 import { openTestDatabase } from "./db/test-database.ts";
+import { listSystemAuditEvents } from "./services/system-audit.ts";
 
 // Closing an account from Settings, Danger zone, is refused for the last
 // administrator and for the break-glass account (the addresses kept for
@@ -267,3 +268,94 @@ async function createPooledAdmin(
 
   return { email, id };
 }
+
+test("two administrators closing at once cannot both go", async () => {
+  const previous = await database.query<{ id: string }>(
+    `select id from public."user" where role = 'admin'`,
+  );
+  const created: string[] = [];
+
+  try {
+    await database.query(
+      `update public."user" set role = 'user' where role = 'admin'`,
+    );
+    await database.query(`delete from public.integration_settings`);
+
+    const first = await createPooledAdmin(created);
+    const second = await createPooledAdmin(created);
+    const results = await Promise.allSettled([
+      requestAccountClosure(first.id, confirmation, { database, env }),
+      requestAccountClosure(second.id, confirmation, { database, env }),
+    ]);
+    const refused = results.filter((result) => result.status === "rejected");
+
+    assert.equal(refused.length, 1);
+    assert.ok(
+      refused.every(
+        (result) =>
+          result.status === "rejected" &&
+          refusedWith(LAST_ADMIN_CLOSURE_MESSAGE)(result.reason),
+      ),
+    );
+
+    const { rows } = await database.query(
+      `select 1 from account_closure_requests where user_id = any($1::text[])`,
+      [created],
+    );
+
+    assert.equal(rows.length, 1);
+  } finally {
+    await database.query(
+      `delete from account_closure_requests where user_id = any($1::text[])`,
+      [created],
+    );
+    await database.query(
+      `delete from public."user" where id = any($1::text[])`,
+      [created],
+    );
+    await database.query(
+      `update public."user" set role = 'admin' where id = any($1::text[])`,
+      [previous.rows.map((row) => row.id)],
+    );
+  }
+});
+
+test("a closure request records where it was made from", async () => {
+  const created: string[] = [];
+
+  try {
+    const person = await createPooledAdmin(created);
+
+    await database.query(
+      `update public."user" set role = 'user' where id = $1`,
+      [person.id],
+    );
+    await requestAccountClosure(person.id, confirmation, {
+      client: { ipAddress: "192.0.2.80", userAgent: "closure dbtest" },
+      database,
+      env,
+    });
+
+    const recorded = (
+      await listSystemAuditEvents({ limit: 1000 }, database)
+    ).filter(
+      (event) =>
+        event.event === "account_closure_requested" &&
+        event.targetUserId === person.id,
+    );
+
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]?.actorUserId, person.id);
+    assert.equal(recorded[0]?.ipAddress, "192.0.2.80");
+    assert.equal(recorded[0]?.userAgent, "closure dbtest");
+  } finally {
+    await database.query(
+      `delete from account_closure_requests where user_id = any($1::text[])`,
+      [created],
+    );
+    await database.query(
+      `delete from public."user" where id = any($1::text[])`,
+      [created],
+    );
+  }
+});

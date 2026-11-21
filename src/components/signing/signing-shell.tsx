@@ -4,6 +4,7 @@ import type {
   SigningPayload,
   SigningVerificationState,
 } from "@/lib/schemas/signing";
+import { EmbedParentMessage } from "./embed-parent-message";
 import { SignerVerificationScreen } from "./signer-verification-screen";
 import { SigningStateScreen } from "./signing-state-screen";
 import {
@@ -12,9 +13,14 @@ import {
 } from "./signing-live-shell";
 
 type SigningUnavailableState =
-  "already-signed" | "declined" | "error" | "expired" | "voided";
+  "already-signed" | "completed" | "declined" | "error" | "expired" | "voided";
 
 type SigningShellProps = {
+  /**
+   * Set on an embedded signing page: the site framing it, which is told
+   * when the signer signs or declines, or why the page cannot be used.
+   */
+  embedOrigin?: string | null;
   initialState?: SigningUnavailableState;
   record?: SigningPayload;
   /** Set when the signer came back from a signing provider without signing. */
@@ -41,6 +47,11 @@ const tokenStateCopy: Record<
     description:
       "You already signed or approved this document. No further action is needed.",
   },
+  completed: {
+    title: "This envelope has been completed",
+    description:
+      "Everyone has signed this document. No further action is needed.",
+  },
   voided: {
     title: "This envelope has been voided",
     description:
@@ -54,6 +65,7 @@ const tokenStateCopy: Record<
 };
 
 export function SigningShell({
+  embedOrigin = null,
   initialState,
   record,
   signatureProblem,
@@ -63,6 +75,7 @@ export function SigningShell({
   if (record) {
     return (
       <SigningLiveShell
+        embedOrigin={embedOrigin}
         record={record}
         signatureProblem={signatureProblem}
         token={token}
@@ -74,12 +87,25 @@ export function SigningShell({
     return <SignerVerificationScreen state={verification} token={token} />;
   }
 
-  const tokenState = tokenStateCopy[initialState ?? "error"];
+  const state = initialState ?? "error";
+  const tokenState = tokenStateCopy[state];
 
   return (
-    <SigningStateScreen
-      description={tokenState.description}
-      title={tokenState.title}
-    />
+    <>
+      {embedOrigin ? (
+        <EmbedParentMessage
+          message={{ state, type: "signudoc:error" }}
+          origin={embedOrigin}
+        />
+      ) : null}
+      <SigningStateScreen
+        description={
+          embedOrigin && state === "expired"
+            ? "Ask the app you are using for a new signing link."
+            : tokenState.description
+        }
+        title={tokenState.title}
+      />
+    </>
   );
 }

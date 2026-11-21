@@ -7,7 +7,9 @@ import {
   hasSharedSigningStep,
   isEarlierStep,
   joinNames,
+  moveListedSigner,
   normalizeSigningSteps,
+  removeListedSigner,
   routeAfterSignatures,
   signingStepOf,
   SigningStepError,
@@ -141,4 +143,81 @@ test("the signer limit comes from the environment, within bounds", () => {
     getMaxSignersPerEnvelope({ MAX_SIGNERS_PER_ENVELOPE: "ten" }),
     DEFAULT_MAX_SIGNERS_PER_ENVELOPE,
   );
+});
+
+/** A list on the signers page, from each signer's step: "A1 B2 C2". */
+function listed(spec: string) {
+  const entries = spec.split(" ").map((entry) => ({
+    name: entry[0]!,
+    step: Number(entry.slice(1)),
+  }));
+
+  return entries.map(({ name, step }, index) => ({
+    name,
+    withPrevious: index > 0 && entries[index - 1]!.step === step,
+  }));
+}
+
+/** The same list written back as "A1 B2 C2", steps numbered from 1. */
+function described(
+  signers: readonly { name: string; withPrevious: boolean }[],
+) {
+  let step = 0;
+
+  return signers
+    .map((signer, index) => {
+      step += index > 0 && signer.withPrevious ? 0 : 1;
+      return `${signer.name}${String(step)}`;
+    })
+    .join(" ");
+}
+
+test("removing a signer leaves everyone else in their step", () => {
+  // B started step 2; C, who signs with B, does not move up to A's step.
+  assert.equal(described(removeListedSigner(listed("A1 B2 C2"), 1)), "A1 C2");
+  assert.equal(
+    described(removeListedSigner(listed("A1 B2 C2 D2"), 1)),
+    "A1 C2 D2",
+  );
+  assert.equal(described(removeListedSigner(listed("A1 B1 C2"), 0)), "B1 C2");
+  assert.equal(described(removeListedSigner(listed("A1 B2 C3"), 1)), "A1 C2");
+  assert.equal(
+    described(removeListedSigner(listed("A1 B1 C2 D2"), 3)),
+    "A1 B1 C2",
+  );
+});
+
+test("moving a signer leaves everyone else in their step", () => {
+  // Changing places within a step keeps both in it.
+  assert.equal(
+    described(moveListedSigner(listed("A1 B2 C2"), 2, "earlier")),
+    "A1 C2 B2",
+  );
+  assert.equal(
+    described(moveListedSigner(listed("A1 B1 C2"), 0, "later")),
+    "B1 A1 C2",
+  );
+  // Out of a step: a step of their own, and the one left behind keeps theirs.
+  assert.equal(
+    described(moveListedSigner(listed("A1 B2 C2"), 1, "earlier")),
+    "B1 A2 C3",
+  );
+  assert.equal(
+    described(moveListedSigner(listed("A1 B1 C2"), 1, "later")),
+    "A1 C2 B3",
+  );
+  assert.equal(
+    described(moveListedSigner(listed("A1 B2 C3"), 2, "earlier")),
+    "A1 C2 B3",
+  );
+  // Into the middle of a step: they join it, which stays together.
+  assert.equal(
+    described(moveListedSigner(listed("A1 B2 C2 D3"), 3, "earlier")),
+    "A1 B2 D2 C2",
+  );
+  // Past either end: nothing moves.
+  const list = listed("A1 B2");
+
+  assert.equal(moveListedSigner(list, 0, "earlier"), list);
+  assert.equal(moveListedSigner(list, 1, "later"), list);
 });

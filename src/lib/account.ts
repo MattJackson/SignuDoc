@@ -23,6 +23,7 @@ import {
   scheduleAccountClosure,
 } from "./retention.ts";
 import { resolvePublicSupportAddress } from "./public-contact.ts";
+import type { RequestClient } from "./security/request.ts";
 import { createEmailService } from "./services/email.ts";
 import { recordSystemAuditEvent } from "./services/system-audit.ts";
 import { getBranding, isMissingSchemaError } from "./settings.ts";
@@ -40,6 +41,8 @@ type EnvelopeCountRow = {
 };
 
 type RequestAccountClosureOptions = {
+  /** Where the request came from, for the audit trail. */
+  client?: RequestClient;
   database?: DbExecutor;
   env?: EnvSource;
 };
@@ -197,31 +200,6 @@ function buildClosureValidationError(
   );
 }
 
-async function formatEnvelopeCounts(
-  userId: string,
-  database: DbExecutor,
-): Promise<string[]> {
-  const countRows = await queryMany<EnvelopeCountRow>(
-    database,
-    `
-      SELECT
-        status,
-        COUNT(*) AS total
-      FROM envelopes
-      WHERE user_id = $1
-      GROUP BY status
-    `,
-    [userId],
-  );
-  const totalsByStatus = new Map(
-    countRows.map((row) => [row.status, row.total] as const),
-  );
-
-  return envelopeStatuses.map(
-    (status) => `- ${status}: ${String(totalsByStatus.get(status) ?? 0)}`,
-  );
-}
-
 export const LAST_ADMIN_CLOSURE_MESSAGE =
   "You are the only administrator. Make someone else an administrator first, then close your account.";
 export const BREAK_GLASS_CLOSURE_MESSAGE =
@@ -308,6 +286,31 @@ function isPool(database: DbExecutor): database is DbPool {
   return "connect" in database && "totalCount" in database;
 }
 
+async function formatEnvelopeCounts(
+  userId: string,
+  database: DbExecutor,
+): Promise<string[]> {
+  const countRows = await queryMany<EnvelopeCountRow>(
+    database,
+    `
+      SELECT
+        status,
+        COUNT(*) AS total
+      FROM envelopes
+      WHERE user_id = $1
+      GROUP BY status
+    `,
+    [userId],
+  );
+  const totalsByStatus = new Map(
+    countRows.map((row) => [row.status, row.total] as const),
+  );
+
+  return envelopeStatuses.map(
+    (status) => `- ${status}: ${String(totalsByStatus.get(status) ?? 0)}`,
+  );
+}
+
 function formatRetentionDeadline(timestamp: number): string {
   return new Date(timestamp * 1000).toISOString().replace(".000Z", " UTC");
 }
@@ -315,7 +318,11 @@ function formatRetentionDeadline(timestamp: number): string {
 export async function requestAccountClosure(
   userId: string,
   input: unknown,
-  { database = getDb(), env = process.env }: RequestAccountClosureOptions = {},
+  {
+    client = {},
+    database = getDb(),
+    env = process.env,
+  }: RequestAccountClosureOptions = {},
 ): Promise<AccountClosureRequestResult> {
   buildClosureValidationError(input);
 
@@ -348,8 +355,10 @@ export async function requestAccountClosure(
         actorEmail: account.email,
         actorUserId: userId,
         event: "account_closure_requested",
+        ipAddress: client.ipAddress ?? null,
         metadata: { purgeAfterAt: closureSchedule.purgeAfterAt },
         targetUserId: userId,
+        userAgent: client.userAgent ?? null,
       },
       database,
     ).catch((error: unknown) => {

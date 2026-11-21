@@ -28,6 +28,7 @@ const SETTINGS_PAGES = [
   "/settings/integrations/google-addon",
   "/settings/integrations/email",
   "/settings/integrations/storage",
+  "/settings/developers",
   "/settings/documents",
   "/settings/backups",
   "/settings/notifications",

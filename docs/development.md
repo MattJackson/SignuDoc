@@ -84,7 +84,7 @@ The first time you open the app it takes you to `/setup`, where you name the org
 
 People added to receive a copy do not sign. They are sent the finished document and its certificate at step 7 and nothing before it.
 
-A document you send often can be kept as a template: open any envelope, sent or not, and choose Save as template. The template keeps the document, the fields and the signing order, and no one's name or email address. Using it asks who signs this time and opens a draft at step 4.
+A document you send often can be kept as a template: open any envelope, sent or not, and choose Save as template. The template keeps the document, the fields and the signing order, and no one's name or email address. Using it asks who signs this time and opens a draft at step 4. Send to many takes a CSV of names and addresses and sends one envelope per row, so the same form can go out to many people without repeating those steps.
 
 ## Storage
 
@@ -126,14 +126,16 @@ SignuDoc sends transactional email through Resend.
 - `RESEND_FROM_EMAIL` and `SUPPORT_EMAIL` are optional. When set they take the place of the addresses saved in Settings, which then cannot be changed there, and with `SUPPORT_EMAIL` set the setup page does not ask for a support address.
 - Until a sender address is set, mail goes out from `onboarding@resend.dev`, which Resend only delivers to the owner of the Resend account.
 - In hosted mode the support address is also the contact shown on the Terms, Privacy, and Accessibility pages.
-- For local development, `EMAIL_DRIVER=capture` writes each email to `.data/outbox` as a JSON file instead of sending it. Open the newest file to find a verification or signing link. This driver refuses to run in production.
+- For local development, `EMAIL_DRIVER=capture` writes each email to `.data/outbox` as a JSON file instead of sending it. Open the newest file to find a verification or signing link. Use a delivery provider for deployed sites that need to send email: on a deployed site the capture driver refuses to run, because it delivers no mail.
+
+To test a production build on your machine, set `APP_URL=http://localhost:3000` and `EMAIL_DRIVER=capture` in your local `.env`. With the example database password, sign-in also needs a `BETTER_AUTH_SECRET` of at least 32 characters. Generate one with `openssl rand -hex 32` and save its output as `BETTER_AUTH_SECRET` in the same file. Run `npm run build`, then `npm run start`.
 
 ## Upload constraints
 
 Document import currently enforces these limits:
 
 - PDF files only
-- 20 MB maximum upload size
+- 20 MB maximum upload size, and at most 1,000 pages
 - password-protected or encrypted PDFs are rejected
 - pure XFA or unsupported PDF variants are rejected
 
@@ -202,7 +204,7 @@ await google.close();
 
 This repository is a fork of [NYLLON-SOFTWARE/SignuDoc](https://github.com/NYLLON-SOFTWARE/SignuDoc) for Google Workspace and Google Cloud. It follows the original project and publishes releases of its own, which installs take (docs/self-hosting.md, "Keep your install up to date").
 
-**Versions.** The fork numbers its releases with plain semantic versions, no pre-release part, always above the upstream version it is built on: it started at 0.5.0 on upstream 0.4.0, and moved to 0.6.0 when upstream released 0.5.0, before its first release. After that it moves as semantic versioning says for its own changes, and a sync that brings in a new upstream minor or major release moves it to at least the next minor, so it stays above the upstream base. `package.json` records both: `version` is the fork's, and `upstream` names the original project and the upstream release the code is based on. Settings shows both (`src/lib/software-update.ts`), and a unit test checks the fork's version is above the upstream one.
+**Versions.** The fork numbers its releases with plain semantic versions, no pre-release part, always above the upstream version it is built on: it started at 0.5.0 on upstream 0.4.0, moved to 0.6.0 when upstream released 0.5.0, and to 0.8.0 when upstream released 0.7.0, before its first release. After that it moves as semantic versioning says for its own changes, and a sync that brings in a new upstream minor or major release moves it to at least the next minor, so it stays above the upstream base. `package.json` records both: `version` is the fork's, and `upstream` names the original project and the upstream release the code is based on. Settings shows both (`src/lib/software-update.ts`), and a unit test checks the fork's version is above the upstream one.
 
 **Upstream sync.** `.github/workflows/sync-upstream.yml` runs every Monday and on demand (Actions, Sync upstream, Run workflow, optionally with a release tag such as `v0.5.0`). It merges upstream's main branch into `sync/upstream-<date>` and opens a pull request listing the upstream commits and the newest upstream release included; it also updates `upstream.version` in `package.json`. When files clash, the pull request is opened from upstream's commit itself, so GitHub shows the conflicts, and lists the files with the commands to resolve them locally. Expect `package.json` (`version`) and `CHANGELOG.md` to clash at every upstream release: keep the fork's version and entries, and put upstream's entries below them. When the branch cannot be pushed (upstream changed a file in `.github/workflows`, which the workflow's own token may not touch) or a pull request cannot be opened, the workflow opens an issue instead with the same details. Upstream's tags are fetched under `refs/upstream/tags`, never into this repository's tags, since both number releases `v0.x.y`.
 

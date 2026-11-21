@@ -23,7 +23,10 @@ import {
 } from "../services/email.ts";
 import { withUserEmailLegalFooter } from "../services/email-legal-footer.ts";
 import { consumeRateLimit } from "../security/rate-limit.ts";
-import { getClientIpHeaderNames } from "../security/request.ts";
+import {
+  getClientIpHeaderNames,
+  getRequestClient,
+} from "../security/request.ts";
 import {
   requireConfigValue,
   ServiceConfigurationError,
@@ -54,6 +57,7 @@ import {
 import {
   checkWorkspaceAccount,
   googleAuthorizationParams,
+  isSsoEmailVerified,
   mayUsePassword,
   resolveWorkspaceDomains,
   SSO_PROVIDER_ID,
@@ -342,13 +346,12 @@ export function createAppAuth({
                 // A provider whose discovery cannot vouch for its ID tokens
                 // is left out rather than trusted unchecked.
                 requireIdTokenVerification: true,
-                // Microsoft Entra ID leaves email_verified out of its
-                // tokens. The organization's own directory is trusted for
-                // its addresses unless it says one is not verified.
+                // An address counts as verified only when the provider
+                // says so: a sign-in with a verified address is tied to the
+                // existing account with that address, so a missing claim
+                // must not count. See isSsoEmailVerified in sso.ts.
                 mapProfileToUser: (profile) => ({
-                  emailVerified:
-                    profile.email_verified !== false &&
-                    profile.email_verified !== "false",
+                  emailVerified: isSsoEmailVerified(profile),
                   // Google's name and photo for a new account; later sign-ins
                   // refresh them in validateUserInfo below.
                   ...(sso.google ? googleProfileFields(profile) : {}),
@@ -449,7 +452,7 @@ export function createAppAuth({
       minPasswordLength: 15,
       requireEmailVerification: true,
       revokeSessionsOnPasswordReset: true,
-      onPasswordReset: async ({ user }) => {
+      onPasswordReset: async ({ user }, request) => {
         try {
           // The new password ends a lockout from wrong guesses at the old one.
           await clearFailedSignIns(user.email);
@@ -458,6 +461,7 @@ export function createAppAuth({
             actorUserId: user.id,
             event: "password_reset",
             targetUserId: user.id,
+            ...getRequestClient(request?.headers, env),
           });
         } catch (error) {
           console.error("[auth] Could not record a password reset:", error);

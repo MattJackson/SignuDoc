@@ -91,6 +91,11 @@ class SourceIndex {
     this.root = root;
   }
 
+  /** A file path from the repository root, as stand-ins name files. */
+  relative(file: string): string {
+    return path.relative(this.root, file);
+  }
+
   get(file: string): ts.SourceFile | null {
     let source = this.sources.get(file);
 
@@ -232,11 +237,15 @@ function resolveExpression(
 ): Resolved {
   const source = expression.getSourceFile();
   const key = normalizeExpression(expression.getText(source));
-  const standIn = STAND_INS[key];
+  // A stand-in for one file ("path|expression") wins over one for every
+  // file, for an expression that means different SQL in different files.
+  const scopedKey = `${index.relative(file)}|${key}`;
+  const usedKey = STAND_INS[scopedKey] !== undefined ? scopedKey : key;
+  const standIn = STAND_INS[usedKey];
 
   if (standIn !== undefined) {
     return {
-      standIns: [key],
+      standIns: [usedKey],
       text: typeof standIn === "function" ? standIn() : standIn,
       unresolved: [],
     };

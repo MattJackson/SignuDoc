@@ -121,9 +121,19 @@ function toDatabaseError(error: unknown): unknown {
 
 // ------------------------------------------------------------------ values
 
-/** A parameter as SQLite stores it. */
+/**
+ * A parameter as SQLite stores it. A string with a NUL in it is refused,
+ * as Postgres refuses it in text, so what Postgres cannot keep is not kept
+ * here either.
+ */
 export function toSqliteValue(value: unknown): unknown {
   if (value === undefined || value === null) return null;
+  if (typeof value === "string" && value.includes("\u0000")) {
+    throw new SqliteDatabaseError(
+      'invalid byte sequence for encoding "UTF8": 0x00',
+      "22021",
+    );
+  }
   if (value instanceof Date) return formatTimestamp(value);
   if (typeof value === "boolean") return value ? 1 : 0;
   if (
@@ -284,6 +294,8 @@ class SqliteFile {
     Map<string, Prepared>
   >();
   private schema: SchemaInfo | null = null;
+  /** PRAGMA schema_version when the schema was last read. */
+  private schemaVersion: number | null = null;
   private currentNow: string | null = null;
   readonly rewrite: ReturnType<typeof createRewriteCache>;
   references = 0;
@@ -296,19 +308,67 @@ class SqliteFile {
     this.reader = openSqliteDatabase(connectionString, { readOnly: true });
 
     for (const database of [this.writer, this.reader]) {
-      registerFunctions(database, {
-        // Every wait counts for both views: on SQLite the one write lock
-        // stands in for Postgres's row and advisory locks alike, so a
-        // transaction Postgres would hold up at an advisory lock is held up
-        // here at the write lock, one statement earlier.
-        lockWaiters: () => this.waitingHolders.size,
-        now: () => this.currentNow ?? formatTimestamp(new Date()),
-      });
-      database.exec(CATALOG_VIEWS_SQL);
-      this.prepared.set(database, new Map());
+      this.setUp(database);
     }
 
-    this.rewrite = createRewriteCache(() => this.schemaInfo());
+    const rewrite = createRewriteCache(() => this.schemaInfo());
+
+    // Another process can change the schema too (the migrations run before
+    // a new version starts, or a test's setup), so each statement first
+    // checks that the schema the cached rewrites were made with is current.
+    this.rewrite = Object.assign(
+      (sql: string) => {
+        this.noticeSchemaChange();
+        return rewrite(sql);
+      },
+      { clear: () => rewrite.clear() },
+    );
+  }
+
+  private setUp(database: DatabaseSync) {
+    registerFunctions(database, {
+      // Every wait counts for both views: on SQLite the one write lock
+      // stands in for Postgres's row and advisory locks alike, so a
+      // transaction Postgres would hold up at an advisory lock is held up
+      // here at the write lock, one statement earlier.
+      lockWaiters: () => this.waitingHolders.size,
+      now: () => this.currentNow ?? formatTimestamp(new Date()),
+    });
+    database.exec(CATALOG_VIEWS_SQL);
+    this.prepared.set(database, new Map());
+  }
+
+  /**
+   * A read-only connection of its own, in a read transaction, for a
+   * REPEATABLE READ or SERIALIZABLE transaction: every read in it sees the
+   * database as it was at the first, as on Postgres, whatever commits
+   * meanwhile. The shared reader cannot hold one: others read on it too.
+   */
+  openSnapshot(): DatabaseSync {
+    const database = openSqliteDatabase(this.connectionString, {
+      readOnly: true,
+    });
+
+    try {
+      this.setUp(database);
+      database.exec("BEGIN");
+    } catch (error) {
+      database.close();
+      throw toDatabaseError(error);
+    }
+
+    return database;
+  }
+
+  closeSnapshot(database: DatabaseSync) {
+    try {
+      if (database.isTransaction) {
+        database.exec("ROLLBACK");
+      }
+    } finally {
+      this.prepared.delete(database);
+      database.close();
+    }
   }
 
   close() {
@@ -322,8 +382,33 @@ class SqliteFile {
       return this.schema;
     }
 
+    this.schemaVersion = this.readSchemaVersion();
     this.schema = readSchemaInfo(this.writer);
     return this.schema;
+  }
+
+  private readSchemaVersion(): number {
+    const row = this.writer.prepare("PRAGMA schema_version").get() as
+      { schema_version?: number | bigint } | undefined;
+
+    return Number(row?.schema_version ?? 0);
+  }
+
+  /** Forgets what was read about the schema if it changed since. */
+  private noticeSchemaChange() {
+    if (
+      this.schema === null ||
+      this.schemaVersion === this.readSchemaVersion()
+    ) {
+      return;
+    }
+
+    this.schema = null;
+    this.rewrite.clear();
+
+    for (const connection of [this.writer, this.reader]) {
+      this.prepared.get(connection)!.clear();
+    }
   }
 
   private prepare(database: DatabaseSync, sql: string): Prepared {
@@ -430,24 +515,35 @@ class SqliteFile {
     values: readonly unknown[],
     now: string | null,
   ): SqliteQueryResult {
-    if (!rewritten.preStep) {
+    if (!rewritten.preSteps) {
       return this.run(this.writer, rewritten, values, now);
     }
 
-    const { rowsParameter, sql } = rewritten.preStep;
-    const first = this.run(this.writer, { hints: new Map(), sql }, values, now);
-    const rows = first.rows.map((row) =>
-      first.fields.map(({ name }) => toSqliteValue(row[name])),
-    );
-    const parameters = Array.from(
-      { length: rowsParameter - 1 },
-      (_, index) => values[index] ?? null,
-    );
+    const parameters: unknown[] = [...values];
+    const first = (count: number) =>
+      Array.from({ length: count }, (_, index) => parameters[index] ?? null);
+
+    for (const step of rewritten.preSteps) {
+      const result = this.run(
+        this.writer,
+        { hints: new Map(), sql: step.sql },
+        first(step.parameterCount),
+        now,
+      );
+
+      if (step.rowsParameter !== null) {
+        parameters[step.rowsParameter - 1] = JSON.stringify(
+          result.rows.map((row) =>
+            result.fields.map(({ name }) => toSqliteValue(row[name])),
+          ),
+        );
+      }
+    }
 
     return this.run(
       this.writer,
       rewritten,
-      [...parameters, JSON.stringify(rows)],
+      first(rewritten.parameterCount ?? parameters.length),
       now,
     );
   }
@@ -628,6 +724,9 @@ export class SqliteClient implements Holder {
   state: ClientState = "idle";
   private transactionNow: string | null = null;
   private readonly keys = new Set<string>();
+  /** Whether the transaction reads on one snapshot (REPEATABLE READ). */
+  private wantsSnapshot = false;
+  private snapshot: DatabaseSync | null = null;
   private released = false;
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -725,6 +824,14 @@ export class SqliteClient implements Holder {
       this.file.releaseKeys(this, this.keys);
       this.state = "idle";
       this.transactionNow = null;
+      this.wantsSnapshot = false;
+
+      if (this.snapshot) {
+        const snapshot = this.snapshot;
+
+        this.snapshot = null;
+        this.file.closeSnapshot(snapshot);
+      }
     }
 
     return command;
@@ -788,6 +895,7 @@ export class SqliteClient implements Holder {
           this.state = "pending";
           // now() is the time the transaction began, as on Postgres.
           this.transactionNow = formatTimestamp(new Date());
+          this.wantsSnapshot = rewritten.snapshot === true;
         }
 
         return emptyResult("BEGIN");
@@ -820,10 +928,16 @@ export class SqliteClient implements Holder {
     // the lock, exactly as a read in a Postgres READ COMMITTED transaction
     // takes no row lock. So a transaction that has only read does not hold
     // up writes made meanwhile through the pool.
+    // A REPEATABLE READ transaction reads on a snapshot of its own instead,
+    // taken at its first read.
     if (this.state === "pending" && rewritten.kind === "read") {
       try {
+        if (this.wantsSnapshot) {
+          this.snapshot ??= this.file.openSnapshot();
+        }
+
         return this.file.run(
-          this.file.reader,
+          this.snapshot ?? this.file.reader,
           rewritten,
           values,
           this.transactionNow,
@@ -903,11 +1017,11 @@ async function runOutsideTransaction(
   await file.acquireWriteLock(holder, lockTimeoutMs);
 
   try {
-    if (!rewritten.preStep) {
+    if (!rewritten.preSteps) {
       return file.run(file.writer, rewritten, values, now);
     }
 
-    // Two statements that must land together.
+    // Statements that must land together.
     file.writer.exec("BEGIN IMMEDIATE");
 
     try {

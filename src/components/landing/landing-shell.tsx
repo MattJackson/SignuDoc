@@ -68,7 +68,7 @@ const comparisonRows: readonly ComparisonRow[] = [
   },
   {
     feature: "Signers per document",
-    signudoc: "Up to 10",
+    signudoc: "Up to 25",
     perSeat: "Varies by plan",
   },
   { feature: "Reminders", signudoc: true, perSeat: "Higher plans only" },

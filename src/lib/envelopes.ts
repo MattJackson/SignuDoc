@@ -107,6 +107,7 @@ import {
 import { withUserEmailLegalFooter } from "./services/email-legal-footer.ts";
 import { buildSigningInvitationEmail } from "./services/signing-invitation-email.ts";
 import {
+  findTypedValueTooLongForField,
   loadInstallSealer,
   storeEnvelopeCertificatePdf,
   storeRecipientEnvelopeCertificatePdf,
@@ -163,6 +164,8 @@ import {
   SigningStepError,
 } from "./signing-steps.ts";
 import { escapeHtml } from "./utils/html.ts";
+import { hasEmbedOrigins, isEmbeddedEnvelope } from "./embedding.ts";
+import { releaseSentWebhook } from "./webhooks/outbox.ts";
 
 type CreateDraftEnvelopeOptions = {
   database?: DbPool;
@@ -184,6 +187,13 @@ type CreateDraftEnvelopeInput = {
 };
 
 type SendDraftEnvelopeInput = {
+  /** The API key that sent it, recorded in the audit trail. */
+  apiKeyId?: string | null;
+  /**
+   * "embedded": signers sign inside another app (see embedding.ts), so no
+   * invitations or reminders are emailed. API only. "email" by default.
+   */
+  delivery?: "email" | "embedded";
   /** How many days signers get. The default applies when left out. */
   expiresInDays?: number;
   /** Days between automatic reminders. Null or left out means none. */
@@ -223,6 +233,8 @@ type CorrectSentEnvelopeSignerOptions = {
   nowUnixTimestamp?: number;
 };
 
+type ExpectedRecipient = { email: string; name: string };
+
 type SendDraftEnvelopeOptions = {
   database?: DbPool;
   /** Replaced in tests: the Workspace directory, null when it is off. */
@@ -231,7 +243,20 @@ type SendDraftEnvelopeOptions = {
   googleSigningPolicy?: GoogleSigningPolicy;
   /** Replaced in tests; read from the settings otherwise. */
   managerPolicy?: ManagerPolicy;
+  /**
+   * The people the caller confirmed. When given, the draft is sent only if
+   * its signers, in signing order, and its copy recipients are exactly
+   * these. The check runs on the parties the send holds unchanged until
+   * the invitation goes out.
+   */
+  expectedRecipients?: {
+    copyRecipients: readonly ExpectedRecipient[];
+    signers: readonly ExpectedRecipient[];
+  };
 };
+
+export const draftRecipientsChangedMessage =
+  "This draft's recipients were changed after the list was confirmed, so it was not sent. Check the draft and send it from there.";
 
 type VoidEnvelopeOptions = {
   database?: DbPool;
@@ -449,6 +474,8 @@ export type DraftSignerStepData = {
 export type PrepareEnvelopeData = {
   envelopeId: string;
   fields: readonly FieldRecord[];
+  /** Sent back with each save, so a save from an older page is refused. */
+  fieldsRevision: number;
   pageCount: number;
   pages: readonly EnvelopePageRecord[];
   pdfUrl: string;
@@ -1685,6 +1712,40 @@ function describeChoiceProblem(
   );
 }
 
+/**
+ * A dropdown whose box is too small to show one of its choices at a
+ * readable size, in words for the sender, or null. A signer cannot shorten
+ * a choice, so a choice that does not fit is drawn as small as it takes,
+ * and on the signed document that can be too small to read. The sender
+ * fixes it before sending instead.
+ */
+async function findUnreadableDropdown(
+  signers: readonly PersistedSignerRecord[],
+  fields: readonly FieldRecord[],
+  pages: Parameters<typeof findTypedValueTooLongForField>[1],
+): Promise<string | null> {
+  for (const field of fields) {
+    if (field.type !== "dropdown" || !field.options?.length) {
+      continue;
+    }
+
+    const tooLong = await findTypedValueTooLongForField(
+      field.options.map((option) => ({ field, value: option })),
+      pages,
+    );
+
+    if (tooLong) {
+      const signerName =
+        signers.find((signer) => signer.id === field.signerId)?.name ??
+        "a signer";
+
+      return `A dropdown for ${signerName} on page ${String(tooLong.page)} is too small to show its choices at a readable size. Make the box bigger or the choices shorter.`;
+    }
+  }
+
+  return null;
+}
+
 /** The fields with each group of radio buttons counted once. */
 function withRadioGroupsOnce(fields: readonly FieldRecord[]): FieldRecord[] {
   const seenGroups = new Set<string>();
@@ -2667,6 +2728,11 @@ export async function getPrepareEnvelopeDataForUser(
     return null;
   }
 
+  // Read before the fields, so a save landing in between pairs the newer
+  // fields with the older revision: the editor's first save is then
+  // refused and it asks for a reload, rather than an older list being
+  // taken as the latest.
+  const fieldsRevision = await readFieldsRevision(envelopeId, database);
   const [fieldsByEnvelope, pages, signers] = await Promise.all([
     listFieldsForEnvelopeIds([envelopeId], database),
     listEnvelopePagesForEnvelopeId(envelopeId, database),
@@ -2676,6 +2742,7 @@ export async function getPrepareEnvelopeDataForUser(
   return {
     envelopeId,
     fields: fieldsByEnvelope.get(envelopeId) ?? [],
+    fieldsRevision,
     pageCount: envelope.pageCount,
     pages,
     pdfUrl: `/api/envelopes/${encodeURIComponent(envelopeId)}/document`,
@@ -2782,6 +2849,47 @@ async function readDraftParties(envelopeId: string, database: DbExecutor) {
   return { copyRecipients, fields, signers };
 }
 
+function recipientKey(recipient: ExpectedRecipient): string {
+  return JSON.stringify([
+    recipient.email.trim().toLowerCase(),
+    recipient.name.trim(),
+  ]);
+}
+
+/**
+ * Whether a draft's parties are exactly the confirmed people: the signers
+ * in signing order, and the copy recipients in any order.
+ */
+export function draftRecipientsMatch(
+  parties: {
+    copyRecipients: readonly ExpectedRecipient[];
+    signers: readonly ExpectedRecipient[];
+  },
+  expected: {
+    copyRecipients: readonly ExpectedRecipient[];
+    signers: readonly ExpectedRecipient[];
+  },
+): boolean {
+  const sameInOrder = (
+    left: readonly ExpectedRecipient[],
+    right: readonly ExpectedRecipient[],
+  ) =>
+    left.length === right.length &&
+    left.every(
+      (recipient, index) =>
+        recipientKey(recipient) === recipientKey(right[index]!),
+    );
+  const sorted = (recipients: readonly ExpectedRecipient[]) =>
+    [...recipients].sort((left, right) =>
+      recipientKey(left).localeCompare(recipientKey(right)),
+    );
+
+  return (
+    sameInOrder(parties.signers, expected.signers) &&
+    sameInOrder(sorted(parties.copyRecipients), sorted(expected.copyRecipients))
+  );
+}
+
 /**
  * Takes hold of a draft before its signers or fields are changed, and
  * refuses when it is no longer a draft. Saving signers, saving fields,
@@ -2793,6 +2901,22 @@ async function readDraftParties(envelopeId: string, database: DbExecutor) {
  * The lock an UPDATE takes, not FOR UPDATE: the signer rows written next
  * need a share of this row for their foreign key.
  */
+/** What a sender is told when their field save was made on an older page. */
+export const FIELDS_CHANGED_MESSAGE =
+  "These fields were changed somewhere else, so this change was not saved. Reload the page to see the latest fields.";
+
+async function readFieldsRevision(
+  envelopeId: string,
+  database: DbExecutor,
+): Promise<number> {
+  const result = await database.query<{ fields_revision: number }>(
+    `SELECT fields_revision FROM envelopes WHERE id = $1`,
+    [envelopeId],
+  );
+
+  return result.rows[0]?.fields_revision ?? 0;
+}
+
 async function lockDraftEnvelope(
   userId: string,
   envelopeId: string,
@@ -2822,6 +2946,7 @@ export async function sendDraftEnvelope(
   {
     database = getDb(),
     directory,
+    expectedRecipients,
     googleSigningPolicy,
     managerPolicy,
   }: SendDraftEnvelopeOptions = {},
@@ -2838,6 +2963,15 @@ export async function sendDraftEnvelope(
 
   const checkedParties = await readDraftParties(envelopeId, database);
   const { fields, signers } = checkedParties;
+
+  // The transaction below refuses a draft whose parties changed after this
+  // read, so the people checked here are the people the invitation reaches.
+  if (
+    expectedRecipients &&
+    !draftRecipientsMatch(checkedParties, expectedRecipients)
+  ) {
+    throw new EnvelopeMutationError(draftRecipientsChangedMessage, 409);
+  }
 
   if (signers.length === 0 || fields.length === 0) {
     throw new EnvelopeMutationError(
@@ -2868,6 +3002,16 @@ export async function sendDraftEnvelope(
 
   if (choiceProblem) {
     throw new EnvelopeMutationError(choiceProblem, 400);
+  }
+
+  const unreadableDropdown = await findUnreadableDropdown(
+    signers,
+    fields,
+    await listEnvelopePagesForEnvelopeId(envelopeId, database),
+  );
+
+  if (unreadableDropdown) {
+    throw new EnvelopeMutationError(unreadableDropdown, 400);
   }
 
   // In Part 11 mode each signer signs with their own verified account, and
@@ -2975,7 +3119,48 @@ export async function sendDraftEnvelope(
     }
   }
 
-  const part11SignerAccounts = new Map<string, string>();
+  const delivery = input.delivery ?? "email";
+
+  if (delivery === "embedded") {
+    if (part11) {
+      throw new EnvelopeMutationError(
+        "Part 11 envelopes are signed with the signers' own accounts on this install, so they cannot be embedded in another app.",
+        400,
+      );
+    }
+
+    if (signatureLevel !== "simple") {
+      throw new EnvelopeMutationError(
+        "Advanced and qualified signatures send the signer to the signing provider, so they cannot be embedded in another app.",
+        400,
+      );
+    }
+
+    if (!(await hasEmbedOrigins(database))) {
+      throw new EnvelopeMutationError(
+        "Embedded signing is off: no site is allowed to show signing pages. An administrator can add one under Settings, Organization, Embedded signing.",
+        400,
+      );
+    }
+
+    const checks = await listSignerCheckSettings(envelopeId, database);
+
+    if (
+      [...checks.values()].some(
+        (check) => check.hasAccessCode || check.requireEmailCode,
+      )
+    ) {
+      throw new EnvelopeMutationError(
+        "Embedded signers are identified by your app, so leave out access codes and emailed codes.",
+        400,
+      );
+    }
+  }
+
+  const part11SignerAccounts = new Map<
+    string,
+    { name: string; userId: string }
+  >();
 
   if (part11) {
     const checks = await listSignerCheckSettings(envelopeId, database);
@@ -3002,12 +3187,23 @@ export async function sendDraftEnvelope(
         );
       }
 
-      part11SignerAccounts.set(signer.id, account.userId);
+      part11SignerAccounts.set(signer.id, {
+        name: account.name,
+        userId: account.userId,
+      });
     }
   }
 
-  // Everyone in the first step of the signing order is invited now.
-  const firstSigners = firstStepSigners(signers);
+  // Everyone in the first step of the signing order is invited now. A
+  // Part 11 signer is invited, and recorded as sent to, in the name the
+  // administrator confirmed, which is the name saved on the signer below.
+  const firstSigners = firstStepSigners(
+    signers.map((signer) => {
+      const account = part11SignerAccounts.get(signer.id);
+
+      return account ? { ...signer, name: account.name } : signer;
+    }),
+  );
   const firstSigner = firstSigners[0];
 
   if (!firstSigner) {
@@ -3092,12 +3288,31 @@ export async function sendDraftEnvelope(
         );
       }
 
+      // Access codes and emailed codes are not part of that snapshot, and
+      // an embedded signer has no way to enter one. Checked again here,
+      // under the same lock that a save of the signers takes.
+      if (delivery === "embedded") {
+        const lockedChecks = await listSignerCheckSettings(envelopeId, tx);
+
+        if (
+          [...lockedChecks.values()].some(
+            (check) => check.hasAccessCode || check.requireEmailCode,
+          )
+        ) {
+          throw new EnvelopeMutationError(
+            "Embedded signers are identified by your app, so leave out access codes and emailed codes.",
+            400,
+          );
+        }
+      }
+
       await tx.query(
         `
           UPDATE signers
           SET
             status = 'pending',
             signing_token_hash = NULL,
+            spent_signing_token_hash = NULL,
             signing_token_expires_at = NULL,
             turn_started_at = NULL,
             last_notified_at = NULL,
@@ -3137,21 +3352,31 @@ export async function sendDraftEnvelope(
         );
       }
 
+      if (delivery === "embedded") {
+        await tx.query(
+          `UPDATE envelopes SET delivery = 'embedded' WHERE id = $1`,
+          [envelopeId],
+        );
+      }
+
       if (part11) {
         await tx.query(`UPDATE envelopes SET part11 = true WHERE id = $1`, [
           envelopeId,
         ]);
 
-        for (const [signerId, accountId] of part11SignerAccounts) {
+        // Each signer is bound to their account and named as the
+        // administrator confirmed them, so the signature and its audit
+        // record carry the confirmed name, not one typed for the draft.
+        for (const [signerId, account] of part11SignerAccounts) {
           const bound = await tx.query(
             `
               UPDATE signers
-              SET user_id = $1
+              SET user_id = $1, name = $4
               WHERE id = $2
                 AND envelope_id = $3
                 AND signature_meaning IS NOT NULL
             `,
-            [accountId, signerId, envelopeId],
+            [account.userId, signerId, envelopeId, account.name],
           );
 
           if (bound.rowCount !== 1) {
@@ -3207,6 +3432,8 @@ export async function sendDraftEnvelope(
           event: "sent",
           ipAddress: input.ipAddress ?? null,
           metadata: {
+            ...(input.apiKeyId ? { apiKeyId: input.apiKeyId } : {}),
+            ...(delivery === "embedded" ? { delivery } : {}),
             // The send route refuses a send without this confirmation.
             expiresAt,
             reminderIntervalDays: input.reminderIntervalDays ?? null,
@@ -3242,6 +3469,28 @@ export async function sendDraftEnvelope(
     throw error;
   }
 
+  if (delivery === "embedded") {
+    // No invitation: the app asks the API for a link for each signer
+    // whose turn it is (see embedding.ts). The envelope is out for
+    // signature now, so its envelope.sent webhook can go.
+    await releaseSentWebhook(envelopeId, database).catch((error: unknown) => {
+      console.error(
+        `Releasing the envelope.sent webhook of ${envelopeId} failed:`,
+        error,
+      );
+    });
+
+    return sendEnvelopeResponseSchema.parse({
+      envelopeId,
+      expiresAt,
+      notifiedSignerName: describeNotifiedSigners(
+        firstSigners.map((signer) => signer.name),
+      ),
+      redirectPath: `/envelopes/${envelopeId}`,
+      sentAt,
+    });
+  }
+
   // The first invitation decides whether the envelope went out. If it
   // fails, nothing has been delivered, and the envelope goes back to being
   // a draft. Once one has been accepted the envelope is out: a later one
@@ -3271,7 +3520,7 @@ export async function sendDraftEnvelope(
     );
   } catch (error) {
     await withTransaction(async (tx) => {
-      await tx.query(
+      const revertedEnvelope = await tx.query(
         `
           UPDATE envelopes
           SET
@@ -3290,12 +3539,19 @@ export async function sendDraftEnvelope(
         [envelope.updatedAt, envelopeId, userId],
       );
 
+      // Something else ended the envelope after it went out (it was voided,
+      // say). Its signers and history are that envelope's now: leave them.
+      if (revertedEnvelope.rowCount !== 1) {
+        return;
+      }
+
       await tx.query(
         `
           UPDATE signers
           SET
             status = 'pending',
             signing_token_hash = NULL,
+            spent_signing_token_hash = NULL,
             signing_token_expires_at = NULL,
             turn_started_at = NULL,
             last_notified_at = NULL,
@@ -3326,6 +3582,17 @@ export async function sendDraftEnvelope(
             )
         `,
         [envelopeId, sentAuditAt, input.senderEmail],
+      );
+      // The envelope.sent webhook was held for the invitation (see
+      // releaseSentWebhook below); it did not go out, so there is nothing
+      // to tell, whatever happened to the delivery meanwhile.
+      await tx.query(
+        `
+          DELETE FROM webhook_deliveries
+          WHERE envelope_id = $1 AND event_type = 'envelope.sent'
+            AND status = 'pending'
+        `,
+        [envelopeId],
       );
     }, database).catch((rollbackError) => {
       console.error(
@@ -3380,6 +3647,15 @@ export async function sendDraftEnvelope(
       database,
     );
   }
+
+  // Only now that the invitations are out is the envelope really sent.
+  await releaseSentWebhook(envelopeId, database).catch((error: unknown) => {
+    // Then it goes out when its hold runs out instead.
+    console.error(
+      `Releasing the envelope.sent webhook of ${envelopeId} failed:`,
+      error,
+    );
+  });
 
   return sendEnvelopeResponseSchema.parse({
     envelopeId,
@@ -3469,7 +3745,14 @@ export async function changeEnvelopeDeadline(
     await tx.query(
       `
         UPDATE signers
-        SET signing_token_expires_at = $1, updated_at = $2
+        -- A link made for an app keeps its own short life: a later
+        -- deadline must not bring it back or stretch it, though an
+        -- earlier one still cuts it short.
+        SET signing_token_expires_at = CASE
+              WHEN embed_origin IS NULL THEN $1
+              ELSE LEAST(signing_token_expires_at, $1)
+            END,
+            updated_at = $2
         WHERE envelope_id = $3
           AND status = 'notified'
           AND signing_token_hash IS NOT NULL
@@ -3500,6 +3783,9 @@ export async function changeEnvelopeDeadline(
 
 const SENT_ENVELOPE_SIGNER_CORRECTION_MESSAGE =
   "Only an envelope that is out for signature can have a signer corrected.";
+
+const EMBEDDED_SIGNER_CORRECTION_MESSAGE =
+  "This envelope is signed in another app, which says who signs. Void it and send a new one to change a signer.";
 
 /**
  * For a change of an approver's address: the rule in force and the sender's
@@ -3572,6 +3858,11 @@ export async function correctSentEnvelopeSigner(
   }: CorrectSentEnvelopeSignerOptions = {},
 ): Promise<CorrectSentSignerResult> {
   const parsedInput = correctSentSignerSchema.parse(input);
+
+  if (await isEmbeddedEnvelope(envelopeId, database, userId)) {
+    throw new EnvelopeMutationError(EMBEDDED_SIGNER_CORRECTION_MESSAGE, 409);
+  }
+
   // Read settings before taking the envelope lock: an uncached read inside the
   // transaction borrows a second pool connection, and overlapping corrections
   // holding the others while they wait on the lock would starve it.
@@ -3615,6 +3906,7 @@ export async function correctSentEnvelopeSigner(
 
   return withTransaction(async (tx) => {
     const envelope = await queryOne<{
+      delivery: string;
       expiresAt: number | null;
       part11: boolean;
       status: EnvelopeRecord["status"];
@@ -3625,6 +3917,7 @@ export async function correctSentEnvelopeSigner(
       tx,
       `
         SELECT
+          delivery,
           expires_at AS "expiresAt",
           part11,
           status,
@@ -3647,6 +3940,12 @@ export async function correctSentEnvelopeSigner(
         SENT_ENVELOPE_SIGNER_CORRECTION_MESSAGE,
         409,
       );
+    }
+
+    // Checked again on the locked row: an embedded send may have landed
+    // since the check above.
+    if (envelope.delivery === "embedded") {
+      throw new EnvelopeMutationError(EMBEDDED_SIGNER_CORRECTION_MESSAGE, 409);
     }
 
     if (envelope.part11) {
@@ -4136,10 +4435,6 @@ async function voidSentEnvelopeOnce(
         })
       : signer,
   );
-  const auditEvents = [
-    ...(await listAuditEventsForEnvelope(envelopeId, database)),
-    voidedAuditEvent,
-  ];
   const storedCertificateKeys: string[] = [];
   // The seal's key and the install's name, read before the transaction:
   // sealing inside it then needs no second connection from the pool.
@@ -4193,6 +4488,16 @@ async function voidSentEnvelopeOnce(
     ) {
       throw new VoidRouteChangedError();
     }
+
+    // The audit trail the certificates show, read with the envelope and its
+    // audit chain held, so an event recorded since the page was opened is
+    // on them and none can be added before the void is.
+    await lockEnvelopeAuditChain(envelopeId, tx);
+
+    const auditEvents = [
+      ...(await listAuditEventsForEnvelope(envelopeId, tx)),
+      voidedAuditEvent,
+    ];
 
     const certificate = await storeEnvelopeCertificatePdf(
       {
@@ -4264,6 +4569,7 @@ async function voidSentEnvelopeOnce(
       `
         UPDATE signers
         SET
+          spent_signing_token_hash = signing_token_hash,
           signing_token_hash = NULL,
           signing_token_expires_at = NULL,
           updated_at = $1
@@ -4432,8 +4738,20 @@ export async function replaceDraftEnvelopeFields(
     };
   });
 
-  await withTransaction(async (tx) => {
+  const fieldsRevision = await withTransaction(async (tx) => {
     await lockDraftEnvelope(userId, envelopeId, tx);
+
+    // Under the draft's lock, so two saves cannot both pass this check: a
+    // save made against an older list (from a page the sender has since
+    // left, say) does not overwrite a newer one.
+    if (
+      parsedInput.expectedRevision !== undefined &&
+      parsedInput.expectedRevision !==
+        (await readFieldsRevision(envelopeId, tx))
+    ) {
+      throw new EnvelopeMutationError(FIELDS_CHANGED_MESSAGE, 409);
+    }
+
     await tx.query(
       `
         DELETE FROM fields
@@ -4492,14 +4810,17 @@ export async function replaceDraftEnvelopeFields(
       );
     }
 
-    await tx.query(
+    const updated = await tx.query<{ fields_revision: number }>(
       `
         UPDATE envelopes
-        SET updated_at = $1
+        SET updated_at = $1, fields_revision = fields_revision + 1
         WHERE id = $2 AND user_id = $3
+        RETURNING fields_revision
       `,
       [updatedAt, envelopeId, userId],
     );
+
+    return updated.rows[0]?.fields_revision ?? 0;
   }, database);
 
   return replaceFieldsResponseSchema.parse({
@@ -4508,6 +4829,7 @@ export async function replaceDraftEnvelopeFields(
       (await listFieldsForEnvelopeIds([envelopeId], database)).get(
         envelopeId,
       ) ?? [],
+    fieldsRevision,
     redirectPath: `/envelopes/${envelopeId}/review`,
     updatedAt,
   }) as ReplaceDraftFieldsResult;
