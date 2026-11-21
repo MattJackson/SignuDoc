@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, type CSSProperties, type ChangeEvent } from "react";
 
 import { BrandLogo } from "@/components/layout/brand";
+import { LogoSuggestions } from "@/components/settings/logo-suggestions";
 import {
   DEFAULT_BRAND_COLOR,
   DEFAULT_BRAND_PALETTE,
@@ -175,6 +176,13 @@ export function BrandingPanel({
               background works best. It is saved as soon as you choose it.
             </p>
           )}
+          <LogoSuggestions
+            disabled={busy}
+            onLogoChange={(next) => {
+              onLogoChange(next);
+              router.refresh();
+            }}
+          />
         </div>
 
         <div className="well space-y-4 p-4">

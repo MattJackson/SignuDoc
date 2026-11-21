@@ -1,0 +1,569 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { resolveSettings, type AppSettings } from "../settings.ts";
+import {
+  ONBOARDING_STEPS,
+  readOnboardingMarks,
+  type OnboardingContext,
+  type OnboardingStepId,
+} from "./steps.ts";
+
+const stored: AppSettings = {
+  allowedEmailDomains: ["example.com"],
+  brandColor: null,
+  consentDisclosure: null,
+  emailReadyAt: null,
+  logoVersion: null,
+  organizationName: "Example Inc",
+  part11Mode: false,
+  privacyUrl: null,
+  productName: null,
+  requireTwoFactor: false,
+  retentionDays: null,
+  senderAddress: "sign@example.com",
+  sessionIdleMinutes: null,
+  sessionMaxHours: null,
+  setupCompletedAt: 1_800_000_000,
+  signupMode: "domains",
+  supportAddress: "help@example.com",
+  termsUrl: null,
+};
+
+function context(
+  overrides: Partial<OnboardingContext> = {},
+): OnboardingContext {
+  const env = overrides.env ?? { RESEND_API_KEY: "re_environmentkey1" };
+
+  return {
+    backupStatus: async () => ({
+      message: "Backups are not set up.",
+      state: "not_configured",
+    }),
+    env,
+    marks: {},
+    settings: resolveSettings(stored, env),
+    stored: {},
+    ...overrides,
+  };
+}
+
+async function check(id: OnboardingStepId, value: OnboardingContext) {
+  const step = ONBOARDING_STEPS.find((item) => item.id === id);
+
+  assert.ok(step);
+
+  return (await step.check(value)).status;
+}
+
+test("the steps come in the order onboarding walks them", () => {
+  assert.deepEqual(
+    ONBOARDING_STEPS.map((step) => step.id),
+    [
+      "name",
+      "branding",
+      "organization",
+      "email",
+      "google-workspace",
+      "google-sign-in",
+      "google-directory",
+      "people",
+      "google-drive",
+      "google-addon",
+      "storage",
+      "seal",
+      "backups",
+      "retention",
+      "notifications",
+    ],
+  );
+});
+
+test("the people step is done once something is on, or it is confirmed off", async () => {
+  assert.equal(await check("people", context()), "not_started");
+  assert.equal(
+    await check("people", context({ marks: { people: "confirmed" } })),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "people",
+      context({ stored: { "people.managerPolicy": "require" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "people",
+      context({
+        env: { GOOGLE_SIGNING: "offer", RESEND_API_KEY: "re_environmentkey1" },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("marks are read from what is stored, and anything else is dropped", () => {
+  assert.deepEqual(readOnboardingMarks({}), {});
+  assert.deepEqual(readOnboardingMarks({ "onboarding.steps": "not json" }), {});
+  assert.deepEqual(
+    readOnboardingMarks({
+      "onboarding.steps": JSON.stringify({
+        backups: "confirmed",
+        email: "skipped",
+        nonsense: "skipped",
+        retention: "done",
+      }),
+    }),
+    { backups: "confirmed", email: "skipped" },
+  );
+});
+
+test("the organization step wants a name, a support address and a closed sign-up", async () => {
+  assert.equal(await check("organization", context()), "done");
+
+  const env = {};
+  const open = context({
+    env,
+    settings: resolveSettings({ ...stored, signupMode: "open" }, env),
+  });
+
+  assert.equal(await check("organization", open), "needs_attention");
+
+  const unnamed = context({
+    settings: resolveSettings({ ...stored, organizationName: null }, {}),
+  });
+
+  assert.equal(await check("organization", unnamed), "not_started");
+});
+
+test("email is done once the sending domain has been seen working", async () => {
+  assert.equal(await check("email", context()), "needs_attention");
+
+  const env = { RESEND_API_KEY: "re_environmentkey1" };
+  const ready = context({
+    env,
+    settings: resolveSettings({ ...stored, emailReadyAt: 1_800_000_000 }, env),
+  });
+
+  assert.equal(await check("email", ready), "done");
+  assert.equal(
+    await check("email", context({ env: { EMAIL_DRIVER: "capture" } })),
+    "done",
+  );
+});
+
+test("Google sign-in counts as set up from the environment or from the app", async () => {
+  assert.equal(await check("google-sign-in", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-sign-in",
+      context({
+        stored: {
+          "sso.clientId": "client",
+          "sso.clientSecret": "secret",
+          "sso.issuer": "https://accounts.google.com",
+        },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("the directory step waits until the directory is turned on", async () => {
+  assert.equal(await check("google-directory", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-directory",
+      context({ stored: { "google.directory": "off" } }),
+    ),
+    "not_started",
+  );
+});
+
+const GOOGLE_CREDENTIAL_VARIABLES = [
+  "CLOUD_RUN_JOB",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CREDENTIALS",
+  "GOOGLE_SERVICE_ACCOUNT_KEY",
+  "K_SERVICE",
+];
+
+/**
+ * Runs with no Google credentials in the process environment. The checks ask
+ * for them with getGoogleCredentials(), which settles that once per process,
+ * so this file only ever sees them missing.
+ */
+async function withoutGoogleCredentials<T>(run: () => Promise<T>): Promise<T> {
+  const saved = GOOGLE_CREDENTIAL_VARIABLES.map((name) => process.env[name]);
+
+  GOOGLE_CREDENTIAL_VARIABLES.forEach((name) => delete process.env[name]);
+
+  try {
+    return await run();
+  } finally {
+    GOOGLE_CREDENTIAL_VARIABLES.forEach((name, index) => {
+      if (saved[index] === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = saved[index];
+      }
+    });
+  }
+}
+
+test("the directory step needs Google credentials once it is on", async () => {
+  await withoutGoogleCredentials(async () => {
+    const step = ONBOARDING_STEPS.find(
+      (item) => item.id === "google-directory",
+    );
+
+    assert.ok(step);
+
+    const result = await step.check(
+      context({ stored: { "google.directory": "on" } }),
+    );
+
+    assert.equal(result.status, "needs_attention");
+    assert.match(result.detail, /no Google credentials/);
+  });
+});
+
+test("a Shared Drive export without Google credentials needs attention", async () => {
+  await withoutGoogleCredentials(async () => {
+    const step = ONBOARDING_STEPS.find((item) => item.id === "google-drive");
+
+    assert.ok(step);
+
+    const result = await step.check(
+      context({ stored: { "drive.exportDriveId": "0AExampleSharedDrive" } }),
+    );
+
+    assert.equal(result.status, "needs_attention");
+    assert.match(result.detail, /no Google credentials/);
+  });
+});
+
+test("the Drive step is done once the Picker is set up", async () => {
+  assert.equal(await check("google-drive", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-drive",
+      context({ stored: { "drive.pickerApiKey": "AIzaExampleKey000000000" } }),
+    ),
+    "not_started",
+  );
+  assert.equal(
+    await check(
+      "google-drive",
+      context({
+        stored: {
+          "drive.appId": "123456789012",
+          "drive.pickerApiKey": "AIzaExampleKey000000000",
+        },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("the add-on step is done once both of Google's values are there", async () => {
+  assert.equal(await check("google-addon", context()), "not_started");
+  assert.equal(
+    await check(
+      "google-addon",
+      context({
+        stored: {
+          "google.addonServiceAccount":
+            "service-12@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+        },
+      }),
+    ),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "google-addon",
+      context({
+        env: {
+          GOOGLE_ADDON_CLIENT_ID: "123456789012345678901",
+          RESEND_API_KEY: "re_environmentkey1",
+        },
+        stored: {
+          "google.addonServiceAccount":
+            "service-12@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+        },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("retention and backups can be confirmed as they are", async () => {
+  assert.equal(await check("retention", context()), "not_started");
+  assert.equal(
+    await check("retention", context({ marks: { retention: "confirmed" } })),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "retention",
+      context({
+        settings: resolveSettings({ ...stored, retentionDays: 365 }, {}),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(await check("backups", context()), "not_started");
+  assert.equal(
+    await check("backups", context({ marks: { backups: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the backups step follows whether the daily backup is set up and working", async () => {
+  const withStatus = (
+    state: "done" | "failing" | "not_configured",
+    marks: OnboardingContext["marks"] = {},
+  ) =>
+    context({
+      backupStatus: async () => ({ message: `backup ${state}`, state }),
+      marks,
+    });
+
+  assert.equal(await check("backups", withStatus("done")), "done");
+  assert.equal(
+    await check("backups", withStatus("failing")),
+    "needs_attention",
+  );
+  // A failing backup is not hidden by having confirmed it once.
+  assert.equal(
+    await check("backups", withStatus("failing", { backups: "confirmed" })),
+    "needs_attention",
+  );
+  assert.equal(
+    await check("backups", withStatus("not_configured")),
+    "not_started",
+  );
+
+  const step = ONBOARDING_STEPS.find((item) => item.id === "backups");
+
+  assert.equal(
+    (await step!.check(withStatus("failing"))).detail,
+    "backup failing",
+  );
+});
+
+test("the seal step: an install from before is offered a timestamp, a new one starts done", async () => {
+  // Nothing stored: an install set up before the setting existed.
+  assert.equal(await check("seal", context()), "not_started");
+  assert.equal(
+    await check("seal", context({ marks: { seal: "confirmed" } })),
+    "done",
+  );
+  // First-run setup stores the default for a new install.
+  assert.equal(
+    await check(
+      "seal",
+      context({
+        stored: { "seal.timestampUrl": "http://timestamp.digicert.com/" },
+      }),
+    ),
+    "done",
+  );
+  // Turned off on purpose is a choice too.
+  assert.equal(
+    await check("seal", context({ stored: { "seal.timestampUrl": "off" } })),
+    "done",
+  );
+  // The deployment decides.
+  assert.equal(
+    await check(
+      "seal",
+      context({
+        env: { SEAL_TIMESTAMP_URL: "https://tsa.example.test/" },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("the seal step needs attention when the uploaded certificate cannot be used", async () => {
+  const certificate = JSON.stringify({
+    certificate: {
+      fingerprint: "AA:BB",
+      issuer: "CN=Example CA",
+      notAfter: "2020-01-01T00:00:00.000Z",
+      notBefore: "2019-01-01T00:00:00.000Z",
+      selfSigned: false,
+      subject: "CN=Example Inc",
+    },
+    source: "pkcs12",
+    uploadedAt: 1,
+  });
+
+  // Expired.
+  assert.equal(
+    await check(
+      "seal",
+      context({
+        stored: {
+          "seal.certificate": certificate,
+          "seal.p12": "MIIB",
+          "seal.timestampUrl": "off",
+        },
+      }),
+    ),
+    "needs_attention",
+  );
+  // The file no longer decrypts (the auth secret changed), so it reads as absent.
+  assert.equal(
+    await check(
+      "seal",
+      context({
+        stored: {
+          "seal.certificate": certificate.replace("2020-01-01", "2999-01-01"),
+          "seal.timestampUrl": "off",
+        },
+      }),
+    ),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "seal",
+      context({
+        stored: {
+          "seal.certificate": certificate.replace("2020-01-01", "2999-01-01"),
+          "seal.p12": "MIIB",
+        },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("notifications are done once a Slack token is set, or confirmed without", async () => {
+  assert.equal(await check("notifications", context()), "not_started");
+  assert.equal(
+    await check(
+      "notifications",
+      context({ marks: { notifications: "confirmed" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ stored: { "slack.botToken": "xoxb-stored-token-1234" } }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check(
+      "notifications",
+      context({ env: { SLACK_BOT_TOKEN: "xoxb-environment-token-1234" } }),
+    ),
+    "done",
+  );
+});
+
+test("storage is described from the deployment's setting", async () => {
+  assert.equal(
+    await check("storage", context({ env: { STORAGE_DRIVER: "local" } })),
+    "done",
+  );
+  assert.equal(
+    await check("storage", context({ env: { STORAGE_DRIVER: "floppy" } })),
+    "needs_attention",
+  );
+});
+
+test("storage is not done while the driver cannot be used", async () => {
+  assert.equal(
+    await check("storage", context({ env: { STORAGE_DRIVER: "gcs" } })),
+    "needs_attention",
+  );
+});
+
+test("the name step is done once the app has a name, or the organization's is kept", async () => {
+  assert.equal(await check("name", context()), "not_started");
+  assert.equal(
+    await check(
+      "name",
+      context({
+        settings: resolveSettings(
+          { ...stored, productName: "BusbarSigner" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("name", context({ marks: { name: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the branding step is done with a logo, or once it is skipped on purpose", async () => {
+  assert.equal(await check("branding", context()), "not_started");
+  assert.equal(
+    await check(
+      "branding",
+      context({
+        settings: resolveSettings(
+          { ...stored, logoVersion: "0123456789abcdef" },
+          {},
+        ),
+      }),
+    ),
+    "done",
+  );
+  assert.equal(
+    await check("branding", context({ marks: { branding: "confirmed" } })),
+    "done",
+  );
+});
+
+test("the Google Workspace step wants sign-in, the customer ID and the Picker", async () => {
+  assert.equal(await check("google-workspace", context()), "not_started");
+
+  const signIn = {
+    "sso.clientId": "client.apps.googleusercontent.com",
+    "sso.clientSecret": "secret",
+    "sso.issuer": "https://accounts.google.com",
+  };
+
+  assert.equal(
+    await check("google-workspace", context({ stored: signIn })),
+    "needs_attention",
+  );
+  assert.equal(
+    await check(
+      "google-workspace",
+      context({
+        stored: {
+          ...signIn,
+          "drive.appId": "123456789012",
+          "drive.pickerApiKey": "AIzaKey",
+          "google.customerId": "C01ab2cd3",
+        },
+      }),
+    ),
+    "done",
+  );
+});
+
+test("with domain-wide delegation the Google Workspace step does not ask for the customer ID", async () => {
+  const stored = {
+    "drive.appId": "123456789012",
+    "drive.pickerApiKey": "AIzaKey",
+    "google.adminSubject": "admin@example.com",
+    "sso.clientId": "client.apps.googleusercontent.com",
+    "sso.clientSecret": "secret",
+    "sso.issuer": "https://accounts.google.com",
+  };
+
+  assert.equal(await check("google-workspace", context({ stored })), "done");
+});

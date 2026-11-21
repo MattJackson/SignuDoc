@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { DbPool } from "./db/connection.ts";
-import { completeSetup, resolveSetupView, SetupError } from "./setup.ts";
+import {
+  completeSetup,
+  firstRunDestination,
+  resolveSetupView,
+  SetupError,
+} from "./setup.ts";
 
 const signedIn = {
   email: "jane@acme.com",
@@ -170,4 +175,9 @@ test("a new install's form is told about every field at once, the account's incl
     }),
     ["supportAddress"],
   );
+});
+
+test("the first administrator goes to onboarding, or to settings on a hosted install", () => {
+  assert.equal(firstRunDestination({}), "/onboarding");
+  assert.equal(firstRunDestination({ HOSTED_MODE: "1" }), "/settings");
 });

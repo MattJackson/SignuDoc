@@ -20,6 +20,7 @@ const stored: AppSettings = {
   sessionIdleMinutes: null,
   sessionMaxHours: null,
   privacyUrl: "https://acme.com/privacy",
+  productName: null,
   retentionDays: null,
   senderAddress: "sign@acme.com",
   setupCompletedAt: 1_800_000_000,
@@ -163,4 +164,24 @@ test("a stored color that is not one is ignored rather than put on a page", () =
   );
 
   assert.equal(branding.brandColor, null);
+});
+
+test("an app name chosen in onboarding is used over the organization's name", () => {
+  const branding = buildBranding(
+    resolveSettings({ ...stored, productName: "BusbarSigner" }, {}),
+  );
+
+  assert.equal(branding.productName, "BusbarSigner");
+  assert.equal(branding.organizationName, "Acme Corp");
+  assert.equal(
+    buildBranding(
+      resolveSettings(
+        { ...stored, productName: "BusbarSigner" },
+        {
+          HOSTED_MODE: "1",
+        },
+      ),
+    ).productName,
+    "SignuDoc",
+  );
 });

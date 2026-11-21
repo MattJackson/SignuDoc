@@ -21,8 +21,13 @@ const CLOSURE_CONFIRMATION_PHRASE = "close my account";
 const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 type SettingsShellProps = {
-  /** Why this account cannot be closed; shown in place of the button. */
+  /**
+   * Why this account cannot be closed (the last administrator, or the
+   * break-glass account), shown in place of the button. Null when it can.
+   */
   closureBlockedReason?: string | null;
+  /** Off where the page around it already has the Settings header. */
+  header?: boolean;
   initialProfile?: ProfileValues;
   twoFactor?: { enabled: boolean; required: boolean };
 };
@@ -165,6 +170,7 @@ function isNoOpEmailChangeMessage(message: string) {
 
 export function SettingsShell({
   closureBlockedReason = null,
+  header = true,
   initialProfile = defaultProfileValues,
   twoFactor = { enabled: false, required: false },
 }: SettingsShellProps) {
@@ -558,10 +564,12 @@ export function SettingsShell({
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        description="Manage your sender profile, password, two-step sign-in and account lifecycle."
-        title="Settings"
-      />
+      {header ? (
+        <PageHeader
+          description="Manage your sender profile, password, two-step sign-in and account lifecycle."
+          title="Settings"
+        />
+      ) : null}
 
       {feedback ? <SettingsFeedback feedback={feedback} /> : null}
 
