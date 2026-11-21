@@ -17,7 +17,11 @@ import {
   replaceDraftEnvelopeFields,
   replaceDraftEnvelopeSigners,
 } from "./envelopes.ts";
-import { countAnswerableFields } from "./field-choices.ts";
+import {
+  countAnswerableFields,
+  describeChoiceFieldProblem,
+  findChoiceFieldProblem,
+} from "./field-choices.ts";
 import { fieldPlacementListSchema } from "./schemas/field.ts";
 import {
   saveTemplateSchema,
@@ -224,11 +228,68 @@ export async function listTemplatesForUser(
   }));
 }
 
-export async function getUseTemplateDataForUser(
+export type TemplateForBulkSend = UseTemplateData & {
+  fields: unknown;
+};
+
+/**
+ * Whether this template can be sent as it stands: every role needs a
+ * signature field, and choice fields must be finished. Saved from a draft
+ * that was still being prepared, it is kept, but it cannot go out.
+ */
+export function describeUnsendableTemplate(
+  roles: readonly TemplateRole[],
+  fields: unknown,
+): string | null {
+  if (roles.length === 0) {
+    return "Add signers and place fields before sending this envelope.";
+  }
+
+  const parsed = fieldPlacementListSchema.safeParse(fields);
+
+  if (!parsed.success) {
+    return UNUSABLE_TEMPLATE_MESSAGE;
+  }
+
+  if (parsed.data.length === 0) {
+    return "Add signers and place fields before sending this envelope.";
+  }
+
+  const roleIds = new Set(roles.map((role) => role.id));
+
+  if (parsed.data.some((field) => !roleIds.has(field.signerId))) {
+    return UNUSABLE_TEMPLATE_MESSAGE;
+  }
+
+  const missing = roles.find(
+    (role) =>
+      !parsed.data.some(
+        (field) => field.signerId === role.id && field.type === "signature",
+      ),
+  );
+
+  if (missing) {
+    return `Every signer must have at least one Signature field before sending. ${missing.name} is missing one.`;
+  }
+
+  const choiceProblem = findChoiceFieldProblem(parsed.data);
+
+  if (!choiceProblem) {
+    return null;
+  }
+
+  return describeChoiceFieldProblem(
+    choiceProblem,
+    roles.find((role) => role.id === choiceProblem.signerId)?.name ??
+      "a signer",
+  );
+}
+
+export async function getTemplateForBulkSend(
   userId: string,
   templateId: string,
   database: DbExecutor = getDb(),
-): Promise<UseTemplateData | null> {
+): Promise<TemplateForBulkSend | null> {
   const row = await getTemplateRow(userId, templateId, database);
 
   if (!row) {
@@ -243,10 +304,31 @@ export async function getUseTemplateDataForUser(
 
   return {
     fieldCountLabel: countLabel(countFields(row.fields), "field"),
+    fields: row.fields,
     id: row.id,
     name: row.name,
     pageCountLabel: countLabel(row.pageCount, "page"),
     roles: roles.data,
+  };
+}
+
+export async function getUseTemplateDataForUser(
+  userId: string,
+  templateId: string,
+  database: DbExecutor = getDb(),
+): Promise<UseTemplateData | null> {
+  const template = await getTemplateForBulkSend(userId, templateId, database);
+
+  if (!template) {
+    return null;
+  }
+
+  return {
+    fieldCountLabel: template.fieldCountLabel,
+    id: template.id,
+    name: template.name,
+    pageCountLabel: template.pageCountLabel,
+    roles: template.roles,
   };
 }
 

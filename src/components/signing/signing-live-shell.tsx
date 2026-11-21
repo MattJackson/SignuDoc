@@ -57,6 +57,9 @@ import {
   isNumberEntry,
   NUMBER_ENTRY_MESSAGE,
 } from "@/lib/field-choices";
+import { getInitials } from "@/lib/initials";
+import { truncateToWholeCharacters } from "@/lib/text-truncate";
+import { postToEmbedParent } from "./embed-parent-message";
 
 const typedSignatureFont =
   '"Snell Roundhand", "Brush Script MT", "Segoe Script", cursive';
@@ -104,14 +107,8 @@ export const rejectedConfirmation = {
 const compactFieldHeightThreshold = 0.045;
 const compactFieldWidthThreshold = 0.12;
 
-function getInitials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 4)
-    .toUpperCase();
+function getSignerInitials(name: string): string {
+  return getInitials(name, { max: 4 });
 }
 
 function getFieldFrame(field: SigningCurrentField | SigningVisibleField) {
@@ -493,10 +490,13 @@ function describeProviderProblem(
 }
 
 export function SigningLiveShell({
+  embedOrigin = null,
   record,
   signatureProblem = null,
   token,
 }: {
+  /** The site framing an embedded signing page, told when it is done. */
+  embedOrigin?: string | null;
   record: SigningPayload;
   signatureProblem?: ProviderSignatureProblem | null;
   /** The signing link's token, for the optional Google sign-in. */
@@ -591,6 +591,48 @@ export function SigningLiveShell({
     signatureValues,
     textValues,
   };
+  // Nothing the signer enters is saved until Finish, so leaving or
+  // reloading the page first would lose it. The browser asks before that
+  // happens (issue #99). Finishing or declining leaves on purpose.
+  const hasUnsubmittedEntries =
+    !hasDeclined &&
+    (Object.keys(signatureValues).length > 0 ||
+      Object.values(textValues).some((value) => value.trim().length > 0) ||
+      Object.values(checkboxValues).some(Boolean));
+  const leavingOnPurposeRef = useRef(false);
+
+  useEffect(() => {
+    if (!hasUnsubmittedEntries) {
+      return;
+    }
+
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      if (leavingOnPurposeRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      // Older browsers ask only when this is set.
+      event.returnValue = " ";
+    }
+
+    // Coming back to this page with the browser's Back button (after a
+    // signing provider's redirect, say) restores it as it was left, so the
+    // signer is asked again before a later reload.
+    function askAgainOnReturn(event: PageTransitionEvent) {
+      if (event.persisted) {
+        leavingOnPurposeRef.current = false;
+      }
+    }
+
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    window.addEventListener("pageshow", askAgainOnReturn);
+
+    return () => {
+      window.removeEventListener("beforeunload", warnBeforeLeaving);
+      window.removeEventListener("pageshow", askAgainOnReturn);
+    };
+  }, [hasUnsubmittedEntries]);
   // A group of radio buttons is one question: it is listed and counted once.
   const seenRadioGroups = new Set<string>();
   const actionSummaryFields = record.currentSignerFields.filter((field) => {
@@ -817,6 +859,7 @@ export function SigningLiveShell({
 
       if (!response.ok) {
         if (payload?.state) {
+          leavingOnPurposeRef.current = true;
           window.location.reload();
           return;
         }
@@ -834,12 +877,22 @@ export function SigningLiveShell({
           return;
         }
 
+        leavingOnPurposeRef.current = true;
         window.location.assign(payload.redirectUrl);
         return;
       }
 
       const fallbackRedirectPath = `${window.location.pathname.replace(/\/$/, "")}/done?title=${encodeURIComponent(record.envelopeTitle)}`;
 
+      if (embedOrigin) {
+        postToEmbedParent(embedOrigin, {
+          envelopeId: record.envelopeId,
+          signerId: record.signer.id,
+          type: "signudoc:signed",
+        });
+      }
+
+      leavingOnPurposeRef.current = true;
       window.location.assign(payload?.redirectPath ?? fallbackRedirectPath);
     } catch {
       setSubmitError(defaultSubmitErrorMessage);
@@ -928,6 +981,7 @@ export function SigningLiveShell({
 
       if (!response.ok) {
         if (payload?.state) {
+          leavingOnPurposeRef.current = true;
           window.location.reload();
           return;
         }
@@ -935,6 +989,14 @@ export function SigningLiveShell({
         setDeclineError(payload?.error ?? defaultDeclineErrorMessage);
         setIsDeclining(false);
         return;
+      }
+
+      if (embedOrigin) {
+        postToEmbedParent(embedOrigin, {
+          envelopeId: record.envelopeId,
+          signerId: record.signer.id,
+          type: "signudoc:declined",
+        });
       }
 
       // Not a reload: a decline retires this link, so reloading would land
@@ -1094,7 +1156,7 @@ export function SigningLiveShell({
             )}
           </div>
         ) : null}
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="flex min-w-0 flex-col gap-4">
             <div className="panel rounded-[1.25rem] px-4 py-3">
               <div className="flex flex-col gap-3 xl:grid xl:grid-cols-[1fr_auto_1fr] xl:items-center">
@@ -1151,6 +1213,11 @@ export function SigningLiveShell({
                 <div className="flex justify-center xl:justify-end">
                   <SigningToolbarStatus
                     hasLockedFields={pageVisibleFields.length > 0}
+                    pageHasNoFields={
+                      isDocumentReady &&
+                      pageCurrentFields.length === 0 &&
+                      pageVisibleFields.length === 0
+                    }
                     remainingFields={remainingFields}
                   />
                 </div>
@@ -1260,22 +1327,6 @@ export function SigningLiveShell({
                             />
                           ))
                         : null}
-
-                      {isDocumentReady &&
-                      pageCurrentFields.length === 0 &&
-                      pageVisibleFields.length === 0 ? (
-                        <div className="absolute inset-0 z-1 flex items-center justify-center px-6">
-                          <div className="max-w-[320px] rounded-[1.25rem] border-2 border-dashed border-(--border-strong) bg-white/92 px-6 py-7 text-center">
-                            <p className="text-lg font-extrabold tracking-[-0.02em] text-(--fg)">
-                              No signer fields on this page
-                            </p>
-                            <p className="mt-2 text-sm leading-6 text-(--secondary)">
-                              Move between pages to review your assigned fields
-                              and any completed values from earlier signers.
-                            </p>
-                          </div>
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1283,14 +1334,14 @@ export function SigningLiveShell({
             </div>
           </div>
 
-          <aside className="space-y-4 xl:sticky xl:top-[5.25rem] xl:self-start">
+          <aside className="min-w-0 space-y-4 xl:sticky xl:top-[5.25rem] xl:self-start">
             <section className="panel rounded-[1.25rem] p-5">
               <p className="section-eyebrow">
                 {isApprover ? "Approver" : "Current signer"}
               </p>
               <div className="mt-3 flex items-center gap-3">
                 <span className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-(--accent-soft) text-[0.9375rem] font-bold text-(--accent-ink)">
-                  {getInitials(record.signer.name)}
+                  {getSignerInitials(record.signer.name)}
                 </span>
                 <div className="min-w-0">
                   <p className="truncate text-[0.9375rem] font-bold text-(--fg)">
@@ -1579,10 +1630,20 @@ export function SigningLiveShell({
           title={isApprover ? "Before you approve" : "Before you sign"}
         >
           <div className="well max-h-[45vh] space-y-4 overflow-y-auto px-4 py-4 text-sm leading-6 text-(--secondary) sm:px-5">
-            {record.disclosure.sections.map((section) => (
-              <section key={section.heading}>
-                <h3 className="font-bold text-(--fg)">{section.heading}</h3>
-                <p className="mt-1">{section.text}</p>
+            {record.disclosure.sections.map((section, index) => (
+              <section key={`${index}-${section.heading}`}>
+                {section.heading ? (
+                  <h3 className="font-bold text-(--fg)">{section.heading}</h3>
+                ) : null}
+                <p
+                  className={
+                    section.heading
+                      ? "mt-1 whitespace-pre-line"
+                      : "whitespace-pre-line"
+                  }
+                >
+                  {section.text}
+                </p>
               </section>
             ))}
           </div>
@@ -1690,9 +1751,11 @@ export function SigningLiveShell({
 
 function SigningToolbarStatus({
   hasLockedFields,
+  pageHasNoFields,
   remainingFields,
 }: {
   hasLockedFields: boolean;
+  pageHasNoFields: boolean;
   remainingFields: number;
 }) {
   return (
@@ -1733,7 +1796,11 @@ function SigningToolbarStatus({
             : `${remainingFields} required remaining`}
         </p>
         <p className="text-xs leading-tight text-(--tertiary)">
-          {hasLockedFields ? "Locked values visible" : "Current signer view"}
+          {pageHasNoFields
+            ? "No fields on this page"
+            : hasLockedFields
+              ? "Locked values visible"
+              : "Current signer view"}
         </p>
       </div>
     </div>
@@ -2127,7 +2194,11 @@ function SignatureModal({
       return existingEntry.value;
     }
 
-    return fieldType === "initials" ? getInitials(signerName) : signerName;
+    // The same whole-character cut as typing, so applying the default
+    // submits what editing it would.
+    return fieldType === "initials"
+      ? truncateToWholeCharacters(getSignerInitials(signerName), 4)
+      : signerName;
   });
   const drawPreviewMessage =
     drawnSignatureVersion === 0
@@ -2143,7 +2214,7 @@ function SignatureModal({
 
   function handleTypedSignatureValueChange(value: string) {
     if (fieldType === "initials") {
-      setTypedSignatureValue(value.toUpperCase().slice(0, 4));
+      setTypedSignatureValue(truncateToWholeCharacters(value.toUpperCase(), 4));
       return;
     }
 
@@ -2470,10 +2541,29 @@ function DialogFrame({
   onClose: () => void;
   title: string;
 }) {
+  // These dialogs open from state, not from a Radix trigger, so on close
+  // Radix has nowhere to send focus and it falls to the top of the page.
+  // Remember what had focus when the dialog first rendered (before Radix
+  // moves focus into it) and send focus back there, as a keyboard user
+  // expects.
+  const [returnFocusTarget] = useState(() =>
+    typeof document === "undefined" ? null : document.activeElement,
+  );
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] max-w-[600px] overflow-y-auto p-0"
+        onCloseAutoFocus={(event) => {
+          if (
+            returnFocusTarget instanceof HTMLElement &&
+            returnFocusTarget !== document.body &&
+            returnFocusTarget.isConnected
+          ) {
+            event.preventDefault();
+            returnFocusTarget.focus();
+          }
+        }}
         showCloseButton={false}
       >
         <div>

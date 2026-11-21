@@ -108,6 +108,8 @@ export default async function DashboardPage({
 
   return (
     <DashboardShell
+      // A new search or view starts the shell afresh, with its own search box.
+      key={`${view}:${search}`}
       envelopes={result?.envelopes}
       initialSearch={search}
       initialState={initialState}

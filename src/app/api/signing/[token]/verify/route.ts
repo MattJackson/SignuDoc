@@ -5,7 +5,7 @@ import { getAuthSessionFromHeaders } from "@/lib/auth/server";
 import { getDb } from "@/lib/db/connection";
 import { logRouteError } from "@/lib/security/logging";
 import {
-  applyRateLimit,
+  applyPublicLinkRateLimit,
   buildRateLimitKey,
 } from "@/lib/security/route-controls";
 import {
@@ -36,7 +36,7 @@ const NO_STORE = { "cache-control": "private, no-store" };
 export async function POST(request: Request, context: VerifyRouteContext) {
   const { token } = await context.params;
   // Codes are short: few tries per link, whatever address they come from.
-  const rateLimitResponse = await applyRateLimit({
+  const rateLimitResponse = await applyPublicLinkRateLimit({
     category: "signing_verify",
     key: buildRateLimitKey(["signing-verify", token]),
     limit: 10,

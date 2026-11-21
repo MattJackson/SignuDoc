@@ -23,6 +23,10 @@ export const STAND_INS: Record<string, string | (() => string)> = {
   "buildInClausePlaceholders(nextSigners.length, 2)": "$2, $3",
   // envelopes.ts, listEnvelopesForUser: every filter at once.
   'clauses.join(" AND ")': `${envelopeScopeCondition("all", "$1")} AND status = $2 AND (lower(title) LIKE $3 ESCAPE '\\' OR EXISTS (SELECT 1 FROM signers WHERE signers.envelope_id = envelopes.id AND lower(signers.email) LIKE $3 ESCAPE '\\') OR EXISTS (SELECT 1 FROM public."user" sender WHERE sender.id = envelopes.user_id AND (lower(sender.email) LIKE $3 ESCAPE '\\' OR lower(sender.name) LIKE $3 ESCAPE '\\')))`,
+  // api/envelope-view.ts, listApiEnvelopes: the status filter and a cursor.
+  'src/lib/api/envelope-view.ts|clauses.join(" AND ")':
+    "e.user_id = $1 AND e.status = $2 AND (e.created_at, e.id) < ($3, $4)",
+  "String(values.length)": "5",
   limitPlaceholder: "$4",
   offsetPlaceholder: "$5",
   // envelope-deletion.ts: how many scheduled deletions one run takes.
@@ -33,9 +37,11 @@ export const STAND_INS: Record<string, string | (() => string)> = {
   // settings.ts: settingsColumnsAfter(n) lists the settings columns the
   // first n later migrations had added; the newest shape is the widest.
   "settingsColumnsAfter(laterMigrations)":
-    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name",
+    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name, consent_disclosure",
   "settingsColumnsAfter(LATER_SETTINGS_COLUMNS.length)":
-    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name",
+    "allowed_email_domains, email_ready_at, organization_name, privacy_url, sender_address, setup_completed_at, signup_mode, support_address, terms_url, retention_days, brand_color, logo_hash, part11_mode, require_two_factor, session_idle_minutes, session_max_hours, product_name, consent_disclosure",
+  // backup.ts: each of BACKFILLS_FOR_OLDER_BACKUPS; there is one.
+  "src/lib/backup.ts|backfill.sql": `UPDATE "user" SET identity_verified_name = name, identity_verified_email = email WHERE identity_verified_at IS NOT NULL AND identity_verified_name IS NULL`,
 };
 
 export const POSTGRES_ONLY: {
@@ -93,5 +99,17 @@ export const POSTGRES_ONLY: {
     file: "src/lib/db/test-database.ts",
     reason:
       "Creates the Postgres test database; a SQLite test database is a file.",
+  },
+  {
+    contains: "pg_backend_pid",
+    file: "src/lib/db/test-database.ts",
+    reason:
+      "waitUntilBlockedBy on Postgres; on SQLite it reads pg_stat_activity.",
+  },
+  {
+    contains: "pg_blocking_pids",
+    file: "src/lib/db/test-database.ts",
+    reason:
+      "waitUntilBlockedBy on Postgres; on SQLite it reads pg_stat_activity.",
   },
 ];

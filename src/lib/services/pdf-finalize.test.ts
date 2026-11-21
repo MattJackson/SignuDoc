@@ -7,6 +7,7 @@ import type { AuditEventRecord, EnvelopeRecord } from "../schemas/envelope.ts";
 import type { FieldRecord } from "../schemas/field.ts";
 import type { SignerRecord } from "../schemas/signer.ts";
 import {
+  computeAuditFingerprint,
   describeAuditActor,
   findTypedValueTooLongForField,
   renderEnvelopeCertificatePdf,
@@ -1004,4 +1005,80 @@ test("declined and voided certificates keep same-second events in recorded order
       text,
     );
   }
+});
+
+test("a captured email is not described as accepted by a mail provider (issue #106)", async () => {
+  const fixture = await makeFixture();
+  const emailSent = (id: string, messageId: string): AuditEventRecord => ({
+    actorType: "system",
+    createdAt: 1_799_999_000,
+    envelopeId: fixture.envelope.id,
+    event: "email_sent",
+    id,
+    metadata: {
+      messageId,
+      recipient: "lukasz@example.com",
+      signerId: "signer-1",
+      template: "signing_invitation",
+    },
+  });
+  const auditEvents = [
+    emailSent("event-captured", "capture-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed"),
+    emailSent("event-provider", "4ef9a417-02e9-4d39-ad75-9611e0fcc33c"),
+  ];
+  const text = (
+    await extractText(
+      await renderEnvelopeCertificatePdf(
+        {
+          auditEvents,
+          envelope: fixture.envelope,
+          redactForRecipients: false,
+          signers: fixture.signers,
+        },
+        { seal: saveUnsealed },
+      ),
+    )
+  ).replace(/\s+/g, " ");
+
+  assert.ok(
+    text.includes(
+      "captured locally as capture-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed, not sent",
+    ),
+    text,
+  );
+  assert.ok(
+    !text.includes(
+      "accepted by the mail provider as capture-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+    ),
+    text,
+  );
+  assert.ok(
+    text.includes(
+      "accepted by the mail provider as 4ef9a417-02e9-4d39-ad75-9611e0fcc33c",
+    ),
+    text,
+  );
+});
+
+test("the new wording leaves the audit fingerprint of a captured email unchanged (issue #106)", () => {
+  // Certificates sealed before the fix printed this fingerprint for the same
+  // row, so they still match the stored audit trail.
+  assert.equal(
+    computeAuditFingerprint([
+      {
+        actorType: "system",
+        createdAt: 1_799_999_000,
+        envelopeId: "env",
+        event: "email_sent",
+        id: "event-captured",
+        metadata: {
+          messageId: "capture-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+          recipient: "lukasz@example.com",
+          signerId: "signer-1",
+          template: "signing_invitation",
+        },
+      },
+    ]),
+    "876cbd8661559c69681db5458f3baf2f8e1c8ccc4c43c9352691608e68b61c32",
+  );
 });

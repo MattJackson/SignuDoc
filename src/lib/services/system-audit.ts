@@ -42,6 +42,13 @@ export const systemAuditEventTypes = [
   "two_factor_requirement_changed",
   "logo_changed",
   "email_domain_changed",
+  "api_key_created",
+  "api_key_revoked",
+  "webhook_endpoint_created",
+  "webhook_endpoint_changed",
+  "webhook_endpoint_deleted",
+  "embed_origin_added",
+  "embed_origin_removed",
   "envelope_deleted",
   "backup_settings_changed",
   "backup_run_requested",
@@ -77,8 +84,17 @@ export type SystemAuditEvent = {
   userAgent: string | null;
 };
 
+export type SystemAuditActorType = "system" | "user";
+
 export type RecordSystemAuditEventInput = {
   actorEmail?: string | null;
+  /**
+   * Who did it, for the JSON audit line only (it is not a column and is
+   * not hashed). "system" is the install's own scheduled jobs, such as the
+   * daily cleanup deleting a closed account. Left out, it is "user": a
+   * person did it, even an unknown one, such as a failed sign-in.
+   */
+  actorType?: SystemAuditActorType;
   actorUserId?: string | null;
   createdAt?: number;
   event: SystemAuditEventType;
@@ -169,7 +185,7 @@ async function insertChained(
   afterCommit(database, () => {
     logAuditRecord({
       ...fields,
-      actorType: "user",
+      actorType: input.actorType ?? "user",
       rowHash,
       trail: "site",
     });

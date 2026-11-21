@@ -543,6 +543,137 @@ test("a data-modifying WITH runs, and hands its rows on", async () => {
   );
 });
 
+test("a WITH that modifies data in several parts runs each in turn", async () => {
+  const first = await addUser({ name: "First" });
+  const second = await addUser({ name: "Second" });
+
+  await pool.query(
+    `insert into teams (id, name, created_at, updated_at) values ('team-2', 'Two', 1, 1)`,
+  );
+
+  // A plain part, a part that writes and returns, one that reads it and
+  // returns nothing, and a statement that reads the first.
+  const added = await pool.query<{ user_id: string }>(
+    `WITH wanted AS (
+       SELECT id FROM public."user" WHERE id = ANY($2::text[])
+     ),
+     renamed AS (
+       UPDATE teams t SET name = $3, updated_at = 2 FROM wanted
+       WHERE t.id = $1 AND wanted.id = $4
+       RETURNING t.*
+     ),
+     joined AS (
+       INSERT INTO team_members (team_id, user_id, added_at)
+       SELECT renamed.id, wanted.id, 3 FROM renamed CROSS JOIN wanted
+       ON CONFLICT (team_id, user_id) DO NOTHING
+     )
+     SELECT w.id AS user_id FROM wanted w ORDER BY w.id`,
+    ["team-2", [first, second], "Renamed", first],
+  );
+
+  assert.deepEqual(
+    added.rows.map((row) => row.user_id),
+    [first, second].sort(),
+  );
+  assert.deepEqual(
+    (await pool.query("select name from teams where id = 'team-2'")).rows,
+    [{ name: "Renamed" }],
+  );
+  assert.equal(
+    (await pool.query("select 1 from team_members where team_id = 'team-2'"))
+      .rowCount,
+    2,
+  );
+
+  // The rows a part claims go on to the statement after it, which upserts.
+  const claimed = await pool.query(
+    `WITH claim AS (
+       UPDATE teams SET updated_at = 4 WHERE id = $1 RETURNING id
+     )
+     INSERT INTO team_members (team_id, user_id, added_at)
+     SELECT claim.id, $2, 5 FROM claim
+     ON CONFLICT (team_id, user_id) DO UPDATE SET added_at = EXCLUDED.added_at`,
+    ["team-2", first],
+  );
+
+  assert.equal(claimed.rowCount, 1);
+  assert.deepEqual(
+    (
+      await pool.query(
+        "select added_at from team_members where team_id = 'team-2' and user_id = $1",
+        [first],
+      )
+    ).rows,
+    [{ added_at: 5 }],
+  );
+});
+
+test("a REPEATABLE READ transaction reads on one snapshot", async () => {
+  const id = await addUser({ name: "Before" });
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+
+    const before = await client.query(`select name from "user" where id = $1`, [
+      id,
+    ]);
+
+    await pool.query(`update "user" set name = 'After' where id = $1`, [id]);
+
+    const after = await client.query(`select name from "user" where id = $1`, [
+      id,
+    ]);
+
+    assert.deepEqual(before.rows, [{ name: "Before" }]);
+    assert.deepEqual(after.rows, [{ name: "Before" }]);
+    await client.query("COMMIT");
+  } finally {
+    client.release();
+  }
+
+  // Outside it, and in a READ COMMITTED transaction, the change is seen.
+  assert.deepEqual(
+    (await pool.query(`select name from "user" where id = $1`, [id])).rows,
+    [{ name: "After" }],
+  );
+});
+
+test("LOCK TABLE takes the write lock until the transaction ends", async () => {
+  const holder = await pool.connect();
+
+  try {
+    await holder.query("begin");
+    await holder.query("LOCK TABLE teams IN SHARE ROW EXCLUSIVE MODE");
+
+    const other = new SqlitePool(url, { lockTimeoutMs: 100 });
+
+    try {
+      await assert.rejects(
+        other.query(
+          `insert into teams (id, name, created_at, updated_at) values ('team-3', 'Three', 1, 1)`,
+        ),
+        (error: unknown) =>
+          error instanceof SqliteDatabaseError && error.code === "55P03",
+      );
+    } finally {
+      await other.end();
+    }
+
+    await holder.query("commit");
+  } finally {
+    holder.release();
+  }
+});
+
+test("a NUL in text is refused, as Postgres refuses it", async () => {
+  await assert.rejects(
+    pool.query(`select $1::text as value`, ["a\u0000b"]),
+    (error: unknown) =>
+      error instanceof SqliteDatabaseError && error.code === "22021",
+  );
+});
+
 test("the approver trigger and the notification trigger work as in Postgres", async () => {
   const owner = await addUser();
 

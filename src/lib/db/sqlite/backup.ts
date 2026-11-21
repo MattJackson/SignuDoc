@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { openSqliteDatabase } from "./open.ts";
 import { triggerFilledTablesFirst } from "../../backup-order.ts";
 import { formatTimestamp } from "./functions.ts";
+import type { DbPool } from "../connection.ts";
 import type { SqlitePool } from "./pool.ts";
 
 type Column = { name: string; type: string };
@@ -213,21 +214,32 @@ export type BackupEntry =
  * Loads backup rows into an empty SQLite database, in one transaction:
  * all of them, or none.
  */
-export async function restoreIntoSqlite({
+export async function restoreIntoSqlite<Finished>({
   applied,
   entries,
   fail,
+  finish,
   migrationsTable,
   pool,
 }: {
   applied: Set<string>;
   entries: AsyncIterable<BackupEntry>;
   fail: (message: string) => Error;
+  /**
+   * Run in the restore's transaction once every row is in, with the
+   * migrations the backup was made at (backfills, ending credentials).
+   */
+  finish: (
+    client: Pick<DbPool, "query">,
+    backupMigrations: ReadonlySet<string>,
+  ) => Promise<Finished>;
   migrationsTable: string;
   pool: SqlitePool;
-}): Promise<{ rows: Record<string, number> }> {
+}): Promise<{ finished: Finished; rows: Record<string, number> }> {
   const client = await pool.connect();
   const counts: Record<string, number> = {};
+  let backupMigrations = new Set<string>();
+  let finished: Finished;
   const columnsByTable = new Map<string, Map<string, string>>();
 
   const columns = async (table: string) => {
@@ -268,6 +280,8 @@ export async function restoreIntoSqlite({
           );
         }
 
+        backupMigrations = new Set(entry.header.migrations);
+
         // A new install can already have a row or two of its own (a seal
         // key, its settings). The backup's take their place.
         for (const table of [...entry.header.tables].reverse()) {
@@ -292,6 +306,10 @@ export async function restoreIntoSqlite({
       counts[entry.table] = (counts[entry.table] ?? 0) + 1;
     }
 
+    finished = await finish(
+      client as unknown as Pick<DbPool, "query">,
+      backupMigrations,
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -300,5 +318,5 @@ export async function restoreIntoSqlite({
     client.release();
   }
 
-  return { rows: counts };
+  return { finished, rows: counts };
 }

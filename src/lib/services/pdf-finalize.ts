@@ -12,6 +12,7 @@ import type { SignerRecord } from "../schemas/signer.ts";
 import { buildSignatureManifestation } from "../signature-meanings.ts";
 import { hasSharedSigningStep, signingStepOf } from "../signing-steps.ts";
 import { describeSignerCorrectedEvent } from "./audit.ts";
+import { isCapturedMessageId } from "./captured-email.ts";
 import { canonicalJson } from "../utils/canonical-json.ts";
 import { normalizedRectToPdfRect } from "../utils/pdf-coords.ts";
 import { embedTextFaces, type TextFace } from "./pdf-fonts.ts";
@@ -802,8 +803,9 @@ async function drawFieldValue(
       }
 
       // Wrapped and made smaller until the whole value is inside the box.
-      // Signing refuses a value that would only fit below a readable size,
-      // but one accepted earlier is still drawn whole, never cut off.
+      // Signing refuses a typed value that would only fit below a readable
+      // size, but a dropdown choice, or a value accepted earlier, is still
+      // drawn whole, never cut off.
       const box = getTextFieldBox(rect);
       let layout = layoutFieldText(
         fonts.auditRegular,
@@ -1117,6 +1119,18 @@ function buildAuditLines(input: {
     );
   }
 
+  // Each signer is numbered by their step of the signing order. With every
+  // signer in a step of their own that is their place in the list; signers
+  // who share a number were asked to sign at the same time, and the line
+  // below says so.
+  if (hasSharedSigningStep(input.signers)) {
+    pushParagraph(
+      "Signers with the same number were asked to sign at the same time. Each number started once everyone with the number before it had signed.",
+      input.fonts.regular,
+      bodyFontSize,
+    );
+  }
+
   for (const signer of input.signers) {
     const actionLabel = getSignerCertificateActionLabel(input.envelope, signer);
     const step = signingStepOf(signer);
@@ -1337,6 +1351,23 @@ function currentSignerIdentityStart(
   return starts[starts.length - 1] ?? 0;
 }
 
+/**
+ * For a signature made inside another app: identity then rests on that app
+ * having signed the person in. The record shows only where the link was
+ * given, not that the app checked who opened it, so the certificate says
+ * the check was left to the app rather than that it happened.
+ */
+function describeEmbeddedDelivery(embedded: Record<string, unknown>): string {
+  const origin =
+    typeof embedded.origin === "string" ? embedded.origin : "another site";
+  const key =
+    typeof embedded.apiKeyName === "string"
+      ? ` through the API key "${embedded.apiKeyName}"`
+      : "";
+
+  return `a signing link given to the app at ${origin}${key} (embedded signing; identifying the signer was left to that app)`;
+}
+
 /** What the record shows about how one signer was identified and agreed. */
 function describeSignerEvidence(
   signer: SignerRecord,
@@ -1374,8 +1405,22 @@ function describeSignerEvidence(
     }
   }
 
+  // A signer who declined in another app has no signed event; the
+  // declined event carries the same record of where it happened.
+  const declined =
+    signed === undefined && signer.status === "declined"
+      ? forSigner.findLast((event) => event.event === "declined")
+      : undefined;
+  const embeddedSource = signed ?? declined;
+  const embedded =
+    embeddedSource?.metadata?.embedded &&
+    typeof embeddedSource.metadata.embedded === "object"
+      ? (embeddedSource.metadata.embedded as Record<string, unknown>)
+      : null;
   const checks = [
-    "possession of the emailed signing link",
+    embedded
+      ? describeEmbeddedDelivery(embedded)
+      : "possession of the emailed signing link",
     ...readStringArray((signed ?? ended)?.metadata?.authMethods).map(
       (method) => AUTHENTICATION_LABELS[method] ?? method,
     ),
@@ -1485,7 +1530,12 @@ function describeEventEvidence(event: AuditEventRecord): string[] {
       [
         kind ? `email ${kind.replaceAll("_", " ")}` : "email",
         recipient ? `to ${recipient}` : null,
-        messageId ? `accepted by the mail provider as ${messageId}` : null,
+        messageId
+          ? isCapturedMessageId(messageId)
+            ? // The capture driver only wrote it to the local outbox.
+              `captured locally as ${messageId}, not sent`
+            : `accepted by the mail provider as ${messageId}`
+          : null,
       ]
         .filter(Boolean)
         .join(" "),

@@ -1,6 +1,7 @@
-const graphemeSegmenter = new Intl.Segmenter(undefined, {
-  granularity: "grapheme",
-});
+import {
+  splitIntoWholeCharacters,
+  toWellFormedText,
+} from "./whole-characters.ts";
 
 // Shortens text to at most maxLength UTF-16 code units, cutting only between
 // whole characters, so an emoji (or a letter with its accent) is kept or
@@ -10,7 +11,7 @@ export function truncateToWholeCharacters(
   value: string,
   maxLength: number,
 ): string {
-  const wellFormed = value.toWellFormed();
+  const wellFormed = toWellFormedText(value);
 
   if (wellFormed.length <= maxLength) {
     return wellFormed;
@@ -18,7 +19,7 @@ export function truncateToWholeCharacters(
 
   let result = "";
 
-  for (const { segment } of graphemeSegmenter.segment(wellFormed)) {
+  for (const segment of splitIntoWholeCharacters(wellFormed)) {
     if (result.length + segment.length > maxLength) {
       break;
     }

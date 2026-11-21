@@ -26,7 +26,11 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   backup_run_requested: "Backup started by hand",
   backup_settings_changed: "Backup settings changed",
   drive_export_retried: "Drive export tried again",
+  api_key_created: "API key created",
+  api_key_revoked: "API key revoked",
   email_domain_changed: "Email domain changed",
+  embed_origin_added: "Site allowed to embed signing",
+  embed_origin_removed: "Site no longer allowed to embed signing",
   envelope_deleted: "Finished envelope deleted",
   envelope_deletion_cancelled: "Envelope deletion cancelled",
   envelope_deletion_scheduled: "Envelope deletion scheduled",
@@ -63,6 +67,9 @@ const EVENT_LABELS: Record<SystemAuditEvent["event"], string> = {
   two_factor_enabled: "Two-step sign-in turned on",
   two_factor_requirement_changed: "Two-step sign-in requirement changed",
   two_factor_reset: "Two-step sign-in reset by an administrator",
+  webhook_endpoint_changed: "Webhook endpoint changed",
+  webhook_endpoint_created: "Webhook endpoint added",
+  webhook_endpoint_deleted: "Webhook endpoint removed",
 };
 
 const SIGN_IN_FAILURE_REASONS: Record<string, string> = {
@@ -177,6 +184,37 @@ function describeEvent(event: SystemAuditEvent): string {
       ]
         .filter(Boolean)
         .join(", ");
+    case "api_key_created":
+    case "api_key_revoked":
+      return [
+        typeof metadata.name === "string" ? metadata.name : null,
+        typeof metadata.prefix === "string" ? `${metadata.prefix}…` : null,
+        metadata.reason === "role_removed"
+          ? "owner is no longer an administrator"
+          : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    case "embed_origin_added":
+    case "embed_origin_removed":
+      return typeof metadata.origin === "string" ? metadata.origin : "";
+    case "webhook_endpoint_created":
+    case "webhook_endpoint_changed":
+    case "webhook_endpoint_deleted":
+      return [
+        typeof metadata.url === "string" ? metadata.url : null,
+        Array.isArray(metadata.events)
+          ? `events: ${metadata.events.filter((type) => typeof type === "string").join(", ")}`
+          : null,
+        metadata.secretRotated === true ? "new signing secret" : null,
+        metadata.enabled === false
+          ? "turned off"
+          : metadata.enabled === true
+            ? "turned on"
+            : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
     case "envelope_deleted":
       return [
         typeof metadata.title === "string" ? `"${metadata.title}"` : null,
@@ -227,6 +265,7 @@ function describeEvent(event: SystemAuditEvent): string {
 const downloadedFileLabels: Record<string, string> = {
   audit_trail: "audit trail",
   evidence: "certificate",
+  original: "document as sent",
   signed: "signed PDF",
 };
 

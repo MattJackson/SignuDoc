@@ -12,6 +12,7 @@ import {
 const stored: AppSettings = {
   allowedEmailDomains: ["example.com"],
   brandColor: null,
+  consentDisclosure: null,
   emailReadyAt: null,
   logoVersion: null,
   organizationName: "Example Inc",

@@ -164,3 +164,97 @@ export function joinNames(names: readonly string[]): string {
 
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
+
+/**
+ * On the signers page each signer after the first either signs at the same
+ * time as the one above (`withPrevious`) or starts the next step.
+ */
+export type ListedSigner = { withPrevious: boolean };
+
+/** Each listed signer's step, from 1. */
+function listedSteps(signers: readonly ListedSigner[]): number[] {
+  const steps: number[] = [];
+
+  for (const [index, signer] of signers.entries()) {
+    const previous = steps[index - 1];
+
+    steps.push(
+      previous === undefined
+        ? 1
+        : signer.withPrevious
+          ? previous
+          : previous + 1,
+    );
+  }
+
+  return steps;
+}
+
+/** The signers, each with the step given for them in `steps`. */
+function inSteps<T extends ListedSigner>(
+  signers: readonly T[],
+  steps: readonly number[],
+): T[] {
+  return signers.map((signer, index) => {
+    const withPrevious = index > 0 && steps[index] === steps[index - 1];
+
+    return signer.withPrevious === withPrevious
+      ? signer
+      : { ...signer, withPrevious };
+  });
+}
+
+/**
+ * The list without the signer at `index`. Everyone else stays in their
+ * step: the signer after one who started a step does not join the step
+ * before.
+ */
+export function removeListedSigner<T extends ListedSigner>(
+  signers: readonly T[],
+  index: number,
+): T[] {
+  const keep = (_: unknown, at: number) => at !== index;
+
+  return inSteps(signers.filter(keep), listedSteps(signers).filter(keep));
+}
+
+/**
+ * The list with the signer at `index` moved one place earlier or later.
+ * Everyone else stays in their step. The moved signer stays in theirs when
+ * changing places with someone of the same step, joins a step they land in
+ * the middle of, and otherwise has a step of their own.
+ */
+export function moveListedSigner<T extends ListedSigner>(
+  signers: T[],
+  index: number,
+  direction: "earlier" | "later",
+): T[] {
+  const target = direction === "earlier" ? index - 1 : index + 1;
+
+  if (index < 0 || target < 0 || target >= signers.length) {
+    return signers;
+  }
+
+  const steps = listedSteps(signers);
+  const step = steps[index]!;
+  const moved = [...signers];
+  const movedSteps = [...steps];
+  const [signer] = moved.splice(index, 1);
+
+  movedSteps.splice(index, 1);
+
+  const before = movedSteps[target - 1];
+  const after = movedSteps[target];
+  // 0 is no step's number, so it is a step of their own.
+  const newStep =
+    steps[target] === step
+      ? step
+      : before !== undefined && before === after
+        ? before
+        : 0;
+
+  moved.splice(target, 0, signer!);
+  movedSteps.splice(target, 0, newStep);
+
+  return inSteps(moved, movedSteps);
+}

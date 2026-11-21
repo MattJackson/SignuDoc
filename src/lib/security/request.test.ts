@@ -157,6 +157,37 @@ test("the header the proxy writes replaces one the visitor sent", () => {
   assert.equal(sent.get(CLIENT_IP_REQUEST_HEADER), "10.9.9.9");
 });
 
+test("off Vercel, addresses a visitor puts at the start of X-Forwarded-For do not count", () => {
+  const read = (value: string, env: Record<string, string> = elsewhere) =>
+    getClientIpAddress(new Headers({ "x-forwarded-for": value }), env);
+
+  // A reverse proxy adds the address it saw at the end.
+  assert.equal(read("1.2.3.4, 198.51.100.7"), "198.51.100.7");
+  // The install's own proxies each add one more: TRUSTED_PROXY_HOPS says
+  // how many, and the visitor is that many places from the end.
+  assert.equal(
+    read("1.2.3.4, 198.51.100.7, 10.0.0.1", { TRUSTED_PROXY_HOPS: "2" }),
+    "198.51.100.7",
+  );
+  assert.equal(
+    read("1.2.3.4, 198.51.100.7, 172.16.0.2, fd00::1", {
+      TRUSTED_PROXY_HOPS: "3",
+    }),
+    "198.51.100.7",
+  );
+  // On Vercel, Vercel's own header decides, and the list is not read.
+  assert.equal(
+    getClientIpAddress(
+      new Headers({
+        "x-forwarded-for": "1.2.3.4, 198.51.100.7",
+        "x-vercel-forwarded-for": "203.0.113.5",
+      }),
+      onVercel,
+    ),
+    "203.0.113.5",
+  );
+});
+
 test("an empty header is passed over, and no header at all gives no address", () => {
   assert.equal(
     getClientIpAddress(

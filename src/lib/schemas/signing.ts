@@ -17,6 +17,7 @@ import {
 export const signingUnavailableStateSchema = z.enum([
   "expired",
   "already-signed",
+  "completed",
   "voided",
   "declined",
 ]);
@@ -54,7 +55,8 @@ export const signingVisibleFieldSchema = signingFieldBaseSchema.extend({
 export const signingDisclosureSchema = z.object({
   sections: z.array(
     z.object({
-      heading: z.string().trim().min(1),
+      // Empty when the section is a plain paragraph with no heading.
+      heading: z.string().trim(),
       text: z.string().trim().min(1),
     }),
   ),

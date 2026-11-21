@@ -814,6 +814,55 @@ test("a deletion scheduled again while its cancellation email is going out waits
   );
 });
 
+test("a deletion scheduled again while the cancellation email is going out at once waits, so its own notice comes after", async () => {
+  sent = [];
+  const admin = await createUser("admin");
+  const otherAdmin = await createUser("admin");
+  const owner = await createUser("user");
+  const envelope = await createEnvelope(owner.userId, { status: "completed" });
+  const start = 1_100_000_000;
+
+  await scheduleAs(admin, envelope.envelopeId, undefined, { now: start });
+
+  // As the cancellation email goes out, another administrator schedules it
+  // again; that waits for the email, then sends its own.
+  const outbox = createOutbox();
+  let rescheduling: Promise<unknown> | undefined;
+  const reschedulingOutbox: EmailService = {
+    ...outbox,
+    async send(message, options) {
+      if (!rescheduling && message.to === owner.email) {
+        rescheduling = scheduleAs(otherAdmin, envelope.envelopeId, "Again.", {
+          now: start + 2,
+        });
+        await delay(300);
+      }
+
+      return outbox.send(message, options);
+    },
+  };
+
+  await cancelAs(admin, envelope.envelopeId, {
+    emailService: reschedulingOutbox,
+    now: start + 1,
+  });
+  await rescheduling;
+
+  assert.deepEqual(
+    emailsTo(owner.email)
+      .map((message) => message.subject)
+      .slice(1),
+    [
+      '"Lease" will not be deleted',
+      `"Lease" will be deleted on ${new Date((start + 2 + WAIT) * 1000).toISOString().slice(0, 10)}`,
+    ],
+  );
+  assert.equal(
+    (await getScheduledEnvelopeDeletion(envelope.envelopeId, database))?.reason,
+    "Again.",
+  );
+});
+
 test("notices that keep failing go behind the others, so later senders are still told", async () => {
   sent = [];
   const admin = await createUser("admin");
@@ -956,6 +1005,44 @@ test("when a file cannot be deleted, the envelope is still deleted and recorded,
     envelope.stored.map(() => false),
   );
   assert.deepEqual(await pendingFileDeletions(envelope.envelopeId), []);
+});
+
+test("a scheduled deletion whose files cannot be deleted is reported as failed", async () => {
+  const admin = await createUser("admin");
+  const failing = await createEnvelope(admin.userId, { status: "completed" });
+  const working = await createEnvelope(admin.userId, { status: "completed" });
+  const now = 1_200_000_000;
+  const failingStorage = {
+    ...storageService,
+    deleteObject: async () => {
+      throw new Error("Storage is down.");
+    },
+  } as StorageService;
+
+  await scheduleAs(admin, failing.envelopeId, undefined, { now });
+  await scheduleAs(admin, working.envelopeId, undefined, { now: now + 1 });
+
+  const down = await quietly(() =>
+    runScheduledEnvelopeDeletions({
+      database,
+      emailService: createOutbox(),
+      now: now + WAIT,
+      storageService: failingStorage,
+    }),
+  );
+
+  assert.equal(await envelopeExists(failing.envelopeId), false);
+  assert.ok(down.failures.includes(failing.envelopeId));
+
+  // Storage is back: the cleanup takes the queued files, and a deletion
+  // whose files all go is not a failure.
+  await runRetentionSweep({ database, storageService });
+
+  const up = await runDaily(now + 1 + WAIT);
+
+  assert.equal(await envelopeExists(working.envelopeId), false);
+  assert.ok(!up.failures.includes(working.envelopeId));
+  assert.deepEqual(await pendingFileDeletions(failing.envelopeId), []);
 });
 
 test("a deletion that is not due touches no file", async () => {

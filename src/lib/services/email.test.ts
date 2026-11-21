@@ -5,7 +5,9 @@ import type { Pool } from "pg";
 import type { Resend } from "resend";
 
 import { replaceDbPoolForTests } from "../db/connection.ts";
+import { invalidateIntegrationSettingsCache } from "../integration-settings.ts";
 import {
+  canSendEmail,
   createEmailService,
   createLazyEmailService,
   type EmailService,
@@ -246,4 +248,27 @@ test("a lazy email service with no provider fails the send, not its creation (is
   const service = createLazyEmailService(() => createEmailService({ env: {} }));
 
   await assert.rejects(service.send(MESSAGE), /RESEND_API_KEY/);
+});
+
+test("signup knows when there is no email provider to send with (issue #95)", () => {
+  // A key saved in the app counts too; earlier tests here leave one read.
+  invalidateIntegrationSettingsCache();
+  assert.equal(canSendEmail({ NODE_ENV: "production" }), false);
+  assert.equal(
+    canSendEmail({ NODE_ENV: "production", RESEND_API_KEY: "re_test" }),
+    true,
+  );
+  assert.equal(
+    canSendEmail({ EMAIL_DRIVER: "capture", NODE_ENV: "development" }),
+    true,
+  );
+  // The capture driver drops mail, so a real site cannot count on it.
+  assert.equal(
+    canSendEmail({
+      APP_URL: "https://sign.example.com",
+      EMAIL_DRIVER: "capture",
+      NODE_ENV: "production",
+    }),
+    false,
+  );
 });

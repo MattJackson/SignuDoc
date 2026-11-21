@@ -54,3 +54,52 @@ test("a read during an open save does not keep the old settings after commit", a
 
   assert.equal((await getSettings()).requireTwoFactor, true);
 });
+
+test("a read that finishes after a save commits does not cache what it read before", async () => {
+  await saveSettings({ requireTwoFactor: false, signupMode: "open" });
+  invalidateSettingsCache();
+
+  // Pages read through a pool that runs each query at once but hands the
+  // result back only when told: the read sees the row as it was, and
+  // returns after the save below has committed.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let queried!: () => void;
+  const ran = new Promise<void>((resolve) => {
+    queried = resolve;
+  });
+  const slowPool = new Proxy(database, {
+    get(target, property, receiver) {
+      if (property === "query") {
+        return async (...args: Parameters<pg.Pool["query"]>) => {
+          const result = await (
+            target.query as (...a: unknown[]) => Promise<unknown>
+          )(...args);
+          queried();
+          await released;
+          return result;
+        };
+      }
+
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  replaceDbPoolForTests(slowPool);
+
+  try {
+    const oldRead = getSettings();
+
+    await ran;
+    await saveSettings({ requireTwoFactor: true }, database);
+    release();
+
+    assert.equal((await oldRead).requireTwoFactor, false);
+  } finally {
+    replaceDbPoolForTests(database);
+  }
+
+  assert.equal((await getSettings()).requireTwoFactor, true);
+});

@@ -6,6 +6,9 @@ import {
   queryOne,
   withTransaction,
 } from "./db/connection.ts";
+import { revokeApiKeysForUser } from "./api-keys.ts";
+import { CURRENT_IDENTITY_VERIFIED_AT_SQL } from "./part11.ts";
+import type { RequestClient } from "./security/request.ts";
 import { recordSystemAuditEvent } from "./services/system-audit.ts";
 
 // The accounts on this install and who among them is an administrator.
@@ -96,7 +99,7 @@ const PERSON_COLUMNS = `
   u.role,
   u."emailVerified" AS "emailVerified",
   u."createdAt" AS "createdAt",
-  u.identity_verified_at AS "identityVerifiedAt",
+  ${CURRENT_IDENTITY_VERIFIED_AT_SQL} AS "identityVerifiedAt",
   u.identity_verification_note AS "identityVerificationNote",
   u.signing_locked_at AS "signingLockedAt",
   u.directory_blocked_at AS "directoryBlockedAt",
@@ -240,6 +243,7 @@ export async function setPersonRole(
   targetUserId: string,
   role: PersonRole,
   database: DbPool = getDb(),
+  client: RequestClient = {},
 ): Promise<Person> {
   return withTransaction(async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock($1)", [ROLE_CHANGE_LOCK_ID]);
@@ -300,11 +304,25 @@ export async function setPersonRole(
       `UPDATE "user" SET role = $1, "updatedAt" = now() WHERE id = $2`,
       [role, targetUserId],
     );
+
+    if (role === "user") {
+      // A key acts as its administrator. One who is no longer one loses
+      // their keys for good, so making them one again later does not
+      // quietly bring old keys back. Done before the audit event below:
+      // revokeApiKey locks a key row and then the audit chain, so this
+      // takes them in the same order and the two cannot deadlock.
+      await revokeApiKeysForUser(targetUserId, "role_removed", tx, {
+        email: actor.email,
+        userId: actingUserId,
+      });
+    }
+
     await recordSystemAuditEvent(
       {
         actorEmail: actor.email,
         actorUserId: actingUserId,
         event: "role_changed",
+        ipAddress: client.ipAddress ?? null,
         metadata: {
           from: target.role,
           targetEmail: target.email,
@@ -312,6 +330,7 @@ export async function setPersonRole(
           to: role,
         },
         targetUserId,
+        userAgent: client.userAgent ?? null,
       },
       tx,
     );
