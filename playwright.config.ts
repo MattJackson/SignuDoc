@@ -1,6 +1,9 @@
+import { generateKeyPairSync } from "node:crypto";
 import path from "node:path";
 
 import { defineConfig, devices } from "@playwright/test";
+
+import { ADMIN_GROUP, WORKSPACE_DOMAIN } from "./e2e/support/google-workspace";
 
 // One end-to-end test that walks the whole product against a real Postgres,
 // with files on local disk and emails captured to JSON instead of sent.
@@ -26,6 +29,32 @@ export const e2eSetupToken = "e2e-setup-token";
 // A stand-in for eID Easy, so the test can sign with a qualified
 // certificate in the signer's own name without the real service.
 const providerPort = Number(process.env.E2E_PROVIDER_PORT ?? port + 1);
+// A stand-in for Google (src/lib/integrations/google/test-support): sign-in,
+// the Workspace directory and Drive. The app is pointed at it with the
+// GOOGLE_*_BASE_URL variables, and given Google sign-in, the directory and
+// an administrator group the way a deployment on Google Workspace is.
+const googlePort = Number(process.env.E2E_GOOGLE_PORT ?? port + 2);
+
+export const e2eGoogleUrl = `http://127.0.0.1:${String(googlePort)}`;
+
+const googleClient = {
+  id: "e2e-client.apps.googleusercontent.com",
+  secret: "e2e-client-secret",
+};
+// A service account key made for this run. The stand-in is given it too,
+// so it checks the app's signed assertions as Google would.
+const googleServiceAccountKey = JSON.stringify({
+  client_email: "signudoc-e2e@fake-project.iam.gserviceaccount.com",
+  private_key: generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .privateKey.export({ format: "pem", type: "pkcs8" })
+    .toString(),
+  token_uri: "https://oauth2.googleapis.com/token",
+  type: "service_account",
+});
+const desktop = {
+  ...devices["Desktop Chrome"],
+  viewport: { height: 900, width: 1440 },
+};
 
 export default defineConfig({
   expect: { timeout: 20_000 },
@@ -35,11 +64,30 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: {
-        ...devices["Desktop Chrome"],
-        viewport: { height: 900, width: 1440 },
-      },
+      testIgnore: /(google-workspace|screenshots)\.spec\.ts$/,
+      use: desktop,
     },
+    // Google sign-in needs a site that has been set up, so it runs on the
+    // install the tests above leave behind.
+    {
+      dependencies: ["chromium"],
+      name: "google-workspace",
+      testMatch: /google-workspace\.spec\.ts$/,
+      use: desktop,
+    },
+    // Screenshots of the administrator's screens (e2e/screenshots.spec.ts),
+    // only with E2E_SCREENSHOTS=1. CI takes them in a step of their own after
+    // the tests above, on the install they leave behind, whether they passed
+    // or not (E2E_KEEP_DATABASE=1 keeps it, E2E_NO_BUILD=1 reuses the build).
+    ...(process.env.E2E_SCREENSHOTS === "1"
+      ? [
+          {
+            name: "screenshots",
+            testMatch: /screenshots\.spec\.ts$/,
+            use: desktop,
+          },
+        ]
+      : []),
   ],
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   retries: process.env.CI ? 1 : 0,
@@ -54,7 +102,9 @@ export default defineConfig({
       command:
         process.env.E2E_DEV === "1"
           ? `npx next dev --port ${String(port)}`
-          : `npx next build && npx next start --port ${String(port)}`,
+          : process.env.E2E_NO_BUILD === "1"
+            ? `npx next start --port ${String(port)}`
+            : `npx next build && npx next start --port ${String(port)}`,
       env: {
         APP_URL: baseURL,
         BETTER_AUTH_SECRET: "e2e-only-secret-not-used-anywhere-else-0123456789",
@@ -65,10 +115,23 @@ export default defineConfig({
         EIDEASY_CLIENT_ID: "test-client",
         EIDEASY_SECRET: "test-secret",
         EMAIL_DRIVER: "capture",
+        GOOGLE_ADMIN_GROUP: ADMIN_GROUP,
+        GOOGLE_API_BASE_URL: e2eGoogleUrl,
+        GOOGLE_OAUTH_BASE_URL: e2eGoogleUrl,
+        GOOGLE_SERVICE_ACCOUNT_KEY: googleServiceAccountKey,
+        GOOGLE_WORKSPACE_DIRECTORY: "on",
+        GOOGLE_WORKSPACE_DOMAINS: WORKSPACE_DOMAIN,
         NEXT_TELEMETRY_DISABLED: "1",
         // The breach check calls an outside service; the test must not.
         PASSWORD_BREACH_CHECK: "off",
+        // A new install timestamps its seals with DigiCert's server; the
+        // test must not depend on reaching it.
+        SEAL_TIMESTAMP_URL: "off",
         SETUP_TOKEN: e2eSetupToken,
+        // Google sign-in, beside password sign-in, which the other tests use.
+        SSO_CLIENT_ID: googleClient.id,
+        SSO_CLIENT_SECRET: googleClient.secret,
+        SSO_ISSUER: "https://accounts.google.com",
         // "local" unless E2E_STORAGE_DRIVER says otherwise. With "blob" and a
         // BLOB_READ_WRITE_TOKEN in the environment, the same test runs against
         // a real Vercel Blob store, direct browser upload included.
@@ -96,6 +159,19 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 60_000,
       url: `http://127.0.0.1:${String(providerPort)}/health`,
+    },
+    {
+      command:
+        "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON e2e/support/google-stand-in.ts",
+      env: {
+        E2E_GOOGLE_CLIENT_ID: googleClient.id,
+        E2E_GOOGLE_CLIENT_SECRET: googleClient.secret,
+        E2E_GOOGLE_PORT: String(googlePort),
+        E2E_GOOGLE_SERVICE_ACCOUNT_KEY: googleServiceAccountKey,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+      url: `${e2eGoogleUrl}/health`,
     },
   ],
   workers: 1,

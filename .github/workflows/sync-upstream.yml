@@ -1,0 +1,240 @@
+# Brings the original SignuDoc project's changes into this fork.
+#
+# Every Monday, and whenever "Run workflow" is pressed on the Actions tab,
+# it fetches the upstream repository's main branch (or the release or
+# branch given when run by hand) and merges it into a new branch named
+# sync/upstream-<date>, made from this fork's default branch. Then:
+#
+#   - Nothing new upstream: it says so in the run summary and stops.
+#   - It merges cleanly: it pushes the branch and opens a pull request,
+#     listing the upstream commits and the upstream release it now
+#     includes. When that release is newer than the one package.json
+#     records ("upstream"), the branch also updates the record.
+#   - Files clash: it pushes upstream's commit as the branch instead, and
+#     opens the pull request with the clashing files and the commands to
+#     resolve them, so GitHub shows the conflicts too.
+#   - The pull request cannot be opened, or the branch cannot be pushed
+#     (GitHub refuses a workflow's own token any change to files in
+#     .github/workflows): it opens an issue in this repository with the same
+#     details, so the run never fails quietly.
+#
+# It uses only the workflow's own token, and so starts CI for the branch itself
+# (ci.yml, workflow_dispatch). For it to open pull requests, tick
+# Settings, Actions, General, "Allow GitHub Actions to create and approve
+# pull requests"; without it, the issue is opened instead.
+#
+# The upstream repository is NYLLON-SOFTWARE/SignuDoc unless the repository
+# variable SIGNUDOC_UPSTREAM_REPO names another. It runs only in the
+# repository installs take releases from (this fork, or the repository
+# variable SIGNUDOC_RELEASES_REPO), so a copy of the fork skips it.
+# docs/development.md, "Maintaining the fork", has the rest.
+
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream branch or release tag to merge, such as main or v0.5.0."
+        required: false
+        default: "main"
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream into a pull request
+    # Expressions compare strings without regard to case.
+    if: github.repository == (vars.SIGNUDOC_RELEASES_REPO || 'MattJackson/SignuDoc')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: ${{ vars.SIGNUDOC_UPSTREAM_REPO || 'NYLLON-SOFTWARE/SignuDoc' }}
+      REQUESTED_REF: ${{ inputs.ref || 'main' }}
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Merge upstream and open a pull request
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          summary() { printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; }
+          stop() { echo "::error::$1"; summary "**$1**"; exit 1; }
+          list() { sed 's/^/- `/; s/$/`/'; }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          [[ "$UPSTREAM" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+            stop "\"$UPSTREAM\" is not an owner/repository."
+          [[ "$REQUESTED_REF" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] ||
+            stop "\"$REQUESTED_REF\" is not a branch or tag name."
+
+          # Upstream's history, kept apart from this fork's own branches and
+          # tags: both number releases v0.x.y, and they are not the same.
+          upstream_url="https://github.com/$UPSTREAM.git"
+          git fetch --quiet --no-tags "$upstream_url" \
+            "+refs/heads/*:refs/upstream/heads/*" \
+            "+refs/tags/*:refs/upstream/tags/*"
+          target=$(git rev-parse -q --verify "refs/upstream/heads/$REQUESTED_REF^{commit}" ||
+            git rev-parse -q --verify "refs/upstream/tags/$REQUESTED_REF^{commit}") ||
+            stop "$UPSTREAM has no branch or tag \"$REQUESTED_REF\"."
+          short="${target:0:7}"
+
+          if git merge-base --is-ancestor "$target" HEAD; then
+            summary "Up to date: this fork already has $UPSTREAM $REQUESTED_REF ($short)."
+            exit 0
+          fi
+
+          # A pull request or issue for this very commit is already open.
+          open_pr=$(gh pr list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          # Issues are off on some forks, where listing them fails; a failed
+          # check of that setting still stops the run.
+          issues_on=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
+          open_issue=""
+          if [ "$issues_on" = "true" ]; then
+            open_issue=$(gh issue list --state open --search "$target in:body" --json url --jq '.[0].url // ""')
+          fi
+          if [ -n "$open_pr$open_issue" ]; then
+            summary "$UPSTREAM $REQUESTED_REF ($short) is already waiting in ${open_pr:-$open_issue}."
+            exit 0
+          fi
+
+          # The newest upstream release the merge brings in.
+          release=$(git for-each-ref --merged "$target" --sort=-v:refname \
+            --format='%(refname:strip=3)' refs/upstream/tags |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+          recorded=$(node -p "require('./package.json').upstream?.version ?? ''")
+
+          branch="sync/upstream-$(date -u +%Y-%m-%d)"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            branch="$branch-$short"
+          fi
+
+          commits=$(git log -n 100 --no-merges --format='%h %s' "HEAD..$target")
+          count=$(git rev-list --count --no-merges "HEAD..$target")
+          merge_base=$(git merge-base HEAD "$target")
+          compare="https://github.com/$UPSTREAM/compare/$merge_base...$target"
+
+          git checkout --quiet -b "$branch"
+          clashes=""
+          if ! git merge --no-ff --no-edit -m "Merge $UPSTREAM $REQUESTED_REF ($short)" "$target" > "$RUNNER_TEMP/merge.log" 2>&1; then
+            clashes=$(git diff --name-only --diff-filter=U)
+            [ -n "$clashes" ] || { cat "$RUNNER_TEMP/merge.log"; stop "git could not merge $UPSTREAM $REQUESTED_REF."; }
+            git merge --abort
+          fi
+
+          base_note=""
+          if [ -z "$clashes" ] && [ -n "$release" ] && [ "v$recorded" != "$release" ]; then
+            npm pkg set "upstream.version=${release#v}"
+            git commit --quiet -am "Record the upstream base: SignuDoc ${release#v}"
+            base_note="package.json now records upstream ${release#v} (it said ${recorded:-nothing})."
+          elif [ -n "$release" ] && [ "v$recorded" != "$release" ]; then
+            base_note="After resolving, set \`upstream.version\` in package.json to \`${release#v}\` (\`npm pkg set upstream.version=${release#v}\`); it says \`${recorded:-nothing}\`."
+          fi
+
+          # Workflow files upstream changed since the last sync.
+          workflows=$(git diff --name-only "$merge_base" "$target" -- .github/workflows || true)
+
+          {
+            if [ -n "$clashes" ]; then
+              echo "$UPSTREAM \`$REQUESTED_REF\` ($short) does not merge cleanly into \`$BASE_BRANCH\`. These files were changed both here and upstream:"
+              echo
+              list <<< "$clashes"
+              echo
+              echo "This branch is upstream's commit itself, so GitHub shows the conflicts below. To resolve them locally:"
+              echo
+              echo '```bash'
+              echo "git fetch origin $BASE_BRANCH $branch"
+              echo "git checkout -b resolve-$branch origin/$BASE_BRANCH"
+              echo "git merge origin/$branch"
+              echo "# fix the files above, then"
+              echo "git commit && git push origin HEAD:$branch-resolved"
+              echo '```'
+              echo
+              echo "and open a pull request from \`$branch-resolved\`. Keep the fork's own \`version\` in package.json and its CHANGELOG entries; take upstream's entries below them."
+            else
+              echo "$UPSTREAM \`$REQUESTED_REF\` ($short) merges cleanly into \`$BASE_BRANCH\`. CI runs on this pull request; merge it once it is green."
+            fi
+            echo
+            echo "- Upstream commits: $count ([compare]($compare))"
+            if [ -n "$release" ]; then
+              echo "- Newest upstream release included: [$release](https://github.com/$UPSTREAM/releases/tag/$release)"
+            fi
+            if [ -n "$base_note" ]; then
+              echo "- $base_note"
+            fi
+            if [ -n "$workflows" ]; then
+              echo "- Upstream changed workflow files. Check they suit the fork (release source, \`if:\` conditions):"
+              list <<< "$workflows"
+            fi
+            echo
+            echo "<details><summary>Commits</summary>"
+            echo
+            sed 's/^/- /' <<< "$commits"
+            if [ "$count" -gt 100 ]; then echo "- and $((count - 100)) more"; fi
+            echo
+            echo "</details>"
+            echo
+            echo "---"
+            echo "Opened by the Sync upstream workflow."
+            echo
+            echo "Upstream-Commit: $target"
+          } > "$RUNNER_TEMP/body.md"
+
+          title="Sync with $UPSTREAM $REQUESTED_REF ($short)"
+          if [ -n "$clashes" ]; then
+            title="$title: conflicts to resolve"
+            push_ref="$target"
+          else
+            push_ref="HEAD"
+          fi
+
+          open_issue_instead() {
+            {
+              echo "**$1**"
+              echo
+              cat "$RUNNER_TEMP/body.md"
+            } > "$RUNNER_TEMP/issue.md"
+            url=$(gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md")
+            summary "Opened $url instead of a pull request: $1"
+            echo "::warning::$1 See $url."
+          }
+
+          if ! git push --quiet origin "$push_ref:refs/heads/$branch" 2> "$RUNNER_TEMP/push.log"; then
+            cat "$RUNNER_TEMP/push.log"
+            if grep -qi "workflow" "$RUNNER_TEMP/push.log"; then
+              open_issue_instead "The branch could not be pushed: it changes files in .github/workflows, which the workflow's own token may not do. A maintainer has to merge upstream locally (git fetch $upstream_url $REQUESTED_REF, then git merge FETCH_HEAD) and push it."
+            else
+              open_issue_instead "The branch could not be pushed. The run log has git's answer."
+            fi
+            exit 0
+          fi
+
+          # Events from the workflow's own token do not start CI on the pull
+          # request, but a dispatched run is allowed; its checks show on the
+          # branch's head commit.
+          gh workflow run ci.yml --ref "$branch" ||
+            echo "::warning::CI could not be started for $branch; run it from the Actions tab."
+
+          if url=$(gh pr create --base "$BASE_BRANCH" --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/body.md"); then
+            summary "Opened $url."
+          else
+            open_issue_instead "The branch $branch was pushed, but this workflow may not open pull requests here (Settings, Actions, General, \"Allow GitHub Actions to create and approve pull requests\"). Open one: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$branch?expand=1"
+          fi

@@ -30,6 +30,11 @@ import {
   type TemplateRole,
 } from "./schemas/template.ts";
 import { buildTemplatePdfKey } from "./services/storage-keys.ts";
+import { type DirectoryClient } from "./integrations/google/directory.ts";
+import {
+  describeSenderManagerProblem,
+  findSenderManager,
+} from "./manager-policy.ts";
 import { normalizeSigningSteps } from "./signing-steps.ts";
 import {
   createStorageService,
@@ -373,15 +378,32 @@ export async function saveEnvelopeAsTemplate(
     );
   }
 
+  if (
+    parsedInput.roleFills &&
+    parsedInput.roleFills.length !== signers.length
+  ) {
+    throw new TemplateError(
+      "The signers of this envelope have changed. Reload the page and try again.",
+      409,
+    );
+  }
+
   // Each role keeps its signer's step, so roles that signed at the same
-  // time still do when the template is used.
+  // time still do when the template is used, and whether they sign or
+  // approve.
   const steps = normalizeSigningSteps(signers.map((signer) => signer.step));
   const roles = templateRolesSchema.parse(
-    roleNames.map((name, index) => ({
-      id: randomUUID(),
-      name,
-      step: steps[index],
-    })),
+    roleNames.map((name, index) => {
+      const fill = parsedInput.roleFills?.[index] ?? null;
+
+      return {
+        id: randomUUID(),
+        ...(fill ? { fill } : {}),
+        kind: signers[index]?.role ?? "signer",
+        name,
+        step: steps[index],
+      };
+    }),
   );
   const roleIdBySignerId = new Map(
     signers.map((signer, index) => [signer.id, roles[index]!.id] as const),
@@ -493,6 +515,48 @@ export async function saveEnvelopeAsTemplate(
 }
 
 /**
+ * The people for a template's roles: who the sender named, except that a
+ * "Sender's manager" role gets the sender's manager from the directory. If
+ * the manager cannot be found, the template is not used, with a message
+ * that says why, rather than leaving the role to whoever was typed.
+ */
+async function fillDirectoryRoles(
+  userId: string,
+  roles: readonly TemplateRole[],
+  named: readonly { email: string; name: string }[],
+  {
+    database,
+    directory,
+  }: { database: DbExecutor; directory?: DirectoryClient | null },
+): Promise<{ email: string; name: string }[]> {
+  if (!roles.some((role) => role.fill === "sender_manager")) {
+    return [...named];
+  }
+
+  const sender = await queryOne<{ email: string }>(
+    database,
+    `SELECT email FROM "user" WHERE id = $1`,
+    [userId],
+  );
+  const found = sender
+    ? await findSenderManager(sender.email, { directory })
+    : ({ status: "not_in_directory" } as const);
+
+  if (found.status !== "found") {
+    throw new TemplateError(
+      `This template has a role for your manager. ${describeSenderManagerProblem(found)}`,
+      400,
+    );
+  }
+
+  return roles.map((role, index) =>
+    role.fill === "sender_manager"
+      ? { email: found.manager.email, name: found.manager.name }
+      : named[index]!,
+  );
+}
+
+/**
  * Starts a draft envelope from a template: the template's document and
  * fields, with a person named for each role. The draft is an ordinary one
  * from then on, and changing it does not change the template.
@@ -503,8 +567,12 @@ export async function createDraftFromTemplate(
   input: unknown,
   {
     database = getDb(),
+    directory,
     storageService = createStorageService(),
-  }: TemplateOptions = {},
+  }: TemplateOptions & {
+    /** Replaced in tests. Null means the directory is off. */
+    directory?: DirectoryClient | null;
+  } = {},
 ): Promise<DraftFromTemplate> {
   const parsedInput = useTemplateSchema.parse(input);
   const template = await getTemplateRow(userId, templateId, database);
@@ -533,6 +601,15 @@ export async function createDraftFromTemplate(
     );
   }
 
+  // A "Sender's manager" role is filled from the Workspace directory now,
+  // whatever the form sent, so it is always the sender's own manager.
+  const people = await fillDirectoryRoles(
+    userId,
+    roles.data,
+    parsedInput.signers,
+    { database, directory },
+  );
+
   let sourcePdf: Uint8Array;
 
   try {
@@ -560,6 +637,8 @@ export async function createDraftFromTemplate(
   const envelopeId = draft.envelope.id;
 
   try {
+    // The roles' steps, when the template has them. One saved before steps
+    // existed has none, and its people sign one after the other.
     const roleSteps = roles.data.every((role) => role.step !== undefined)
       ? roles.data.map((role) => role.step)
       : null;
@@ -567,10 +646,9 @@ export async function createDraftFromTemplate(
       userId,
       envelopeId,
       {
-        // The roles' steps, when the template has them. One saved before
-        // steps existed has none, and its people sign one after the other.
-        signers: parsedInput.signers.map((signer, index) => ({
+        signers: people.map((signer, index) => ({
           ...signer,
+          role: roles.data[index]?.kind ?? "signer",
           ...(roleSteps ? { signingStep: roleSteps[index] } : {}),
         })),
       },

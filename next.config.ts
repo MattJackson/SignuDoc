@@ -5,13 +5,27 @@ import type { NextConfig } from "next";
 import { MAX_REQUEST_BODY_BYTES } from "./src/lib/types/domain.ts";
 
 // The version this deployment runs, compared with the latest release by
-// "Check for updates" in Settings (src/lib/software-update.ts).
-const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
+// "Check for updates" in Settings (src/lib/software-update.ts), the
+// repository releases come from, and the release of the original project
+// this fork is built on (docs/development.md, "Maintaining the fork").
+const { repository, upstream, version } = JSON.parse(
+  readFileSync("./package.json", "utf8"),
+) as {
+  repository?: { url?: string } | string;
+  upstream?: { repository?: string; version?: string };
   version: string;
 };
+const repositoryUrl =
+  typeof repository === "string" ? repository : (repository?.url ?? "");
 
 const nextConfig: NextConfig = {
   env: {
+    NEXT_PUBLIC_SIGNUDOC_REPOSITORY: repositoryUrl
+      .replace(/^git\+/, "")
+      .replace(/^https:\/\/github\.com\//, "")
+      .replace(/\.git$/, ""),
+    NEXT_PUBLIC_SIGNUDOC_UPSTREAM_REPOSITORY: upstream?.repository ?? "",
+    NEXT_PUBLIC_SIGNUDOC_UPSTREAM_VERSION: upstream?.version ?? "",
     NEXT_PUBLIC_SIGNUDOC_VERSION: version,
     // Whether Vercel BotID is on, decided once at build time so the browser
     // code that adds its proof and the server code that checks it cannot
@@ -22,15 +36,21 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     // Every request passes through the Proxy (src/proxy.ts), and Next.js
-    // keeps only the first 10 MB of a body that does. With local disk
-    // storage the PDF is sent in the request itself, so the limit has to
-    // fit a PDF at the 20 MB upload limit and the rest of the form.
+    // keeps only the first 10 MB of a body that does. With local disk or
+    // Google Cloud Storage the PDF is sent in the request itself, so the
+    // limit has to fit a PDF at the 20 MB upload limit and the rest of the
+    // form. Cloud Run takes requests of up to 32 MB; Vercel stops a request
+    // at 4.5 MB before it gets here, which is why it uploads straight to
+    // Blob instead.
     // https://nextjs.org/docs/app/api-reference/config/next-config-js/proxyClientMaxBodySize
     proxyClientMaxBodySize: MAX_REQUEST_BODY_BYTES,
   },
   images: {
     unoptimized: true,
   },
+  // The Docker image (Dockerfile) sets NEXT_OUTPUT=standalone to get a
+  // self-contained server.js. Unset, as on Vercel, the build is unchanged.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   // Finished PDFs are drawn with fonts read from disk at runtime, cut down
   // by a WebAssembly subsetter (src/lib/services/pdf-fonts.ts). Listing the
   // files here makes sure they are copied into the deployed functions.

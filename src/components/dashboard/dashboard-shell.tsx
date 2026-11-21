@@ -8,6 +8,7 @@ import {
   DashboardDocumentsHeader,
   DashboardDocumentsPanel,
   dashboardStatusFilterMap,
+  dashboardViewHref,
   type DashboardFilter,
   type DashboardPagination,
   type DashboardShellState,
@@ -22,8 +23,10 @@ type DashboardShellProps = {
   initialSearch?: string;
   initialState?: DashboardShellState;
   pagination?: DashboardPagination;
-  /** For an administrator: their own envelopes, or everyone's. */
+  /** Whose envelopes are listed. */
   view?: DashboardView;
+  /** The choices of whose envelopes to list this person has. */
+  views?: readonly DashboardView[];
 };
 
 export function DashboardShell({
@@ -31,7 +34,8 @@ export function DashboardShell({
   initialSearch = "",
   initialState = "default",
   pagination,
-  view,
+  view = "mine",
+  views = ["mine"],
 }: DashboardShellProps) {
   const [searchValue, setSearchValue] = useState(initialSearch);
   const [selectedFilter, setSelectedFilter] = useState<DashboardFilter>("All");
@@ -50,6 +54,8 @@ export function DashboardShell({
       normalizedSearchValue.length === 0 ||
       envelope.title.toLowerCase().includes(normalizedSearchValue) ||
       (envelope.senderLabel?.toLowerCase().includes(normalizedSearchValue) ??
+        false) ||
+      (envelope.sentByLabel?.toLowerCase().includes(normalizedSearchValue) ??
         false) ||
       envelope.searchableEmails.some((email) =>
         email.toLowerCase().includes(normalizedSearchValue),
@@ -70,9 +76,7 @@ export function DashboardShell({
   function handleResetFilters() {
     if (initialSearch || pagination?.newerHref) {
       // The list itself was searched, or is a later page: load the start.
-      window.location.assign(
-        view === "all" ? "/dashboard?view=all" : "/dashboard",
-      );
+      window.location.assign(dashboardViewHref(view));
       return;
     }
 
@@ -86,7 +90,7 @@ export function DashboardShell({
 
   return (
     <div className="space-y-5">
-      <DashboardDocumentsHeader view={view} />
+      <DashboardDocumentsHeader view={view} views={views} />
 
       {initialState === "empty" ? (
         view === "all" ? (

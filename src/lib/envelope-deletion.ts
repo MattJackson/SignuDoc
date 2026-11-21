@@ -873,22 +873,25 @@ export async function runScheduledEnvelopeDeletions({
   // they were cancelled, then until any cancellation notice owed has gone.
   await database.query(
     `
-      DELETE FROM scheduled_envelope_deletions s
-      USING envelopes e
-      WHERE e.id = s.envelope_id
-        AND s.cancelled_at IS NOT NULL
-        AND (
-          s.cancelled_at <= $2
-          OR (
-            s.cancelled_at <= $1
-            AND (
-              s.sender_notified_at IS NULL
-              OR s.cancel_notified_at IS NOT NULL
-              OR e.user_id = s.requested_by_user_id
-              OR e.user_id = s.cancelled_by_user_id
+      DELETE FROM scheduled_envelope_deletions
+      WHERE envelope_id IN (
+        SELECT s.envelope_id
+        FROM scheduled_envelope_deletions s
+        JOIN envelopes e ON e.id = s.envelope_id
+        WHERE s.cancelled_at IS NOT NULL
+          AND (
+            s.cancelled_at <= $2
+            OR (
+              s.cancelled_at <= $1
+              AND (
+                s.sender_notified_at IS NULL
+                OR s.cancel_notified_at IS NOT NULL
+                OR e.user_id = s.requested_by_user_id
+                OR e.user_id = s.cancelled_by_user_id
+              )
             )
           )
-        )
+      )
     `,
     [now - CANCELLED_KEPT_SECONDS, now - CANCELLED_GIVE_UP_SECONDS],
   );

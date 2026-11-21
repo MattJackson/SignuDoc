@@ -12,6 +12,7 @@ import {
 } from "./schemas/envelope.ts";
 import { truncateToWholeCharacters } from "./text-truncate.ts";
 import { fieldRecordSchema, type FieldRecord } from "./schemas/field.ts";
+import { getEnvelopeAccess } from "./envelope-access.ts";
 import { signerRecordSchema, type SignerRecord } from "./schemas/signer.ts";
 import { listAuditEventsForEnvelope } from "./services/audit.ts";
 import {
@@ -74,6 +75,8 @@ type SignerRow = {
   lastNotifiedAt: number | null;
   lastNudgedAt: number | null;
   name: string;
+  /** Read only where the certificate is made again. */
+  role?: string;
   signedAt: number | null;
   signOrder: number;
   signingStep?: number | null;
@@ -155,6 +158,7 @@ function mapSignerRow(row: SignerRow): SignerRecord {
     lastNotifiedAt: row.lastNotifiedAt,
     lastNudgedAt: row.lastNudgedAt,
     name: row.name,
+    role: row.role === "approver" ? "approver" : undefined,
     signOrder: row.signOrder,
     signingStep: row.signingStep ?? null,
     signedAt: row.signedAt,
@@ -337,6 +341,7 @@ async function listSignersForEnvelope(
         name,
         email,
         sign_order AS "signOrder",
+        signing_step AS "signingStep",
         status,
         signing_token_hash AS "signingTokenHash",
         signing_token_expires_at AS "signingTokenExpiresAt",
@@ -346,11 +351,13 @@ async function listSignersForEnvelope(
         signed_at AS "signedAt",
         declined_at AS "declinedAt",
         decline_reason AS "declineReason",
+        role,
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM signers
       WHERE envelope_id = $1
-        AND role = 'signer'
+        -- The signing order: signers and approvers, never copy recipients.
+        AND role IN ('signer', 'approver')
       ORDER BY sign_order ASC, id ASC
     `,
     [envelopeId],
@@ -763,7 +770,12 @@ export async function getSenderEnvelopeDownload(
   } = {},
 ): Promise<EnvelopeDownloadResult> {
   const parsedFileType = downloadFileTypeSchema.parse(fileType);
-  const envelope = await getEnvelopeByIdForUser(userId, envelopeId, database);
+  // The sender, someone on a team with them, or an administrator. Only a
+  // finished envelope has files to download, whoever asks.
+  const access = await getEnvelopeAccess(userId, envelopeId, database);
+  const envelope = access
+    ? await getEnvelopeByIdForUser(access.ownerId, envelopeId, database)
+    : null;
   const storageService = createStorageService();
 
   if (!envelope) {

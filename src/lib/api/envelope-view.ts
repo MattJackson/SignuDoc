@@ -87,7 +87,7 @@ type SignerRow = {
   envelopeId: string;
   id: string;
   name: string;
-  role: "cc" | "signer";
+  role: "approver" | "cc" | "signer";
   signedAt: number | null;
   signingStep: number | null;
   signOrder: number;
@@ -202,7 +202,7 @@ export function toApiEnvelope(
     sentAt: isoTime(row.sentAt),
     signatureLevel: row.signatureLevel ?? "simple",
     signers: signers
-      .filter((signer) => signer.role === "signer")
+      .filter((signer) => signer.role !== "cc")
       .map((signer) => ({
         declinedAt: isoTime(signer.declinedAt),
         declineReason: signer.declineReason,
@@ -211,6 +211,7 @@ export function toApiEnvelope(
         name: signer.name,
         order: signer.signOrder,
         ref: signer.apiRef,
+        role: signer.role,
         signedAt: isoTime(signer.signedAt),
         status: signer.status,
         step: signingStepOf(signer),

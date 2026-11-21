@@ -48,6 +48,11 @@ export type AppSettings = {
   part11Mode: boolean;
   privacyUrl: string | null;
   /**
+   * The app's own name, such as "BusbarSigner", or null to go by the
+   * organization's name.
+   */
+  productName: string | null;
+  /**
    * Everyone must set up two-step sign-in (an authenticator app) before
    * they can use the app. See sign-in-security.ts.
    */
@@ -110,6 +115,7 @@ type AppSettingsRow = {
   organization_name: string | null;
   part11_mode: boolean;
   privacy_url: string | null;
+  product_name: string | null;
   require_two_factor: boolean;
   retention_days: number | null;
   sender_address: string | null;
@@ -145,6 +151,7 @@ const LATER_SETTINGS_COLUMNS = [
   ["part11_mode"], // 20261115090000_part11_mode
   ["require_two_factor"], // 20261117090000_sign_in_security
   ["session_idle_minutes", "session_max_hours"], // 20261117100000_session_controls
+  ["product_name"], // 20261212090000_app_name_and_installer
   ["consent_disclosure"], // 20261119130000_consent_disclosure
 ] as const;
 
@@ -176,6 +183,7 @@ const UNSET_SETTINGS: AppSettings = {
   organizationName: null,
   part11Mode: false,
   privacyUrl: null,
+  productName: null,
   requireTwoFactor: false,
   retentionDays: null,
   senderAddress: null,
@@ -255,6 +263,7 @@ function mapSettingsRow(row: StoredSettingsRow): AppSettings {
     organizationName: row.organization_name,
     part11Mode: row.part11_mode ?? false,
     privacyUrl: row.privacy_url,
+    productName: row.product_name ?? null,
     requireTwoFactor: row.require_two_factor ?? false,
     retentionDays: row.retention_days ?? null,
     senderAddress: row.sender_address,
@@ -433,11 +442,12 @@ async function saveSettingsLocked(
         require_two_factor,
         session_idle_minutes,
         session_max_hours,
+        product_name,
         consent_disclosure,
         created_at,
         updated_at
       )
-      values (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $12, $13, $14, $15, $16, $17, $10, $10)
+      values (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $12, $13, $14, $15, $16, $17, $18, $10, $10)
       on conflict (id) do update set
         allowed_email_domains = excluded.allowed_email_domains,
         email_ready_at = excluded.email_ready_at,
@@ -454,6 +464,7 @@ async function saveSettingsLocked(
         require_two_factor = excluded.require_two_factor,
         session_idle_minutes = excluded.session_idle_minutes,
         session_max_hours = excluded.session_max_hours,
+        product_name = excluded.product_name,
         consent_disclosure = excluded.consent_disclosure,
         updated_at = excluded.updated_at
       returning ${SETTINGS_COLUMNS}
@@ -475,6 +486,7 @@ async function saveSettingsLocked(
       next.requireTwoFactor,
       next.sessionIdleMinutes,
       next.sessionMaxHours,
+      next.productName,
       next.consentDisclosure,
     ],
   );

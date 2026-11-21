@@ -1,0 +1,78 @@
+# SignuDoc on a laptop or any Docker host: the app with a SQLite database
+# in a volume, and a small service that runs the daily jobs. Copy
+# .env.example to .env, fill it in, then `docker compose up -d`.
+# See README.md.
+services:
+  app:
+    build: ../..
+    image: signudoc:local
+    restart: unless-stopped
+    ports:
+      # Only this computer. Remove "127.0.0.1:" to reach it from the network.
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: sqlite:/data/signudoc.db
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      RETENTION_JOB_SECRET: ${RETENTION_JOB_SECRET:?Set RETENTION_JOB_SECRET in .env}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
+      EMAIL_DRIVER: ${EMAIL_DRIVER:-capture}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      # Google Workspace without a service account key: see "Google
+      # Workspace without a key" in README.md.
+      # GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: ${GOOGLE_IMPERSONATE_SERVICE_ACCOUNT}
+    volumes:
+      - signudoc-data:/data
+      # - ${HOME}/.config/gcloud/application_default_credentials.json:/home/node/.config/gcloud/application_default_credentials.json:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # Calls each job route once a day with the job secret.
+  scheduler:
+    image: curlimages/curl:8.11.1
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      RETENTION_JOB_SECRET: ${RETENTION_JOB_SECRET:?Set RETENTION_JOB_SECRET in .env}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep 86400
+          for job in retention drive-export notifications directory-sync backup; do
+            if curl --silent --show-error --fail-with-body --max-time 600 \
+              -X POST -H "Authorization: Bearer $${RETENTION_JOB_SECRET}" \
+              "http://app:8080/api/internal/$${job}" > /dev/null; then
+              echo "job $${job} ok"
+            else
+              echo "job $${job} failed"
+            fi
+          done
+        done
+
+  # A public HTTPS address through a Cloudflare Tunnel. Create the tunnel in
+  # Cloudflare Zero Trust, point its public hostname at http://app:8080, put
+  # the token in .env as TUNNEL_TOKEN, set APP_URL to the hostname, and
+  # remove the comment marks below.
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env}
+  #   depends_on:
+  #     - app
+
+volumes:
+  signudoc-data:

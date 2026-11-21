@@ -8,7 +8,10 @@ import { after, before, test } from "node:test";
 
 import type pg from "pg";
 
-import { openTestDatabase } from "./db/test-database.ts";
+import {
+  besideOpenTransactions,
+  openTestDatabase,
+} from "./db/test-database.ts";
 import {
   cancelEnvelopeDeletion,
   deleteScheduledEnvelope,
@@ -35,6 +38,7 @@ import {
 } from "./services/storage.ts";
 import {
   listSystemAuditEvents,
+  SYSTEM_AUDIT_LOCK_ID,
   verifySystemAuditChain,
 } from "./services/system-audit.ts";
 
@@ -46,8 +50,6 @@ const SOURCE_HASH = "a".repeat(64);
 const SIGNED_HASH = "b".repeat(64);
 const EVIDENCE_HASH = "c".repeat(64);
 const RECIPIENT_EVIDENCE_HASH = "d".repeat(64);
-// The install audit trail's lock (services/system-audit.ts).
-const SYSTEM_AUDIT_LOCK_ID = 746108325;
 const DAY = 24 * 60 * 60;
 const WAIT = ENVELOPE_DELETION_WAIT_DAYS * DAY;
 
@@ -716,17 +718,22 @@ test("a cancellation email still owed is not sent once the deletion is scheduled
   );
 
   // While the daily run sends the first notice, an administrator schedules
-  // the second deletion again, and its sender is told so.
+  // the second deletion again, and its sender is told so. (On SQLite, with
+  // one writer, the reschedule waits for that notice's transaction and goes
+  // in before the run's next one.)
   const outbox = createOutbox();
+  const beside = besideOpenTransactions();
   let rescheduled = false;
   const reschedulingOutbox: EmailService = {
     ...outbox,
     async send(message, options) {
       if (!rescheduled && message.to === first.owner.email) {
         rescheduled = true;
-        await scheduleAs(admin, secondEnvelope.envelopeId, "Again.", {
-          now: start + DAY,
-        });
+        await beside.run(() =>
+          scheduleAs(admin, secondEnvelope.envelopeId, "Again.", {
+            now: start + DAY,
+          }),
+        );
       }
 
       return outbox.send(message, options);
@@ -734,6 +741,7 @@ test("a cancellation email still owed is not sent once the deletion is scheduled
   };
 
   await runDaily(start + DAY, reschedulingOutbox);
+  await beside.settled();
 
   assert.equal(rescheduled, true);
   // The old cancellation never followed the new notice.
@@ -864,36 +872,33 @@ test("notices that keep failing go behind the others, so later senders are still
   const start = 500_000_000;
 
   // A full batch of requests whose sender's email keeps bouncing…
+  // Two statements rather than one data-modifying WITH, so that the same
+  // setup runs on the SQLite backend too.
   await database.query(
     `
-      with made as (
-        insert into envelopes (
-          id, user_id, title, status, source_pdf_key, source_pdf_filename,
-          source_pdf_size_bytes, page_count, source_pdf_hash, sent_at,
-          completed_at
-        )
-        select
-          gen_random_uuid()::text, $1, 'Lease', 'completed',
-          'users/' || $1 || '/envelopes/' || n || '/source.pdf', 'lease.pdf',
-          4, 1, $2, $3, $3
-        from generate_series(1, $4::int) as n
-        returning id
+      insert into envelopes (
+        id, user_id, title, status, source_pdf_key, source_pdf_filename,
+        source_pdf_size_bytes, page_count, source_pdf_hash, sent_at,
+        completed_at
       )
+      select
+        gen_random_uuid()::text, $1, 'Lease', 'completed',
+        'users/' || $1 || '/envelopes/' || n || '/source.pdf', 'lease.pdf',
+        4, 1, $2, $3, $3
+      from generate_series(1, $4::int) as n
+    `,
+    [unreachable.userId, SOURCE_HASH, start, SCHEDULED_DELETIONS_PER_RUN],
+  );
+  await database.query(
+    `
       insert into scheduled_envelope_deletions (
         envelope_id, requested_by_user_id, requested_by_email, requested_at,
         delete_after
       )
-      select id, $5, $6, $3, $3 + $7 from made
+      select id, $2, $3, $4::bigint, $4::bigint + $5::bigint
+      from envelopes where user_id = $1
     `,
-    [
-      unreachable.userId,
-      SOURCE_HASH,
-      start,
-      SCHEDULED_DELETIONS_PER_RUN,
-      admin.userId,
-      admin.email,
-      WAIT,
-    ],
+    [unreachable.userId, admin.userId, admin.email, start, WAIT],
   );
   // …and one asked for after them.
   const later = await createEnvelope(reachable.userId, { status: "completed" });

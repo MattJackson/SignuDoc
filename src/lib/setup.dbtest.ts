@@ -5,6 +5,7 @@ import { after, before, beforeEach, test } from "node:test";
 import type pg from "pg";
 
 import { openTestDatabase } from "./db/test-database.ts";
+import { DEFAULT_TIMESTAMP_URL } from "./seal-settings.ts";
 import {
   evaluateSignupRequest,
   invalidateSettingsCache,
@@ -58,15 +59,25 @@ before(async () => {
   database = await openTestDatabase();
 });
 
+// First-run setup stores the default timestamp server; it must not stay
+// behind for the other database tests, which seal without one.
+async function forgetSealTimestamp() {
+  await database.query(
+    `delete from public.integration_settings where key = 'seal.timestampUrl'`,
+  );
+}
+
 beforeEach(async () => {
   await database.query(`truncate public."user" cascade`);
   await database.query("delete from public.app_settings");
+  await forgetSealTimestamp();
   invalidateSettingsCache();
 });
 
 after(async () => {
   await database.query(`truncate public."user" cascade`);
   await database.query("delete from public.app_settings");
+  await forgetSealTimestamp();
   await database.end();
 });
 
@@ -499,4 +510,105 @@ test("an email check only vouches for the sender address it was made with", asyn
     database,
   );
   assert.notEqual(await readyAt(), null);
+});
+
+async function storedTimestampUrl(): Promise<string | null> {
+  const result = await database.query<{ value: string }>(
+    `select value from public.integration_settings where key = 'seal.timestampUrl'`,
+  );
+
+  return result.rows[0]?.value ?? null;
+}
+
+test("a new install timestamps its seals from the start; a claimed older one keeps sealing as it did", async () => {
+  await completeSetup(setupInput, {
+    createAdminAccount: async ({ email }) => ({
+      userId: await insertUser(email),
+    }),
+    database,
+    env,
+  });
+
+  assert.equal(await storedTimestampUrl(), DEFAULT_TIMESTAMP_URL);
+
+  await database.query(`truncate public."user" cascade`);
+  await database.query("delete from public.app_settings");
+  await forgetSealTimestamp();
+  invalidateSettingsCache();
+
+  const claimEnv = { SETUP_TOKEN: "a-secret-of-the-owner" };
+  const userId = await insertUser("early@customer.example");
+
+  await completeSetup(
+    {
+      organizationName: "Second Wind Partners",
+      setupToken: claimEnv.SETUP_TOKEN,
+      supportAddress: "desk@customer.example",
+    },
+    {
+      createAdminAccount: async () => {
+        throw new Error("nobody is created when an install is claimed");
+      },
+      database,
+      env: claimEnv,
+      sessionUser: {
+        email: "early@customer.example",
+        emailVerified: true,
+        id: userId,
+      },
+    },
+  );
+
+  assert.equal(await storedTimestampUrl(), null);
+});
+
+async function storedInstallerUserId(): Promise<string | null> {
+  const result = await database.query<{ installer_user_id: string | null }>(
+    `select installer_user_id from public.app_settings where id`,
+  );
+
+  return result.rows[0]?.installer_user_id ?? null;
+}
+
+test("setup records the account it made as the installer", async () => {
+  let createdId = "";
+
+  await completeSetup(setupInput, {
+    createAdminAccount: async ({ email }) => {
+      createdId = await insertUser(email);
+
+      return { userId: createdId };
+    },
+    database,
+    env,
+  });
+
+  assert.equal(await storedInstallerUserId(), createdId);
+});
+
+test("claiming an older install records the claiming account as the installer", async () => {
+  const claimEnv = { SETUP_TOKEN: "a-secret-of-the-owner" };
+  const userId = await insertUser("early@customer.example");
+
+  await completeSetup(
+    {
+      organizationName: "Second Wind Partners",
+      setupToken: claimEnv.SETUP_TOKEN,
+      supportAddress: "desk@customer.example",
+    },
+    {
+      createAdminAccount: async () => {
+        throw new Error("nobody is created when an install is claimed");
+      },
+      database,
+      env: claimEnv,
+      sessionUser: {
+        email: "early@customer.example",
+        emailVerified: true,
+        id: userId,
+      },
+    },
+  );
+
+  assert.equal(await storedInstallerUserId(), userId);
 });

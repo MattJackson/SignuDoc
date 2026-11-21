@@ -18,7 +18,11 @@ import { recordSystemAuditEvent } from "./services/system-audit.ts";
 // administrator cannot be removed, and neither can the last one whose
 // account is not on its way to being closed.
 
-/** Serializes role changes, so two removals cannot both leave "one more". */
+/**
+ * Serializes role changes, so two removals cannot both leave "one more".
+ * Blocking an administrator's sign-in from the directory takes it too
+ * (directory-sync.ts): that also leaves one fewer administrator.
+ */
 export const ROLE_CHANGE_LOCK_ID = 746108324;
 const MAX_LISTED_PEOPLE = 500;
 const MAX_SEARCH_LENGTH = 100;
@@ -29,6 +33,11 @@ export type Person = {
   /** The account has asked to be closed and is waiting out its notice. */
   closing: boolean;
   createdAt: string;
+  /**
+   * When the Google Workspace directory's answer blocked the account's
+   * sign-in (directory-sync.ts), or null.
+   */
+  directoryBlockedAt: number | null;
   email: string;
   emailVerified: boolean;
   id: string;
@@ -71,6 +80,7 @@ type PersonRow = {
   closing: boolean;
   hasOpenPart11Signing: boolean;
   createdAt: Date;
+  directoryBlockedAt: number | null;
   email: string;
   emailVerified: boolean;
   id: string;
@@ -92,6 +102,7 @@ const PERSON_COLUMNS = `
   ${CURRENT_IDENTITY_VERIFIED_AT_SQL} AS "identityVerifiedAt",
   u.identity_verification_note AS "identityVerificationNote",
   u.signing_locked_at AS "signingLockedAt",
+  u.directory_blocked_at AS "directoryBlockedAt",
   u."twoFactorEnabled" AS "twoFactorEnabled",
   EXISTS (
     SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
@@ -111,6 +122,7 @@ function mapPerson(row: PersonRow): Person {
   return {
     closing: row.closing,
     createdAt: row.createdAt.toISOString(),
+    directoryBlockedAt: row.directoryBlockedAt ?? null,
     email: row.email,
     emailVerified: row.emailVerified,
     hasOpenPart11Signing: row.hasOpenPart11Signing,
@@ -173,28 +185,34 @@ export async function listPeople(
 
 /**
  * The administrator who keeps the organization's records: the one who has
- * been here longest and whose own account is not on its way to being
- * closed. `exceptUserId` is the account that is giving the records up.
- * Returns null when there is no such administrator.
+ * been here longest, whose own account is not on its way to being closed,
+ * and who can still sign in (the Workspace directory has not blocked them,
+ * directory-sync.ts). `exceptUserId` is the account that is giving the
+ * records up; a dry run of the directory sync also passes the accounts it
+ * would block before this one. Returns null when there is no such
+ * administrator.
  */
 export async function findRecordKeeper(
-  exceptUserId: string,
+  exceptUserId: string | readonly string[],
   database: DbExecutor,
 ): Promise<string | null> {
+  const excluded =
+    typeof exceptUserId === "string" ? [exceptUserId] : [...exceptUserId];
   const keeper = await queryOne<{ id: string }>(
     database,
     `
       SELECT u.id
       FROM "user" u
-      WHERE u.id <> $1
+      WHERE u.id <> ALL($1::text[])
         AND u.role = 'admin'
+        AND u.directory_blocked_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM account_closure_requests c WHERE c.user_id = u.id
         )
       ORDER BY u."createdAt" ASC, u.id ASC
       LIMIT 1
     `,
-    [exceptUserId],
+    [excluded],
   );
 
   return keeper?.id ?? null;
@@ -318,25 +336,121 @@ export async function setPersonRole(
     );
 
     if (keeperId) {
-      // The account's row has been held since it was read above. A closed
-      // account's envelopes are handed over only while holding the
-      // keeper's row too, so none can arrive here after this has looked.
-      const moved = await tx.query(
-        `
-          UPDATE envelopes
-          SET user_id = $1
-          WHERE user_id = $2 AND handed_over_at IS NOT NULL
-        `,
-        [keeperId, targetUserId],
-      );
-
-      if ((moved.rowCount ?? 0) > 0) {
-        console.info(
-          `Moved ${moved.rowCount} handed-over envelopes from ${targetUserId}, no longer an administrator, to ${keeperId}.`,
-        );
-      }
+      await moveHandedOverEnvelopes(tx, keeperId, targetUserId);
     }
 
     return mapPerson({ ...target, role });
+  }, database);
+}
+
+// The account's row has been held since it was read. A closed account's
+// envelopes are handed over only while holding the keeper's row too, so
+// none can arrive after this has looked.
+async function moveHandedOverEnvelopes(
+  tx: DbExecutor,
+  keeperId: string,
+  targetUserId: string,
+) {
+  const moved = await tx.query(
+    `
+      UPDATE envelopes
+      SET user_id = $1
+      WHERE user_id = $2 AND handed_over_at IS NOT NULL
+    `,
+    [keeperId, targetUserId],
+  );
+
+  if ((moved.rowCount ?? 0) > 0) {
+    console.info(
+      `Moved ${moved.rowCount} handed-over envelopes from ${targetUserId}, no longer an administrator, to ${keeperId}.`,
+    );
+  }
+}
+
+export type DirectoryRoleResult =
+  | { changed: true; from: PersonRole; to: PersonRole }
+  | {
+      changed: false;
+      reason: "closing" | "last_admin" | "missing" | "same" | "unverified";
+    };
+
+/**
+ * Sets an account's role to what the organization's directory says (an
+ * administrator group, google-admin-group.ts), with nobody acting: the
+ * change is recorded as the directory's. The same rules hold as for an
+ * administrator's change. Above all, the last administrator keeps the role
+ * whatever the directory says, so a group emptied by mistake cannot leave
+ * the install with none.
+ */
+export async function setPersonRoleFromDirectory(
+  targetUserId: string,
+  role: PersonRole,
+  source: { group: string; provider: string },
+  database: DbPool = getDb(),
+): Promise<DirectoryRoleResult> {
+  return withTransaction(async (tx) => {
+    await tx.query("SELECT pg_advisory_xact_lock($1)", [ROLE_CHANGE_LOCK_ID]);
+
+    const target = await queryOne<PersonRow>(
+      tx,
+      `SELECT ${PERSON_COLUMNS} FROM "user" u WHERE u.id = $1 FOR UPDATE OF u`,
+      [targetUserId],
+    );
+
+    if (!target) {
+      return { changed: false, reason: "missing" } as const;
+    }
+
+    const from: PersonRole = target.role === "admin" ? "admin" : "user";
+
+    if (from === role) {
+      return { changed: false, reason: "same" } as const;
+    }
+
+    let keeperId: string | null = null;
+
+    if (role === "admin") {
+      if (!target.emailVerified) {
+        return { changed: false, reason: "unverified" } as const;
+      }
+
+      if (target.closing) {
+        return { changed: false, reason: "closing" } as const;
+      }
+    } else {
+      keeperId = await findRecordKeeper(targetUserId, tx);
+
+      if (!keeperId) {
+        return { changed: false, reason: "last_admin" } as const;
+      }
+    }
+
+    await tx.query(
+      `UPDATE "user" SET role = $1, "updatedAt" = now() WHERE id = $2`,
+      [role, targetUserId],
+    );
+    await recordSystemAuditEvent(
+      {
+        actorEmail: null,
+        actorUserId: null,
+        event: "role_changed",
+        metadata: {
+          from,
+          group: source.group,
+          source: source.provider,
+          targetEmail: target.email,
+          targetName: target.name,
+          to: role,
+        },
+        targetUserId,
+      },
+      tx,
+    );
+
+    if (keeperId) {
+      await moveHandedOverEnvelopes(tx, keeperId, targetUserId);
+    }
+
+    return { changed: true, from, to: role } as const;
   }, database);
 }

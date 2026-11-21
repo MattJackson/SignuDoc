@@ -11,7 +11,7 @@ import {
   saveSettings,
 } from "./settings.ts";
 
-// The settings cache against a real Postgres: a save made inside a
+// The settings cache against a real database (Postgres or SQLite): a save made inside a
 // transaction has to show on this instance as soon as it commits, even when
 // another request read the settings while the transaction was still open.
 // Run with `npm run test:db`.
