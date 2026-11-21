@@ -33,9 +33,14 @@ alter table public.signers
 alter table public.signers
   drop constraint if exists signers_copy_recipient_has_no_step;
 
+-- In this fork the same change came first, as
+-- 20261203004000_signing_steps.sql, and 20261207090000_approvers.sql then
+-- gave approvers steps too. A fork database that ran both reaches this file
+-- afterwards, so the check keeps approvers in, as approvers.sql left it:
+-- the upstream wording would refuse every approver who has a step.
 alter table public.signers
   add constraint signers_copy_recipient_has_no_step
-    check (role = 'signer' or signing_step is null);
+    check (role in ('signer', 'approver') or signing_step is null);
 
 update public.signers
 set signing_step = sign_order
