@@ -15,6 +15,8 @@ import {
   queryOne,
   withTransaction,
 } from "./db/connection.ts";
+import { collectBreakGlassAddresses } from "./directory-sync.ts";
+import { readIntegrationSettings } from "./integration-settings.ts";
 import { ROLE_CHANGE_LOCK_ID } from "./people.ts";
 import {
   ACCOUNT_CLOSURE_EXPORT_WINDOW_DAYS,
@@ -24,7 +26,7 @@ import { resolvePublicSupportAddress } from "./public-contact.ts";
 import type { RequestClient } from "./security/request.ts";
 import { createEmailService } from "./services/email.ts";
 import { recordSystemAuditEvent } from "./services/system-audit.ts";
-import { getBranding } from "./settings.ts";
+import { getBranding, isMissingSchemaError } from "./settings.ts";
 import { isHostedMode, type EnvSource } from "./utils/env.ts";
 
 type SenderAccountRow = {
@@ -200,17 +202,21 @@ function buildClosureValidationError(
 
 export const LAST_ADMIN_CLOSURE_MESSAGE =
   "You are the only administrator. Make someone else an administrator first, then close your account.";
+export const BREAK_GLASS_CLOSURE_MESSAGE =
+  "This is the break-glass account that set up this site, so it can't be closed. It is the way in if Google sign-in is unavailable.";
 
 /**
  * Why this account may not be closed, or null when it may: the last
- * administrator would leave the install with nobody to run it.
+ * administrator would leave the site with nobody to run it, and the
+ * break-glass account (kept for password sign-in when Google is down) or
+ * the account first-run setup made is the way back in.
  */
 export async function accountClosureBlock(
-  user: { id: string },
+  user: { email: string; id: string },
   database: DbExecutor = getDb(),
   env: EnvSource = process.env,
 ): Promise<string | null> {
-  // The hosted service has no install to keep running.
+  // The hosted service has no install to keep running: anyone may leave.
   if (isHostedMode(env)) {
     return null;
   }
@@ -225,6 +231,7 @@ export async function accountClosureBlock(
           FROM "user" AS other
           WHERE other.role = 'admin'
             AND other.id <> $1
+            AND other.directory_blocked_at IS NULL
             AND NOT EXISTS (
               SELECT 1
               FROM account_closure_requests
@@ -237,9 +244,42 @@ export async function accountClosureBlock(
     [user.id],
   );
 
-  return row?.role === "admin" && !row.has_other_admin
-    ? LAST_ADMIN_CLOSURE_MESSAGE
-    : null;
+  if (row?.role === "admin" && !row.has_other_admin) {
+    return LAST_ADMIN_CLOSURE_MESSAGE;
+  }
+
+  const breakGlass = collectBreakGlassAddresses(
+    env,
+    await readIntegrationSettings(database, env),
+  );
+
+  if (
+    breakGlass.has(user.email.trim().toLowerCase()) ||
+    (await readInstallerUserId(database)) === user.id
+  ) {
+    return BREAK_GLASS_CLOSURE_MESSAGE;
+  }
+
+  return null;
+}
+
+async function readInstallerUserId(
+  database: DbExecutor,
+): Promise<string | null> {
+  try {
+    const row = await queryOne<{ installer_user_id: string | null }>(
+      database,
+      `SELECT installer_user_id FROM app_settings WHERE id`,
+    );
+
+    return row?.installer_user_id ?? null;
+  } catch (error) {
+    if (isMissingSchemaError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
 }
 
 function isPool(database: DbExecutor): database is DbPool {
