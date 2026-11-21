@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import pg from "pg";
 
 import {
   e2eDatabaseUrl,
   e2eOutboxDir,
   e2eSetupToken,
 } from "../playwright.config";
+import { openE2eClient } from "./support/database";
 import { extractLink, extractLinks, waitForEmail } from "./support/outbox";
 import { totpCode } from "./support/totp";
 import { startEmbedParent } from "./support/embed-parent";
@@ -135,8 +135,14 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
     await adminPage.getByLabel("Setup token").fill(e2eSetupToken);
     await adminPage.getByRole("button", { name: "Finish setup" }).click();
 
-    // Setup ends signed in, on the administrator's settings.
-    await expect(adminPage).toHaveURL(/\/settings#organization$/);
+    // Setup ends signed in, on the onboarding that walks through the rest.
+    await expect(adminPage).toHaveURL(/\/onboarding$/);
+    await expect(
+      adminPage.getByRole("heading", { name: "Set up this site" }),
+    ).toBeVisible();
+
+    // Everything onboarding sets is also in Settings.
+    await adminPage.goto("/settings/organization");
     await expect(
       adminPage.getByRole("link", { exact: true, name: ORGANIZATION_NAME }),
     ).toBeVisible();
@@ -150,9 +156,12 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
     await expect(adminPage.getByLabel("Email domains")).toHaveValue(
       "example.com",
     );
+    // Email has its own page under Integrations.
+    await adminPage.goto("/settings/integrations/email");
     await expect(
       adminPage.getByText("Emails are being captured, not sent"),
     ).toBeVisible();
+    await adminPage.goto("/settings/organization");
 
     const testEmailResponse = await adminContext.request.post(
       "/api/admin/email",
@@ -173,14 +182,18 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
 
     // The organization puts its own logo and color on the site. The logo
     // is saved the moment it is chosen, the color with the form.
-    await adminPage.getByLabel("Logo image").setInputFiles({
-      buffer: LOGO_PNG,
-      mimeType: "image/png",
-      name: "logo.png",
-    });
-    await expect(
-      adminPage.getByRole("button", { name: "Replace logo" }),
-    ).toBeVisible();
+    // A file chosen before the page has hydrated is never uploaded, so
+    // choose it again until the upload shows.
+    await expect(async () => {
+      await adminPage.getByLabel("Logo image").setInputFiles({
+        buffer: LOGO_PNG,
+        mimeType: "image/png",
+        name: "logo.png",
+      });
+      await expect(
+        adminPage.getByRole("button", { name: "Replace logo" }),
+      ).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
     await adminPage.getByLabel("Brand color").fill(BRAND_COLOR);
     await adminPage
       .getByRole("button", { name: "Save organization settings" })
@@ -805,7 +818,7 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
   // An install from before there were administrators has accounts but
   // nobody in charge. One of its users takes charge with the setup token.
   await test.step("an install with no administrator is claimed with the setup token", async () => {
-    const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+    const database = openE2eClient(e2eDatabaseUrl);
 
     await database.connect();
 
@@ -872,7 +885,7 @@ test("a new install is set up, a sender sends a PDF and a recipient signs it", a
 
     expect(claimed.status()).toBe(201);
 
-    await page.goto("/settings");
+    await page.goto("/settings/organization");
     await expect(
       page.getByRole("heading", { name: "Organization" }),
     ).toBeVisible();
@@ -898,7 +911,7 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
   const runId = String(Date.now());
   const signerEmail = `part11+${runId}@example.com`;
   const signerName = "Pat Part";
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -921,13 +934,16 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/documents");
     await page.getByRole("button", { name: "Turn on Part 11 mode" }).click();
     await expect(
       page.getByRole("button", { name: "Turn off Part 11 mode" }),
     ).toBeVisible();
     // A retention period would delete regulated records on a timer.
-    await expect(page.getByLabel("Days to keep")).toBeDisabled();
+    await page.goto("/settings/organization");
+    await expect(
+      page.getByLabel("Days to keep", { exact: true }),
+    ).toBeDisabled();
     // Part 11 signers need an account, so the sign-up rule covers them too.
     await expect(
       page.getByText("Part 11 mode is on, so this covers signers too."),
@@ -982,6 +998,31 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
     await page.getByRole("button", { name: "Next →" }).click();
     await expect(page).toHaveURL(/\/prepare$/);
 
+    // A draft whose only recipient is an approver has nobody to place
+    // fields for: the prepare page sends the sender back to the signers page
+    // instead of failing.
+    const roleDatabase = openE2eClient(e2eDatabaseUrl);
+
+    await roleDatabase.connect();
+
+    try {
+      await roleDatabase.query(
+        `update public.signers set role = 'approver' where envelope_id = $1`,
+        [envelopeId],
+      );
+      await page.goto(`/envelopes/${envelopeId}/prepare`);
+      await expect(page).toHaveURL(/\/signers$/);
+    } finally {
+      await roleDatabase.query(
+        `update public.signers set role = 'signer' where envelope_id = $1`,
+        [envelopeId],
+      );
+      await roleDatabase.end();
+    }
+
+    await page.goto(`/envelopes/${envelopeId}/prepare`);
+    await expect(page).toHaveURL(/\/prepare$/);
+
     await page.getByRole("button", { exact: true, name: "Signature" }).click();
 
     const placementTarget = page.getByLabel("Place Signature on page 1");
@@ -1014,14 +1055,17 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
       ),
     ).toBeVisible();
 
-    await page.goto("/settings");
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: `Confirm ${signerName}'s identity` })
       .click();
     await page
       .getByLabel("How did you check who this is?")
       .fill("Badge checked in person");
-    await page.getByRole("button", { exact: true, name: "Save" }).click();
+    await page
+      .getByRole("list", { name: "People" })
+      .getByRole("button", { exact: true, name: "Save" })
+      .click();
     await expect(
       page.getByRole("button", {
         name: `Take back ${signerName}'s identity confirmation`,
@@ -1131,7 +1175,7 @@ test("in Part 11 mode a verified account signs, with its password and a stated m
       ).status(),
     ).toBe(200);
     // With the mode off, ordinary signers again need no account.
-    await page.goto("/settings");
+    await page.goto("/settings/organization");
     await expect(
       page.getByText("People who are sent a document to sign don't need"),
     ).toBeVisible();
@@ -1146,7 +1190,7 @@ test("a signer signs with a qualified signature in their own name, through the s
   const signerEmail = `qualified+${runId}@example.com`;
   const signerName = "Quinn Qualified";
   const signatureType = "Qualified electronic signatures through eID Easy";
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -1293,7 +1337,7 @@ test("a signer who declines is told the decline was recorded, not that the link 
 }, testInfo) => {
   const runId = String(Date.now());
   const signerEmail = `decliner+${runId}@example.com`;
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -1416,7 +1460,7 @@ test("a signer who declines is told the decline was recorded, not that the link 
     // The envelope becomes a plain member's, as if they had sent it.
     const memberId = `member-${runId}`;
     const memberEmail = `member+${runId}@example.com`;
-    const db = new pg.Client({ connectionString: e2eDatabaseUrl });
+    const db = openE2eClient(e2eDatabaseUrl);
 
     await db.connect();
 
@@ -1572,7 +1616,7 @@ test("a long Text answer keeps the signing page within the window", async ({
 }, testInfo) => {
   const runId = String(Date.now());
   const signerEmail = `long-answer+${runId}@example.com`;
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -1699,7 +1743,7 @@ test("a long Text answer keeps the signing page within the window", async ({
 test("with local disk storage a PDF just under 20 MB uploads, and a larger request is refused", async ({
   page,
 }, testInfo) => {
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -1761,7 +1805,7 @@ test("an administrator makes an API key and a webhook, an app sends and download
   page,
   playwright,
 }) => {
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -1792,7 +1836,7 @@ test("an administrator makes an API key and a webhook, an app sends and download
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/developers");
     await page.getByPlaceholder("For example: Billing app").fill("Billing app");
     await page.getByRole("button", { name: "Create key" }).click();
 
@@ -2096,7 +2140,7 @@ test("an app shows the signing page in its own site, only on a site an administr
   page,
   playwright,
 }) => {
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
 
   await database.connect();
@@ -2128,7 +2172,7 @@ test("an app shows the signing page in its own site, only on a site an administr
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/developers");
     await page.getByPlaceholder("For example: Billing app").fill("Portal");
     await page.getByRole("button", { name: "Create key" }).click();
     key =
@@ -2355,7 +2399,7 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
   browser,
   page,
 }) => {
-  const database = new pg.Client({ connectionString: e2eDatabaseUrl });
+  const database = openE2eClient(e2eDatabaseUrl);
   let adminEmail = "";
   let memberEmail = "";
 
@@ -2398,7 +2442,7 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/settings");
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: "Require two-step sign-in" })
       .click();
@@ -2408,6 +2452,8 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
   });
 
   await test.step("the administrator sets up an authenticator app", async () => {
+    // Two-step sign-in for one's own account is under Profile and sign-in.
+    await page.goto("/settings");
     await page.getByRole("button", { name: "Set up two-step sign-in" }).click();
     await page.getByLabel("Your password").fill(PASSWORD);
     await page.getByRole("button", { name: "Continue" }).click();
@@ -2436,6 +2482,7 @@ test("two-step sign-in: an administrator sets it up and requires it of everyone"
   });
 
   await test.step("and requires it of everyone", async () => {
+    await page.goto("/settings/people");
     await page
       .getByRole("button", { name: "Require two-step sign-in" })
       .click();
