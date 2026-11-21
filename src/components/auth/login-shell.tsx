@@ -53,6 +53,8 @@ type LoginShellProps = {
   passwordSignIn?: "fallback" | "off" | "on";
   resetError?: string | null;
   resetToken?: string | null;
+  /** A path on this site to go to once signed in. */
+  returnTo?: string;
   sso?: SsoOption | null;
   /** The ?error= single sign-on came back with. */
   ssoError?: string | null;
@@ -125,10 +127,21 @@ function LiveLoginShell({
   passwordSignIn = "on",
   resetError = null,
   resetToken = null,
+  returnTo = "/dashboard",
   sso = null,
   ssoError = null,
 }: LoginShellProps) {
   const router = useRouter();
+
+  // A route handler (such as Google Drive's "Open with") is not a page the
+  // client router can show, so the browser goes there itself.
+  function continueSignedIn() {
+    if (returnTo.startsWith("/api/")) {
+      window.location.assign(returnTo);
+    } else {
+      router.replace(returnTo);
+    }
+  }
   const { signupAvailable } = useBranding();
   const [values, setValues] = useState<LoginFormValues>(
     createLoginFormValues(),
@@ -290,7 +303,7 @@ function LiveLoginShell({
       return;
     }
 
-    router.replace("/dashboard");
+    continueSignedIn();
   }
 
   async function handleForgotPasswordSubmit(event: FormEvent<HTMLFormElement>) {
@@ -394,7 +407,7 @@ function LiveLoginShell({
           setValues((currentValues) => ({ ...currentValues, password: "" }));
           setBannerMessage(message);
         }}
-        onSignedIn={() => router.replace("/dashboard")}
+        onSignedIn={continueSignedIn}
       />
     );
   }
@@ -422,6 +435,7 @@ function LiveLoginShell({
           {sso ? (
             <SsoButton
               onError={setBannerMessage}
+              returnTo={returnTo}
               sso={sso}
               variant={showPasswordForm ? "secondary" : "primary"}
             />
