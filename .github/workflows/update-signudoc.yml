@@ -29,7 +29,15 @@
 # If Vercel deploys from a branch other than the default branch, set the
 # repository variable SIGNUDOC_PRODUCTION_BRANCH to it.
 #
-# In the SignuDoc repository itself the job is skipped.
+# It takes releases from this fork of SignuDoc, MattJackson/SignuDoc, which
+# is built on the original project (NYLLON-SOFTWARE/SignuDoc) and follows
+# it. To take releases from somewhere else, set the repository variable
+# SIGNUDOC_RELEASES_REPO to that owner/repository. A copy made from the
+# original project moves to the fork by replacing this file with the
+# fork's: the fork carries the original's history, so the merge still
+# finds the version the copy started from.
+#
+# In the repository releases come from, the job is skipped.
 
 name: Update SignuDoc
 
@@ -63,12 +71,13 @@ jobs:
   update:
     name: Bring in the latest release
     # Expressions compare strings without regard to case.
-    if: github.repository != 'NYLLON-SOFTWARE/SignuDoc'
+    if: github.repository != (vars.SIGNUDOC_RELEASES_REPO || 'MattJackson/SignuDoc')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      UPSTREAM: NYLLON-SOFTWARE/SignuDoc
-      UPSTREAM_GIT_URL: https://github.com/NYLLON-SOFTWARE/SignuDoc.git
+      # Where releases come from (see the top of this file).
+      UPSTREAM: ${{ vars.SIGNUDOC_RELEASES_REPO || 'MattJackson/SignuDoc' }}
+      UPSTREAM_GIT_URL: https://github.com/${{ vars.SIGNUDOC_RELEASES_REPO || 'MattJackson/SignuDoc' }}.git
       GH_TOKEN: ${{ secrets.SIGNUDOC_UPDATE_TOKEN || github.token }}
       HAS_UPDATE_TOKEN: ${{ secrets.SIGNUDOC_UPDATE_TOKEN != '' }}
       REQUESTED_VERSION: ${{ inputs.version }}
