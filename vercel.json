@@ -11,6 +11,10 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/internal/notifications",
+      "schedule": "30 9 * * *"
+    },
+    {
       "path": "/api/internal/webhooks",
       "schedule": "30 9 * * *"
     }
