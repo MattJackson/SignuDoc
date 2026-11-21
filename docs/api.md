@@ -12,7 +12,7 @@ error codes are only ever added, never changed or removed.
 
 ## Keys
 
-An administrator makes a key under **Settings, Organization, API keys**:
+An administrator makes a key under **Settings, API and webhooks, API keys**:
 
 1. Give it a name that says which app uses it, such as "Billing app".
 2. Choose **Read and write** (create, send and void envelopes, and read
@@ -49,8 +49,8 @@ What to know about keys:
   in only through single sign-on (`PASSWORD_SIGN_IN=off`), removing someone
   at your identity provider stops them signing in, but they are still an
   administrator here, so the keys they made keep working. When an
-  administrator leaves, take the role away under Settings, Organization,
-  People, which revokes their keys, or revoke the keys under API keys, which
+  administrator leaves, take the role away under Settings, People and
+  security, which revokes their keys, or revoke the keys under API keys, which
   lists every administrator's keys. An app's keys made from its own
   administrator account, as above, do not depend on anyone staying.
 - **Keys skip two-step sign-in.** They are for servers, so keep them in your
@@ -445,7 +445,7 @@ by email as usual.
 ### Allow your site
 
 An administrator lists the sites that may show signing pages, under
-Settings, Organization, Embedded signing: one exact origin each, such as
+Settings, API and webhooks, Embedded signing: one exact origin each, such as
 `https://app.example.com`, with no path, up to 10. Until at least one site
 is listed, embedded sends are refused. Adding and removing sites is in the
 site audit trail. Every other page of SignuDoc can never be framed.

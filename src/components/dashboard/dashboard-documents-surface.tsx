@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ChangeEventHandler, ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
+import type { EnvelopeScope } from "@/lib/envelope-access";
 import type { DashboardEnvelopeListItem } from "@/lib/envelopes";
 import {
   DocumentThumbnail,
@@ -13,8 +14,22 @@ import { PageHeader } from "@/components/shared/page-header";
 
 export type DashboardShellState = "default" | "empty" | "error";
 
-/** An administrator's dashboard: their own envelopes, or everyone's. */
-export type DashboardView = "all" | "mine";
+/**
+ * Whose envelopes the dashboard lists: one's own, one's teams' too, or, for
+ * an administrator, everyone's (envelope-access.ts).
+ */
+export type DashboardView = EnvelopeScope;
+
+const viewLabels: Record<DashboardView, string> = {
+  all: "Everyone's",
+  mine: "Mine",
+  team: "My team",
+};
+
+/** The dashboard's address for one view, with whatever else it carries. */
+export function dashboardViewHref(view: DashboardView): string {
+  return view === "mine" ? "/dashboard" : `/dashboard?view=${view}`;
+}
 
 /** Links to the pages before and after this one, when there are any. */
 export type DashboardPagination = {
@@ -68,8 +83,10 @@ const statusPillClasses: Record<EnvelopeStatus, string> = {
 
 type DashboardDocumentsHeaderProps = {
   interactive?: boolean;
-  /** Shown to administrators only. */
+  /** Whose envelopes are listed. */
   view?: DashboardView;
+  /** The views this person can choose from; a choice only when two or more. */
+  views?: readonly DashboardView[];
 };
 
 type DashboardDocumentsPanelProps = {
@@ -105,6 +122,7 @@ type ErrorBannerProps = {
 export function DashboardDocumentsHeader({
   interactive = true,
   view,
+  views = [],
 }: DashboardDocumentsHeaderProps) {
   const label = (
     <>
@@ -134,24 +152,19 @@ export function DashboardDocumentsHeader({
         }
         title={view === "all" ? "All envelopes" : "Documents"}
       />
-      {view && interactive ? (
+      {view && interactive && views.length > 1 ? (
         <nav aria-label="Whose envelopes" className="segmented self-start">
-          <Link
-            aria-current={view === "mine" ? "page" : undefined}
-            className="segmented-item"
-            data-active={view === "mine"}
-            href="/dashboard"
-          >
-            Mine
-          </Link>
-          <Link
-            aria-current={view === "all" ? "page" : undefined}
-            className="segmented-item"
-            data-active={view === "all"}
-            href="/dashboard?view=all"
-          >
-            Everyone&apos;s
-          </Link>
+          {views.map((option) => (
+            <Link
+              aria-current={view === option ? "page" : undefined}
+              className="segmented-item"
+              data-active={view === option}
+              href={dashboardViewHref(option)}
+              key={option}
+            >
+              {viewLabels[option]}
+            </Link>
+          ))}
         </nav>
       ) : null}
     </>
@@ -214,8 +227,8 @@ export function DashboardDocumentsPanel({
         {/* Typing narrows what is shown; Enter searches every envelope,
             not only this page. */}
         <SearchForm interactive={interactive}>
-          {view === "all" ? (
-            <input name="view" type="hidden" value="all" />
+          {view && view !== "mine" ? (
+            <input name="view" type="hidden" value={view} />
           ) : null}
           <label className="flex min-h-[2.625rem] w-full items-center gap-2.5 rounded-xl bg-white px-3.5 text-(--tertiary) transition focus-within:ring-3 focus-within:ring-ring/50">
             <SearchIcon aria-hidden="true" className="size-4 shrink-0" />
@@ -339,7 +352,11 @@ function EnvelopeCard({
     <>
       <span className="flex h-52 items-center justify-center rounded-2xl bg-(--surface) p-3.5 transition group-hover:bg-[#f0f0f6]">
         {interactive ? (
-          <DocumentThumbnail envelopeId={envelope.id} title={envelope.title} />
+          <DocumentThumbnail
+            canBackfill={envelope.canManage !== false}
+            envelopeId={envelope.id}
+            title={envelope.title}
+          />
         ) : (
           <SampleDocumentPage seed={envelope.id} />
         )}
@@ -365,6 +382,13 @@ function EnvelopeCard({
         <span className="block truncate text-[0.8125rem] text-(--tertiary)">
           {envelope.contextLine}
         </span>
+        {/* Everyone's list names the sender above; a teammate's envelope
+            says who sent it here. */}
+        {envelope.sentByLabel && !envelope.senderLabel ? (
+          <span className="block truncate text-[0.8125rem] text-(--tertiary)">
+            Sent by {envelope.sentByLabel}
+          </span>
+        ) : null}
       </span>
 
       <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-1 pb-0.5">

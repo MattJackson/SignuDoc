@@ -13,6 +13,7 @@ import {
   verifySystemAuditChain,
 } from "./services/system-audit.ts";
 import { sanitizeFileNameSegment } from "./downloads.ts";
+import { readableEnvelopeCondition } from "./envelope-access.ts";
 
 // Audit trails as CSV, for an inspector or a records review (21 CFR
 // 11.10(b): accurate and complete copies in a form people can read and a
@@ -64,7 +65,10 @@ export class AuditExportError extends Error {
   }
 }
 
-/** The audit trail of one envelope its sender owns. */
+/**
+ * The audit trail of one envelope, for its sender, for someone on a team
+ * with them, or for an administrator (envelope-access.ts).
+ */
 export async function exportEnvelopeAuditCsv(
   userId: string,
   envelopeId: string,
@@ -72,8 +76,11 @@ export async function exportEnvelopeAuditCsv(
 ): Promise<AuditCsvExport> {
   const envelope = await queryOne<{ part11: boolean; title: string }>(
     database,
-    `SELECT title, part11 FROM envelopes WHERE id = $1 AND user_id = $2`,
-    [envelopeId, userId],
+    `
+      SELECT title, part11 FROM envelopes
+      WHERE envelopes.id = $2 AND ${readableEnvelopeCondition("$1")}
+    `,
+    [userId, envelopeId],
   );
 
   if (!envelope) {

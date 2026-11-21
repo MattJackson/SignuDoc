@@ -36,7 +36,8 @@ import {
   SigningMutationError,
   type SigningRequestMeta,
 } from "./signing.ts";
-import { readEnv, resolveAppUrl, type EnvSource } from "./utils/env.ts";
+import { getSealTimestampUrl } from "./seal-settings.ts";
+import { resolveAppUrl, type EnvSource } from "./utils/env.ts";
 
 // Signing with a certificate in the signer's own name (eIDAS AdES or QES).
 //
@@ -497,7 +498,7 @@ export async function resumeProviderSigning(
         `The certificate is in the name of ${checked.subject}, not ${session.signerName}, who this document was sent to.`,
       );
     }
-    const timestampUrl = readEnv(env, "SEAL_TIMESTAMP_URL");
+    const timestampUrl = await getSealTimestampUrl(env, { database });
     let cms = step.cms;
     let timestamped = checked.timestamped;
 

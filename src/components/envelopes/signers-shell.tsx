@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
 import {
   ChevronLeftIcon,
@@ -24,6 +24,7 @@ import {
   signatureMeanings,
   type SignatureMeaning,
 } from "@/lib/types/domain";
+import { DirectoryEmailInput } from "./directory-email-input";
 import { getSignerPalette } from "./signer-palette";
 
 const envelopeSteps = ["Upload", "Signers", "Place fields", "Review"];
@@ -55,6 +56,8 @@ type ShellSigner = SignerChecks & {
   email: string;
   localId: string;
   name: string;
+  /** An approver approves or rejects, with no fields of their own. */
+  role: "approver" | "signer";
   signerId?: string;
   touched: Record<SignerField, boolean>;
   /**
@@ -62,6 +65,18 @@ type ShellSigner = SignerChecks & {
    * signing order. Ignored for the first signer, and in Part 11 mode.
    */
   withPrevious: boolean;
+};
+
+/** What /api/directory/manager says about the signed-in sender. */
+type ManagerInfo = {
+  /** False in Part 11 mode, which has no approvers. */
+  available: boolean;
+  manager: { email: string; name: string } | null;
+  /** Why the manager cannot be added, when they cannot. */
+  message: string | null;
+  /** The administrator's rule, as it applies to this sender. */
+  policy: "off" | "require" | "suggest";
+  status: string;
 };
 
 type SignerErrors = {
@@ -100,6 +115,7 @@ function createSigner(
     requireEmailCode: overrides?.requireEmailCode ?? false,
     wantsAccessCode: overrides?.hasAccessCode ?? false,
     name: overrides?.name ?? "",
+    role: overrides?.role ?? "signer",
     signatureMeaning: overrides?.signatureMeaning ?? null,
     signerId: overrides?.signerId,
     touched: {
@@ -179,6 +195,7 @@ function buildInitialModel(record?: DraftSignerStepData): InitialModel {
       hasAccessCode: signer.hasAccessCode,
       name: signer.name,
       requireEmailCode: signer.requireEmailCode,
+      role: signer.role,
       signatureMeaning: signer.signatureMeaning ?? null,
       signerId: signer.id,
       touched: { email: true, name: true },
@@ -326,6 +343,8 @@ function buildSignerRequest(
       id: signer.signerId,
       name: signer.name,
       requireEmailCode: signer.requireEmailCode,
+      // Part 11 mode has no approvers (envelopes.ts).
+      role: part11Mode ? "signer" : signer.role,
       signatureMeaning: signer.signatureMeaning,
       signOrder: index + 1,
       signingStep: steps[index],
@@ -371,6 +390,7 @@ function SignerCard({
   onChecksChange,
   onMove,
   onRemove,
+  onRoleChange,
   onTogetherChange,
   accessCodeError,
   part11Mode = false,
@@ -391,6 +411,7 @@ function SignerCard({
   /** How many signers are in that step. */
   stepSize: number;
   onTogetherChange: (together: boolean) => void;
+  onRoleChange: (role: ShellSigner["role"]) => void;
   onChecksChange: (patch: Partial<SignerChecks>) => void;
   canMoveEarlier: boolean;
   canMoveLater: boolean;
@@ -456,11 +477,32 @@ function SignerCard({
                 style={{ backgroundColor: palette.color }}
               />
               Signer {order}
+              {signer.role === "approver" && !part11Mode ? " · Approver" : ""}
               {showStep ? ` · Step ${String(step)}` : ""}
             </span>
             <p className="text-[0.8125rem] leading-5 text-(--secondary)">
               {routeLabel}
             </p>
+            {!part11Mode ? (
+              <label className="flex items-center gap-2 text-[0.8125rem] font-semibold text-(--secondary)">
+                <select
+                  aria-label={`Signer ${order} role`}
+                  className="field-input min-h-9 py-1"
+                  disabled={disabled}
+                  onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                    onRoleChange(
+                      event.target.value === "approver" ? "approver" : "signer",
+                    )
+                  }
+                  value={signer.role}
+                >
+                  <option value="signer">Signs the document</option>
+                  <option value="approver">
+                    Approves or rejects it (no fields)
+                  </option>
+                </select>
+              </label>
+            ) : null}
             {index > 0 && !part11Mode ? (
               <label className="flex items-center gap-2 text-[0.8125rem] font-semibold text-(--secondary)">
                 <input
@@ -543,17 +585,20 @@ function SignerCard({
             <span className="text-[0.8125rem] font-semibold text-(--secondary)">
               Email
             </span>
-            <input
+            <DirectoryEmailInput
               aria-invalid={emailError ? true : undefined}
               aria-label={`Signer ${order} email`}
-              className="field-input"
               disabled={disabled}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                onChange("email", event.target.value)
-              }
               onBlur={() => onBlur("email")}
+              onChange={(value) => onChange("email", value)}
+              onPick={(person) => {
+                onChange("email", person.email);
+
+                if (!signer.name.trim() && person.name) {
+                  onChange("name", person.name);
+                }
+              }}
               placeholder="jane@company.com"
-              type="email"
               value={signer.email}
             />
             <span
@@ -753,17 +798,20 @@ function CopyRecipientCard({
             <span className="text-[0.8125rem] font-semibold text-(--secondary)">
               Email
             </span>
-            <input
+            <DirectoryEmailInput
               aria-invalid={emailError ? true : undefined}
               aria-label={`Copy recipient ${position} email`}
-              className="field-input"
               disabled={disabled}
               onBlur={() => onBlur("email")}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                onChange("email", event.target.value)
-              }
+              onChange={(value) => onChange("email", value)}
+              onPick={(person) => {
+                onChange("email", person.email);
+
+                if (!recipient.name.trim() && person.name) {
+                  onChange("name", person.name);
+                }
+              }}
               placeholder="alex@company.com"
-              type="email"
               value={recipient.email}
             />
             <span
@@ -801,6 +849,29 @@ export function SignersShell({
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const nextSignerNumberRef = useRef(initialModel.signers.length + 1);
+  // The sender's manager from the Workspace directory, and the
+  // administrator's rule about their approval (manager-policy.ts).
+  const [managerInfo, setManagerInfo] = useState<ManagerInfo | null>(null);
+  const [managerMessage, setManagerMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetch("/api/directory/manager", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          return;
+        }
+
+        setManagerInfo((await response.json()) as ManagerInfo);
+      })
+      .catch(() => {
+        // Without the directory the button is not offered; nothing else
+        // on the page depends on it.
+      });
+
+    return () => controller.abort();
+  }, []);
 
   const errorsBySignerId = buildSignerErrors(signers);
   const errorsByCopyRecipientId = buildCopyRecipientErrors(
@@ -827,6 +898,44 @@ export function SignersShell({
       ? `Signer ${places[0]}`
       : `Signers ${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`;
   }
+  // "Add my manager": offered when the directory is on and approvers are.
+  const canAddManager =
+    !part11Mode &&
+    managerInfo !== null &&
+    managerInfo.available &&
+    managerInfo.status !== "directory_off";
+  const managerEmail = managerInfo?.manager?.email.toLowerCase() ?? null;
+  // The manager approves in a first step of their own: anyone sharing the
+  // step is invited at the same moment.
+  const firstStepIndexes = signers.flatMap((_, index) =>
+    signingSteps[index] === 1 ? [index] : [],
+  );
+  const managerFirst =
+    managerEmail !== null &&
+    firstStepIndexes.length > 0 &&
+    firstStepIndexes.every((index) => {
+      const signer = signers[index]!;
+
+      return (
+        signer.role === "approver" &&
+        signer.email.trim().toLowerCase() === managerEmail
+      );
+    });
+  const managerNotice =
+    managerMessage ??
+    (canAddManager && !managerFirst && managerInfo?.policy !== "off"
+      ? managerInfo?.policy === "require"
+        ? `Your organization requires your manager to approve first. ${
+            managerInfo?.manager
+              ? `Choose "Add my manager to approve" to put ${managerInfo.manager.name} first.`
+              : (managerInfo?.message ?? "")
+          }`
+        : `Your organization suggests your manager approves first. ${
+            managerInfo?.manager
+              ? `Choose "Add my manager to approve" to put ${managerInfo.manager.name} first.`
+              : (managerInfo?.message ?? "")
+          }`
+      : null);
   const canAddCopyRecipient =
     copyRecipients.length < MAX_COPY_RECIPIENTS_PER_ENVELOPE;
   const canContinue =
@@ -866,7 +975,7 @@ export function SignersShell({
 
   function handleSignerChecksChange(
     signerLocalId: string,
-    patch: Partial<SignerChecks>,
+    patch: Partial<SignerChecks & Pick<ShellSigner, "role">>,
   ) {
     clearSubmitError();
     setSigners((currentSigners) =>
@@ -971,6 +1080,69 @@ export function SignersShell({
       ...currentSigners,
       createSigner(`signer-${nextSignerNumber}`),
     ]);
+  }
+
+  /**
+   * Puts the sender's manager first, as an approver in a step of their own,
+   * so they approve before anyone else is asked. Someone already on the
+   * list with that address is moved there instead of being added twice.
+   */
+  function handleAddManager() {
+    if (isSubmitting) {
+      return;
+    }
+
+    clearSubmitError();
+
+    const manager = managerInfo?.manager;
+
+    if (!manager) {
+      setManagerMessage(
+        managerInfo?.message ??
+          "Your manager could not be looked up in the directory.",
+      );
+      return;
+    }
+
+    const managerEmail = manager.email.toLowerCase();
+    const existing = signers.find(
+      (signer) => signer.email.trim().toLowerCase() === managerEmail,
+    );
+
+    if (!existing && !canAddSigner) {
+      setManagerMessage(
+        "The signing order is full. Remove someone to add your manager.",
+      );
+      return;
+    }
+
+    setManagerMessage(null);
+
+    const nextSignerNumber = nextSignerNumberRef.current;
+
+    if (!existing) {
+      nextSignerNumberRef.current += 1;
+    }
+
+    setSigners((currentSigners) => {
+      const managerSigner: ShellSigner = existing
+        ? { ...existing, role: "approver", withPrevious: false }
+        : createSigner(`signer-${nextSignerNumber}`, {
+            email: manager.email,
+            name: manager.name,
+            role: "approver",
+            touched: { email: true, name: true },
+          });
+      const rest = currentSigners.filter(
+        (signer) => signer.localId !== managerSigner.localId,
+      );
+      // Whoever was first now waits for the manager.
+      const [formerFirst, ...others] = rest;
+
+      return formerFirst
+        ? [managerSigner, { ...formerFirst, withPrevious: false }, ...others]
+        : [managerSigner];
+    });
   }
 
   function handleRemoveSigner(signerLocalId: string) {
@@ -1094,6 +1266,19 @@ export function SignersShell({
             </div>
           ) : null}
 
+          {managerNotice ? (
+            <div
+              className={`notice ${
+                managerInfo?.policy === "require"
+                  ? "notice-danger"
+                  : "notice-accent"
+              }`}
+              role="status"
+            >
+              <p>{managerNotice}</p>
+            </div>
+          ) : null}
+
           <ol className="space-y-3">
             {signers.map((signer, index) => {
               const signerErrors = errorsBySignerId[signer.localId] ?? {};
@@ -1128,6 +1313,9 @@ export function SignersShell({
                     handleMoveSigner(signer.localId, direction)
                   }
                   onRemove={() => handleRemoveSigner(signer.localId)}
+                  onRoleChange={(role) =>
+                    handleSignerChecksChange(signer.localId, { role })
+                  }
                   onTogetherChange={(together) =>
                     handleSignerTogetherChange(signer.localId, together)
                   }
@@ -1157,6 +1345,18 @@ export function SignersShell({
             >
               + Add another signer
             </button>
+            {canAddManager ? (
+              <button
+                className="btn-quiet min-h-11 px-4.5"
+                disabled={isSubmitting || managerFirst}
+                onClick={handleAddManager}
+                type="button"
+              >
+                {managerFirst
+                  ? "Your manager approves first"
+                  : "+ Add my manager to approve"}
+              </button>
+            ) : null}
             {!canAddSigner ? (
               <p className="text-[0.8125rem] font-semibold text-(--tertiary)">
                 Maximum reached

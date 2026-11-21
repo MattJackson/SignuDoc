@@ -8,6 +8,8 @@ import { after, before, test } from "node:test";
 import { PDFDocument } from "pdf-lib";
 import type pg from "pg";
 
+import { isSqliteUrl } from "./db/sqlite/pool.ts";
+import { beforeStatement } from "./db/sqlite/test-database.ts";
 import { afterStatement, openTestDatabase } from "./db/test-database.ts";
 import { getSenderEnvelopeDownload } from "./downloads.ts";
 import { ELECTRONIC_RECORDS_DISCLOSURE_VERSION } from "./electronic-records-disclosure.ts";
@@ -617,17 +619,30 @@ async function extractPdfText(pdfBytes: Uint8Array): Promise<string> {
 // An event recorded after the envelope was read, and before whatever ends it
 // holds the envelope, belongs on the certificate it seals. Each way of
 // ending it is held up at a statement it runs once it holds the envelope,
-// and the event is recorded then, from another connection.
-for (const [name, statement, end] of [
-  ["the last signature", "AND status <> 'signed'", signEnvelope],
+// and the event is recorded then, from another connection. On SQLite
+// nothing can be written while a transaction holds the database, so there
+// the event is recorded right before the statement that takes the envelope:
+// the last moment the same write can land.
+const onSqlite = isSqliteUrl(process.env.E2E_DATABASE_URL ?? "");
+const LOCKS_SENT_ENVELOPE = "WHERE id = $1 AND status = 'sent'";
+
+for (const [name, statement, lockStatement, end] of [
+  [
+    "the last signature",
+    "AND status <> 'signed'",
+    LOCKS_SENT_ENVELOPE,
+    signEnvelope,
+  ],
   [
     "a void",
-    "SELECT id, status FROM signers WHERE envelope_id = $1 AND role = 'signer'",
+    "SELECT id, status FROM signers WHERE envelope_id = $1 AND role IN ('signer', 'approver')",
+    "WHERE id = $1 AND user_id = $2",
     voidEnvelope,
   ],
   [
     "a decline",
-    "WHERE envelope_id = $1 AND role = 'signer' AND id <> $2",
+    "WHERE envelope_id = $1 AND role IN ('signer', 'approver') AND id <> $2",
+    LOCKS_SENT_ENVELOPE,
     declineEnvelope,
   ],
 ] as const) {
@@ -635,22 +650,32 @@ for (const [name, statement, end] of [
     const envelope = await createSignableEnvelope();
     const lateActor = `late-${randomUUID().slice(0, 8)}@example.test`;
     let recorded = false;
-    const pool = afterStatement(
-      database,
-      (text) => !recorded && text.includes(statement),
-      async () => {
-        recorded = true;
-        await recordAuditEvent(
-          {
-            actorEmail: lateActor,
-            actorType: "signer",
-            envelopeId: envelope.envelopeId,
-            event: "viewed",
-          },
+    const record = async () => {
+      recorded = true;
+      await recordAuditEvent(
+        {
+          actorEmail: lateActor,
+          actorType: "signer",
+          envelopeId: envelope.envelopeId,
+          event: "viewed",
+        },
+        database,
+      );
+    };
+    const pool = onSqlite
+      ? beforeStatement(
           database,
+          (text) =>
+            !recorded &&
+            text.includes(lockStatement) &&
+            text.includes("FOR NO KEY UPDATE"),
+          record,
+        )
+      : afterStatement(
+          database,
+          (text) => !recorded && text.includes(statement),
+          record,
         );
-      },
-    );
 
     await end(envelope, pool);
 

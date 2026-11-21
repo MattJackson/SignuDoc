@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
+import { GOOGLE_PICTURE_HOSTS } from "@/lib/auth/google-profile";
+import { withClientIpHeader } from "@/lib/security/request";
 import { frameAncestorsFor } from "@/lib/embed-origin";
 import { supportsDirectUploads } from "@/lib/services/storage/driver";
 
@@ -49,9 +51,33 @@ function resolveBlobUploadSource() {
   return `${apiUrl.replace(/\/+$/, "")}/`;
 }
 
-function buildContentSecurityPolicy(frameAncestors: string) {
+// The Google Picker on the new-envelope page (Start from Google Drive) loads
+// Google's script and shows Drive in a frame from Google. A page reached by
+// a link inside the app keeps the policy of the page the app was first
+// opened on, so the app's own pages all allow it. The pages for signers
+// and downloads do not.
+// https://developers.google.com/workspace/drive/picker/guides/overview
+const GOOGLE_PICKER_SCRIPT_SOURCES =
+  "https://apis.google.com https://www.gstatic.com";
+const GOOGLE_PICKER_FRAME_SOURCES =
+  "https://docs.google.com https://drive.google.com https://content.googleapis.com https://accounts.google.com";
+const GOOGLE_PICKER_CONNECT_SOURCES =
+  "https://content.googleapis.com https://www.googleapis.com";
+
+function usesGooglePicker(pathname: string) {
+  return !(
+    pathname.startsWith("/sign/") ||
+    pathname.startsWith("/embed/") ||
+    pathname.startsWith("/download/") ||
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/verify")
+  );
+}
+
+function buildContentSecurityPolicy(pathname: string, frameAncestors: string) {
   const preview = isVercelPreview();
   const botProtection = process.env.NEXT_PUBLIC_BOTID === "1";
+  const picker = usesGooglePicker(pathname);
   const directives: Array<[name: string, sources: Array<string | false>]> = [
     ["default-src", ["'self'"]],
     ["base-uri", ["'self'"]],
@@ -64,6 +90,8 @@ function buildContentSecurityPolicy(frameAncestors: string) {
         "'self'",
         "data:",
         "blob:",
+        // People's Google profile photos, in the account menu.
+        ...GOOGLE_PICTURE_HOSTS.map((host) => `https://${host}`),
         preview && "https://vercel.live https://vercel.com",
       ],
     ],
@@ -82,6 +110,7 @@ function buildContentSecurityPolicy(frameAncestors: string) {
         // The field editor reads the just-uploaded PDF back from a blob: URL.
         "blob:",
         resolveBlobUploadSource(),
+        picker && GOOGLE_PICKER_CONNECT_SOURCES,
         preview && "https://vercel.live wss://ws-us3.pusher.com",
       ],
     ],
@@ -93,7 +122,8 @@ function buildContentSecurityPolicy(frameAncestors: string) {
         // Not yet confirmed against a live deployment; see the note on
         // BotID in docs/self-hosting.md.
         botProtection && "'self'",
-        !preview && !botProtection && "'none'",
+        picker && GOOGLE_PICKER_FRAME_SOURCES,
+        !preview && !botProtection && !picker && "'none'",
       ],
     ],
     ["worker-src", ["'self'", "blob:"]],
@@ -108,6 +138,7 @@ function buildContentSecurityPolicy(frameAncestors: string) {
         "'unsafe-inline'",
         !isProductionEnvironment() && "'unsafe-eval'",
         preview && "https://vercel.live",
+        picker && GOOGLE_PICKER_SCRIPT_SOURCES,
       ],
     ],
   ];
@@ -131,7 +162,7 @@ function applySecurityHeaders(
 
   response.headers.set(
     "Content-Security-Policy",
-    buildContentSecurityPolicy(frameAncestors),
+    buildContentSecurityPolicy(pathname, frameAncestors),
   );
   response.headers.set("Permissions-Policy", DEFAULT_PERMISSIONS_POLICY);
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -175,13 +206,17 @@ function applySecurityHeaders(
 // and trusting it here would bounce that visitor between /login and
 // /dashboard until it ran out.
 
+// The visitor's address is worked out once here and handed on in a header
+// of the app's own (src/lib/security/request.ts), replacing any value the
+// visitor sent, so Better Auth's rate limits see the same address as the
+// rest of the app.
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  return applySecurityHeaders(
-    NextResponse.next(),
-    pathname,
-    request.nextUrl.searchParams,
-  );
+  const response = NextResponse.next({
+    request: { headers: withClientIpHeader(request.headers) },
+  });
+
+  return applySecurityHeaders(response, pathname, request.nextUrl.searchParams);
 }
 
 export const config = {

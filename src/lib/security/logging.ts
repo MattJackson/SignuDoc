@@ -157,11 +157,30 @@ export function logAuditRecord(record: AuditLogRecord): void {
   }
 }
 
+// Cloud Logging reads a JSON line's "severity" as the entry's level and its
+// "message" as the text shown for it, which is what makes a log-based alert
+// on severity>=ERROR work. "severity" is only added on Cloud Run (a service
+// sets K_SERVICE, a job CLOUD_RUN_JOB), so lines elsewhere are unchanged.
+// https://cloud.google.com/logging/docs/structured-logging
+const CLOUD_LOGGING_SEVERITY: Record<string, string> = {
+  error: "ERROR",
+  info: "INFO",
+  warn: "WARNING",
+};
+
+function isOnCloudRun(env: Record<string, string | undefined>): boolean {
+  return Boolean(env.K_SERVICE?.trim() || env.CLOUD_RUN_JOB?.trim());
+}
+
 /** One JSON object on one line, with the fields every line shares. */
 export function toLogLine(
   fields: Record<string, unknown> & { level: string; type: string },
+  env: Record<string, string | undefined> = process.env,
 ): string {
   return JSON.stringify({
+    ...(isOnCloudRun(env)
+      ? { severity: CLOUD_LOGGING_SEVERITY[fields.level] ?? "DEFAULT" }
+      : {}),
     source: "signudoc",
     time: new Date().toISOString(),
     ...fields,

@@ -19,7 +19,11 @@ type SaveTemplateDialogProps = {
   onCancel: () => void;
   onSaved: (templateName: string) => void;
   /** In signing order. The names only say whose place is being named. */
-  signers: readonly { id: string; name: string }[];
+  signers: readonly {
+    id: string;
+    name: string;
+    role?: "approver" | "signer";
+  }[];
 };
 
 const genericError = "Something went wrong. Please try again.";
@@ -40,6 +44,11 @@ export function SaveTemplateDialog({
   const [roleNames, setRoleNames] = useState(() =>
     signers.map((_, index) => `Signer ${String(index + 1)}`),
   );
+  // Roles the sender's manager fills from the Workspace directory each
+  // time, instead of someone the sender names.
+  const [managerRoles, setManagerRoles] = useState<boolean[]>(() =>
+    signers.map(() => false),
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -50,7 +59,9 @@ export function SaveTemplateDialog({
   const canSave =
     name.trim().length > 0 &&
     trimmedRoleNames.every((roleName) => roleName.length > 0) &&
-    !hasRepeatedRoleName;
+    !hasRepeatedRoleName &&
+    // One manager: two roles could not both be filled by the same person.
+    managerRoles.filter(Boolean).length <= 1;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -64,7 +75,13 @@ export function SaveTemplateDialog({
 
     try {
       const response = await fetch(`/api/envelopes/${envelopeId}/template`, {
-        body: JSON.stringify({ name, roleNames: trimmedRoleNames }),
+        body: JSON.stringify({
+          name,
+          roleFills: managerRoles.map((isManager) =>
+            isManager ? "sender_manager" : null,
+          ),
+          roleNames: trimmedRoleNames,
+        }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
@@ -162,8 +179,37 @@ export function SaveTemplateDialog({
                   type="text"
                   value={roleNames[index] ?? ""}
                 />
+                {signer.role === "approver" ? (
+                  <span className="text-xs text-(--tertiary)">
+                    Approves or rejects, with no fields.
+                  </span>
+                ) : null}
+                <span className="flex items-center gap-2 text-[0.8125rem] text-(--secondary)">
+                  <input
+                    checked={managerRoles[index] ?? false}
+                    className="size-4 shrink-0 cursor-pointer accent-(--accent)"
+                    disabled={isSaving}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+
+                      setErrorMessage(null);
+                      setManagerRoles((current) =>
+                        current.map((value, roleIndex) =>
+                          roleIndex === index ? checked : value,
+                        ),
+                      );
+                    }}
+                    type="checkbox"
+                  />
+                  Sender&apos;s manager, from the Workspace directory
+                </span>
               </label>
             ))}
+            {managerRoles.filter(Boolean).length > 1 ? (
+              <p className="text-xs font-semibold text-(--danger)" role="alert">
+                Only one role can be the sender&apos;s manager.
+              </p>
+            ) : null}
             {hasRepeatedRoleName ? (
               <p className="text-xs font-semibold text-(--danger)" role="alert">
                 Give each signer a different name.

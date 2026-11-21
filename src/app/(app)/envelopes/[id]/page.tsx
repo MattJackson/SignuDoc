@@ -39,14 +39,18 @@ export default async function EnvelopeDetailPage({
 
   try {
     const session = await getAuthSession();
-    // Its sender's, or, for an administrator, anyone's.
-    const access = session
-      ? await resolveEnvelopeViewerAccess(session.user.id, id, getDb())
+    // Its sender, someone on a team with them, or an administrator may
+    // read it (envelope-access.ts); only its sender is offered changes.
+    detailRecord = session
+      ? await getEnvelopeDetailDataForUser(session.user.id, id, getDb())
       : null;
 
-    detailRecord = access
-      ? await getEnvelopeDetailDataForUser(access.ownerUserId, id, getDb())
-      : null;
+    // Who sent it, when an administrator is looking at someone else's.
+    const access =
+      session && detailRecord
+        ? await resolveEnvelopeViewerAccess(session.user.id, id, getDb())
+        : null;
+
     initialState = detailRecord ? undefined : "not-found";
     ownerLabel =
       access && !access.viewerIsOwner ? formatEnvelopeOwner(access) : undefined;
